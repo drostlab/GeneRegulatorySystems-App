@@ -6,7 +6,7 @@ Tauri v2 wrapper that bundles the Vue frontend and Julia backend into a native d
 
 - **Rust** >= 1.77.2 (`rustup` recommended: <https://rustup.rs>)
 - **Node.js** >= 20.19 (for the frontend build)
-- **Julia** >= 1.10 (for development; production builds can auto-download Julia 1.12)
+- **Julia** >= 1.11 (for development; production builds can auto-download Julia 1.12)
 - **Tauri CLI**: installed automatically by `dev.sh`, or manually via `cargo install tauri-cli`
 - Platform-specific Tauri dependencies: see <https://v2.tauri.app/start/prerequisites/>
 
@@ -60,7 +60,7 @@ The build bundles the Julia backend source into the app (configured in `tauri.co
 Handled by `src/julia.rs`. Three modes:
 
 1. **Dev mode** -- uses system `julia` on PATH with the global depot.
-2. **Production, system Julia found** -- checks version compatibility (>= 1.10).
+2. **Production, system Julia found** -- checks version compatibility (>= 1.11).
 3. **Production, no system Julia** -- downloads pinned Julia 1.12.0 from the official CDN, verified by SHA256 checksum.
 
 Production builds use an isolated Julia depot inside the app data directory.

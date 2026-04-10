@@ -81,13 +81,13 @@ fi
 # --- Julia ---
 
 if ! command -v julia >/dev/null 2>&1; then
-    echo "[dev.sh] julia not found. Please install Julia (>=1.10)."
+    echo "[dev.sh] julia not found. Please install Julia (>=1.11)."
     exit 1
 fi
 
 JULIA_VERSION=$(julia --version | sed 's/julia version //')
-if ! version_gte "$JULIA_VERSION" "1.10.0"; then
-    echo "[dev.sh] Julia $JULIA_VERSION is too old. Need >=1.10."
+if ! version_gte "$JULIA_VERSION" "1.11.0"; then
+    echo "[dev.sh] Julia $JULIA_VERSION is too old. Need >=1.11."
     exit 1
 fi
 

@@ -24,7 +24,7 @@ pub const JULIA_VERSION: &str = "1.12.0";
 const JULIA_VERSION_SHORT: &str = "1.12";
 /// Minimum Julia version the server supports.
 pub const JULIA_MIN_MAJOR: u32 = 1;
-pub const JULIA_MIN_MINOR: u32 = 10;
+pub const JULIA_MIN_MINOR: u32 = 11;
 
 // ===========================================================================
 // System Julia detection
