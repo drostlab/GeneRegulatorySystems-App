@@ -1,16 +1,15 @@
 # GeneRegulatorySystems App
 
-<p align="center">
-  <a href="https://github.com/drostlab/GeneRegulatorySystems-App/releases/latest">
-    <img src="https://img.shields.io/github/v/release/drostlab/GeneRegulatorySystems-App?label=latest%20release" alt="Latest release" />
-  </a>
-</p>
+
+<a href="https://github.com/drostlab/GeneRegulatorySystems-App/releases/latest">
+  <img src="https://img.shields.io/github/v/release/drostlab/GeneRegulatorySystems-App?label=latest%20release" alt="Latest release" />
+</a>
 
 <p align="center">
-  <img src="tauri-app/icons/logogrs.png" width="180" alt="GRS logo" />
+  <img src="tauri-app/icons/logogrs.png" width="300" alt="GRS logo" />
 </p>
 
-Graphical user interface (GUI) for [GeneRegulatorySystems.jl](https://github.com/drostlab/GeneRegulatorySystems.jl/), a tool for designing complex simulation schedules of stochastic gene regulatory networks.
+Graphical user interface (GUI) for [GeneRegulatorySystems.jl](https://github.com/drostlab/GeneRegulatorySystems.jl/), a tool for designing complex simulation schedules of stochastic gene regulatory networks. Full software documentation is available at <https://drostlab.github.io/GeneRegulatorySystems.jl/>.
 
 ## Installation
 
@@ -24,14 +23,14 @@ cd GeneRegulatorySystems-App
 ./dev.sh
 ```
 
-This starts the Vue frontend and Julia backend in browser mode. Dependencies are installed automatically on first run. Node.js >= 20, Julia >= 1.10 are required.
+This starts the Vue frontend and Julia backend in browser mode. Dependencies are installed automatically on first run. [Node.js](https://nodejs.org/en/download) >= 20, [Julia](https://julialang.org/downloads/) >= 1.11 are required.
 
 For the native desktop window:
 
 ```sh
 ./dev.sh --tauri
 ```
-This requires Rust >= 1.77 to be installed additionally.
+This requires [Rust](https://rust-lang.org/tools/install/) >= 1.77 to be installed additionally.
 
 ### Production build
 
