@@ -139,8 +139,8 @@ export class SharedTimeCursorModifier extends ChartModifierBase2D {
                 line.isHidden = false
                 line.x1 = time
                 line.x2 = time
-                line.y1 = -1.0
-                line.y2 = 2.0
+                line.y1 = -1.5
+                line.y2 = 2.5
             }
             if (sc.id === lastVisibleId)
                 line.y2 = 1.0

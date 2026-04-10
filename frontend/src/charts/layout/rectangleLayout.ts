@@ -116,7 +116,6 @@ function computeYRanges(
 
     // Cap to avoid overcrowded layout; excess paths are simply not rendered
     if (durationPaths.length > maxPaths) {
-        console.debug(`[rectangleLayout] Capping ${durationPaths.length} paths to ${maxPaths}`)
         durationPaths.length = maxPaths
     }
 

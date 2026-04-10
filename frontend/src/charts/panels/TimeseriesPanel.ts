@@ -59,7 +59,6 @@ export abstract class TimeseriesPanel extends BasePanel {
             this.surface.annotations.add(line)
             this.boundaryAnnotations.push(line)
         }
-        console.debug(`[TimeseriesPanel] Added ${times.length} segment boundary lines`)
     }
 
     /** Re-apply theme colours to boundary annotations. */

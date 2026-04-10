@@ -1,7 +1,7 @@
 name = "GRSServer"
 uuid = "86ab0978-0466-42e7-a2ae-38e617ed6ea3"
 version = "0.1.0"
-authors = ["nifets <stefanmanol@gmail.com>"]
+authors = ["nifets <stefanmanol@gmail.com>", "lmshk "]
 
 [deps]
 Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"

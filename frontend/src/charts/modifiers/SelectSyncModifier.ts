@@ -58,7 +58,6 @@ export class SelectSyncModifier extends ChartModifierBase2D {
         if (selectionChanged) {
             this.selectedGroups = newSelection
             this.syncSelectionState(newSelection)
-            console.debug(`[SelectSync] Selection changed (${isToggle ? 'toggle' : 'solo'}): [${[...newSelection]}]`)
             this.onSelectionChange?.([...newSelection])
         } else {
             // SeriesSelectionModifier may have toggled isSelected flags -- force back to our state
@@ -106,7 +105,6 @@ export class SelectSyncModifier extends ChartModifierBase2D {
     /** Re-apply current selection state to all series (call after series are recreated). */
     public reapplySelection(): void {
         if (this.selectedGroups.size === 0) return
-        console.debug(`[SelectSync] Reapplying selection: [${[...this.selectedGroups]}]`)
         this.syncSelectionState(this.selectedGroups)
     }
 

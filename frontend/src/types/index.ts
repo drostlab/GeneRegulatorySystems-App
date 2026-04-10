@@ -23,10 +23,3 @@ export type {
     PhaseSpacePoint,
     PhaseSpaceResult
 } from './simulation'
-
-export type {
-    GeneLayout,
-    PathDisplay,
-    SpeciesSummary,
-    TimeseriesSummary
-} from './displayModes'

@@ -4,7 +4,6 @@ import { useScheduleStore } from './scheduleStore'
 import type { SimulationResult, TimeseriesData, PhaseSpaceResult } from '@/types/simulation'
 import { formatResultLabel, getProgress } from '@/types/simulation'
 import { getTimeExtent } from '@/types/schedule'
-import type { TimeseriesSummary } from '@/types/displayModes'
 import * as simulationService from '@/services/simulationService'
 import { getSimulationStream } from '@/composables/useSimulationStream'
 
@@ -48,9 +47,6 @@ export const useSimulationStore = defineStore(
         /** Latest streaming delta from WS (consumed by TrackViewer for appendStreamingData). */
         const streamingDelta = ref<TimeseriesData | null>(null)
 
-        /** Cached mean+SE summary data (fetched separately from timeseries). */
-        const summaryCache = ref<TimeseriesSummary | null>(null)
-
         /** Phase-space embedding result, available once server has finished computing it. */
         const phaseSpaceResult = ref<PhaseSpaceResult | null>(null)
 
@@ -79,17 +75,10 @@ export const useSimulationStore = defineStore(
             return Object.keys(timeseriesCache.value).length > 0 ? timeseriesCache.value : null
         })
 
-        const summary = computed((): TimeseriesSummary | null => summaryCache.value)
-
         // =====================================================================
-        // TIMESERIES (LAZY HTTP)
+        // FETCHING
         // =====================================================================
 
-        /**
-         * Lazily fetch timeseries for the given genes.
-         * Only fetches genes not already in cache. Merges results into timeseriesCache.
-         * Marks genes as pending immediately to prevent duplicate concurrent fetches.
-         */
         async function fetchGeneTimeseries(genes: string[]): Promise<void> {
             const resultId = currentResultId.value
             if (!resultId) return
@@ -97,7 +86,6 @@ export const useSimulationStore = defineStore(
             const scheduleStore = useScheduleStore()
             const newGenes = genes.filter(g => !fetchedGenes.value.has(g))
             if (newGenes.length === 0) {
-                console.debug(`[SimulationStore] All ${genes.length} genes already fetched, skipping`)
                 return
             }
 
@@ -112,10 +100,8 @@ export const useSimulationStore = defineStore(
 
             isFetchingTimeseries.value = true
             try {
-                console.debug(`[SimulationStore] Fetching timeseries for genes: [${newGenes.join(', ')}] (${species.length} species)`)
                 const data = await simulationService.fetchTimeseriesForSpecies(resultId, species)
                 _mergeTimeseries(data)
-                console.debug(`[SimulationStore] Cache now has ${Object.keys(timeseriesCache.value).length} species`)
             } catch (e) {
                 // Rollback: remove genes from fetched set so they can be retried
                 newGenes.forEach(g => fetchedGenes.value.delete(g))
@@ -123,24 +109,6 @@ export const useSimulationStore = defineStore(
             } finally {
                 isFetchingTimeseries.value = false
             }
-        }
-
-        /**
-         * Fetch mean+SE summary for the given genes.
-         * Replaces any previously cached summary.
-         */
-        async function fetchSummary(genes: string[]): Promise<void> {
-            const resultId = currentResult.value?.id
-            if (!resultId || genes.length === 0) return
-
-            const scheduleStore = useScheduleStore()
-            const species = genes.flatMap(g => scheduleStore.getSpeciesForGeneId(g))
-            if (species.length === 0) return
-
-            console.debug(`[SimulationStore] Fetching summary for ${genes.length} genes (${species.length} species)`)
-            const data = await simulationService.fetchTimeseriesSummary(resultId, species)
-            summaryCache.value = data
-            console.debug(`[SimulationStore] Summary cached: ${Object.keys(data).length} species`)
         }
 
         /**
@@ -187,7 +155,6 @@ export const useSimulationStore = defineStore(
                 console.warn('[SimulationStore] _onProgress called but no currentResult')
                 return
             }
-            console.debug(`[SimulationStore] _onProgress: time=${currentTime} frames=${frameCount} totalProgress=${totalProgress} wasPreparing=${isPreparingSimulation.value}`)
             isPreparingSimulation.value = false
             currentResult.value = {
                 ...currentResult.value,
@@ -198,7 +165,6 @@ export const useSimulationStore = defineStore(
         }
 
         function _onTimeseries(data: TimeseriesData): void {
-            console.debug(`[SimulationStore] _onTimeseries: ${Object.keys(data).length} species`)
             _mergeTimeseries(data)
             streamingDelta.value = data
         }
@@ -244,7 +210,6 @@ export const useSimulationStore = defineStore(
         }
 
         async function _onPhaseSpaceReady(simId: string): Promise<void> {
-            console.debug(`[SimulationStore] _onPhaseSpaceReady: simId=${simId}`)
             const data = await simulationService.fetchPhaseSpace(simId)
             phaseSpaceResult.value = data
             isPhaseSpacePending.value = false
@@ -258,7 +223,6 @@ export const useSimulationStore = defineStore(
             const scheduleStore = useScheduleStore()
             const species = genes.flatMap(gene => scheduleStore.getSpeciesForGeneId(gene))
             getSimulationStream().subscribe(species)
-            console.debug(`[SimulationStore] Updated stream subscription: ${species.length} species`)
         }
 
         // =====================================================================
@@ -390,7 +354,6 @@ export const useSimulationStore = defineStore(
             isPreparingSimulation.value = false
             phaseSpaceResult.value = null
             isPhaseSpacePending.value = false
-            summaryCache.value = null
             clearTimeseriesCache()
         }
 
@@ -433,12 +396,10 @@ export const useSimulationStore = defineStore(
             isLoaded,
             progress,
             timeseries,
-            summary,
             streamingDelta,
             fetchedGenes,
             getTimeseries,
             fetchGeneTimeseries,
-            fetchSummary,
             runSimulation,
             loadResult,
             pauseSimulation,

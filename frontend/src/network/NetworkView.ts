@@ -75,7 +75,6 @@ export class NetworkView {
         if (!this.container) return
 
         const elements = getGeneViewElements(network, geneColours)
-        console.debug(`[NetworkView] Rendering: ${elements.length} gene-level elements`)
 
         this.cy = cytoscape({
             container: this.container,
@@ -177,7 +176,6 @@ export class NetworkView {
 
         layout.one('layoutstop', () => {
             if (!this.cy) return
-            console.debug('[NetworkView] Layout complete, attaching modules')
 
             this.adaptiveZoom.attach(this.cy, network, geneColours)
             this.modelFilter.attach(this.cy)

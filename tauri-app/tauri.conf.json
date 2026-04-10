@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "Gene Regulatory Systems",
-        "width": 1400,
-        "height": 900,
+        "width": 1920,
+        "height": 1080,
         "minWidth": 800,
         "minHeight": 600,
         "resizable": true,

@@ -21,7 +21,6 @@ import { collectPathYRanges } from "./layout/rectangleLayout"
 import { getPathTimeRanges, getSegmentBoundaryTimes } from "@/types/schedule"
 import type { StructureNode, TimelineSegment, TimeseriesData, TimeseriesMetadata } from "@/types"
 import type { PhaseSpaceResult } from "@/types/simulation"
-import type { GeneLayout, PathDisplay, TimeseriesSummary } from "@/types/displayModes"
 import { type SpeciesType } from "@/types/schedule"
 import { useScheduleStore } from "@/stores/scheduleStore"
 
@@ -295,7 +294,6 @@ export class MainChart {
     setSimulationData(timeseries: TimeseriesData): void {
         const scheduleStore = useScheduleStore()
         const timeseriesPanels = this.getTimeseriesPanels()
-        console.debug(`[MainChart] setSimulationData: ${Object.keys(timeseries).length} species, ${timeseriesPanels.length} panels`)
 
         timeseriesPanels.forEach(({ id, panel }) => {
             const speciesIds = new Set(scheduleStore.getSpeciesForSpeciesType(id as SpeciesType))
@@ -314,48 +312,7 @@ export class MainChart {
         this.selectSyncModifier?.reapplySelection()
     }
 
-    /**
-     * Set the display mode for all counts panels and promoter panel.
-     * Gene layout: 'overlaid' (shared y) or 'stacked' (per-gene y-band).
-     * Path display: 'overlaid', 'stacked' (per-path y-band), or 'mean-se'.
-     */
-    setDisplayMode(geneLayout: GeneLayout, pathDisplay: PathDisplay): void {
-        console.debug(`[MainChart] setDisplayMode: gene=${geneLayout}, path=${pathDisplay}`)
-        for (const { panel } of this.tracks) {
-            if (panel instanceof CountsPanel) {
-                panel.setGeneLayout(geneLayout)
-                panel.setPathDisplay(pathDisplay)
-            }
-        }
-        // PromoterPanel only gets path display (already gene-stacked)
-        this.getPromoterPanel().setPathDisplay(pathDisplay)
-    }
-
-    /**
-     * Set mean+SE summary data on all counts panels and promoter panel.
-     * Used when pathDisplay is 'mean-se'.
-     */
-    setSummaryData(summary: TimeseriesSummary): void {
-        const scheduleStore = useScheduleStore()
-        console.debug(`[MainChart] setSummaryData: ${Object.keys(summary).length} species`)
-        for (const { id, panel } of this.tracks) {
-            if (panel instanceof CountsPanel) {
-                const speciesIds = new Set(scheduleStore.getSpeciesForSpeciesType(id as SpeciesType))
-                const filteredSummary = Object.fromEntries(
-                    Object.entries(summary)
-                        .filter(([species]) => speciesIds.has(species))
-                ) as TimeseriesSummary
-                panel.setMeanSEData(filteredSummary)
-                if (panel.surface.renderableSeries.asArray().length > 0) {
-                    panel.surface.zoomExtentsY()
-                }
-            }
-        }
-        this.selectSyncModifier?.reapplySelection()
-    }
-
     setScheduleData(structure: StructureNode, segments: TimelineSegment[], metadata: TimeseriesMetadata, maxTimelinePaths?: number): void {
-        console.debug(`[MainChart] setScheduleData: ${segments.length} segments, structure type: ${structure.type}`)
         const timelinePanel = this.getTimelinePanel()
         timelinePanel.setScheduleData(structure, segments, maxTimelinePaths)
         this.timeCursorModifier.bringToFront()
@@ -430,7 +387,6 @@ export class MainChart {
         this.phaseSpacePanel!.isVisible = true
         this.phaseSpacePanel!.setPhaseSpaceData(result)
         this._applyPhaseSpaceLayout(true)
-        console.debug("[MainChart] Phase space shown")
     }
 
     /** Hide the phase-space panel and revert to single-group layout. */
@@ -439,7 +395,6 @@ export class MainChart {
         this.phaseSpacePanel.isVisible = false
         this.phaseSpacePanel.clearData()
         this._applyPhaseSpaceLayout(false)
-        console.debug("[MainChart] Phase space hidden")
     }
 
     /** Update data on an already-visible phase-space panel. */

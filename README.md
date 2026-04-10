@@ -1,6 +1,5 @@
 # GeneRegulatorySystems App
 
-
 <a href="https://github.com/drostlab/GeneRegulatorySystems-App/releases/latest">
   <img src="https://img.shields.io/github/v/release/drostlab/GeneRegulatorySystems-App?label=latest%20release" alt="Latest release" />
 </a>
@@ -9,7 +8,7 @@
   <img src="tauri-app/icons/logogrs.png" width="300" alt="GRS logo" />
 </p>
 
-Graphical user interface (GUI) for [GeneRegulatorySystems.jl](https://github.com/drostlab/GeneRegulatorySystems.jl/), a tool for designing complex simulation schedules of stochastic gene regulatory networks. Full software documentation is available at <https://drostlab.github.io/GeneRegulatorySystems.jl/>.
+Graphical user interface (GUI) for [GeneRegulatorySystems.jl](https://github.com/drostlab/GeneRegulatorySystems.jl/), a tool for designing complex simulation schedules of stochastic gene regulatory networks. Software documentation is available at <https://drostlab.github.io/GeneRegulatorySystems.jl/>.
 
 ## Installation
 
@@ -30,6 +29,7 @@ For the native desktop window:
 ```sh
 ./dev.sh --tauri
 ```
+
 This requires [Rust](https://rust-lang.org/tools/install/) >= 1.77 to be installed additionally.
 
 ### Production build

@@ -8,7 +8,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { type SpeciesType } from '@/types'
-import type { GeneLayout, PathDisplay } from '@/types'
 import { getPathsForSegmentIds, getModelPathAtTime, getGeneFromSpeciesName, getActivePathsAtTime, filterSegmentsByPrefix, filterSegmentsByChannel } from '@/types/schedule'
 import { useScheduleStore } from './scheduleStore'
 import { useSimulationStore } from './simulationStore'
@@ -28,11 +27,6 @@ export const useViewerStore = defineStore('viewer', () => {
     const maxRenderedGenes = ref<number>(10)
     /** Maximum concurrently visible execution-path rows in the timeline. */
     const maxTimelinePaths = ref<number>(20)
-
-    /** Gene layout mode: overlaid (shared y) or stacked (per-gene y-band). */
-    const geneLayout = ref<GeneLayout>('overlaid')
-    /** Path display mode: overlaid, stacked (per-path y-band), or mean+SE. */
-    const pathDisplay = ref<PathDisplay>('overlaid')
 
     /** Segments filtered by both pathFilter and channelFilter. */
     const filteredSegments = computed(() => {
@@ -221,8 +215,6 @@ export const useViewerStore = defineStore('viewer', () => {
         channelFilter,
         maxRenderedGenes,
         maxTimelinePaths,
-        geneLayout,
-        pathDisplay,
         filteredSegments,
         filteredPaths,
         hoveredExecutionPath,

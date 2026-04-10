@@ -16,8 +16,6 @@ import ProgressSpinner from 'primevue/progressspinner'
 import ProgressBar from 'primevue/progressbar'
 import OverlayPanel from 'primevue/overlaypanel'
 import Checkbox from 'primevue/checkbox'
-import InputNumber from 'primevue/inputnumber'
-import SelectButton from 'primevue/selectbutton'
 import * as simulationService from '@/services/simulationService'
 import { MainChart } from '@/charts/MainChart'
 import { useTheme } from '@/composables/useTheme'
@@ -46,21 +44,8 @@ const channelSuggestions = ref<string[]>([])
 
 const chart = new MainChart()
 
-const geneLayoutOptions = [
-    { label: 'Overlaid', value: 'overlaid' },
-    { label: 'Stacked', value: 'stacked' }
-]
-const pathDisplayOptions = [
-    { label: 'Overlaid', value: 'overlaid' },
-    { label: 'Stacked', value: 'stacked' },
-    { label: 'Mean+SE', value: 'mean-se' }
-]
-
 const isScheduleLoading = computed(() => scheduleStore.isLoading)
 const isSimulationBusy = computed(() => simulationStore.isSimulationRunning || simulationStore.isLoadingResult)
-/** Mean+SE is only available for completed simulations. */
-const isMeanSeDisabled = computed(() => !simulationStore.isLoaded || simulationStore.isSimulationRunning)
-
 const isUiDisabled = computed(() => isScheduleLoading.value || isSimulationBusy.value)
 
 /** Progress percentage for the progress bar (0-100). */
@@ -229,7 +214,7 @@ watch(
     }
 )
 
-// Lazy-fetch timeseries when selected genes change (refresh handled by data watcher below)
+// Lazy-fetch timeseries when selected genes change
 watch(
     () => viewerStore.selectedGenes,
     async (genes) => {
@@ -243,6 +228,7 @@ watch(
         }
 
         await simulationStore.fetchGeneTimeseries(capped)
+        refreshSimulationData()
     },
     { deep: true }
 )
@@ -259,40 +245,16 @@ watch(
     }
 )
 
-// Apply display mode changes to chart panels
-watch(
-    () => ({ geneLayout: viewerStore.geneLayout, pathDisplay: viewerStore.pathDisplay }),
-    async ({ geneLayout, pathDisplay }) => {
-        chart.setDisplayMode(geneLayout, pathDisplay)
-        // In mean-se mode, fetch summary data; otherwise refresh normal timeseries
-        if (pathDisplay === 'mean-se' && simulationStore.isLoaded && !simulationStore.isSimulationRunning) {
-            const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
-            if (genes.length > 0) {
-                await simulationStore.fetchSummary(genes)
-                refreshSummaryData()
-            }
-        } else {
-            refreshSimulationData()
-        }
-    }
-)
-
 /** Push current simulation data to chart, filtered by selected genes/paths. */
 function refreshSimulationData(): void {
+    if (!simulationStore.isLoaded || simulationStore.isSimulationRunning) return
     const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
+    if (genes.length === 0) return
     const paths = viewerStore.selectedPaths ?? viewerStore.filteredPaths
     const pathArray = paths ? [...paths] : null
     const visibleData = simulationStore.getTimeseries(genes, pathArray)
     if (visibleData) {
         chart.setSimulationData(visibleData)
-    }
-}
-
-/** Push summary (mean+SE) data to chart panels. */
-function refreshSummaryData(): void {
-    const summary = simulationStore.summary
-    if (summary) {
-        chart.setSummaryData(summary)
     }
 }
 
@@ -620,10 +582,6 @@ function _scheduleStreamingFlush(): void {
         // where many WS messages arrive within a single animation frame).
         const hasData = Object.keys(streamingBuffer).length > 0
         if (hasData && scheduleStore.timeseriesMetadata) {
-            const bufSummary = Object.entries(streamingBuffer).map(([sp, pd]) =>
-                `${sp}: ${Object.entries(pd).map(([p, pts]) => `${p}[${pts.length}]`).join(', ')}`
-            ).join(' | ')
-            console.debug(`[TrackViewer] flush buffer ct=${lastStreamCurrentTime.toFixed(1)}: ${bufSummary}`)
             chart.appendStreamingData(streamingBuffer, lastStreamCurrentTime)
             streamingBuffer = {}
         }
@@ -852,59 +810,6 @@ defineExpose({
                                         }"
                                     />
                                     <label style="margin-left: 0.5rem">{{ option.label }}</label>
-                                </div>
-                            </div>
-                            <h4 style="margin-top: 1rem">Limits</h4>
-                            <div class="track-limit-list">
-                                <div class="track-limit-item">
-                                    <label>Max rendered genes</label>
-                                    <InputNumber
-                                        v-model="viewerStore.maxRenderedGenes"
-                                        :min="1"
-                                        :max="100"
-                                        show-buttons
-                                        :step="1"
-                                        style="width: 7rem"
-                                        size="small"
-                                    />
-                                </div>
-                                <div class="track-limit-item">
-                                    <label>Max timeline paths</label>
-                                    <InputNumber
-                                        v-model="viewerStore.maxTimelinePaths"
-                                        :min="1"
-                                        :max="200"
-                                        show-buttons
-                                        :step="5"
-                                        style="width: 7rem"
-                                        size="small"
-                                    />
-                                </div>
-                            </div>
-                            <h4 style="margin-top: 1rem">Display Mode</h4>
-                            <div class="track-display-mode">
-                                <div class="track-display-mode-item">
-                                    <label>Gene layout</label>
-                                    <SelectButton
-                                        v-model="viewerStore.geneLayout"
-                                        :options="geneLayoutOptions"
-                                        option-label="label"
-                                        option-value="value"
-                                        :allow-empty="false"
-                                        size="small"
-                                    />
-                                </div>
-                                <div class="track-display-mode-item">
-                                    <label>Path display</label>
-                                    <SelectButton
-                                        v-model="viewerStore.pathDisplay"
-                                        :options="pathDisplayOptions"
-                                        option-label="label"
-                                        option-value="value"
-                                        :allow-empty="false"
-                                        :disabled="isMeanSeDisabled && viewerStore.pathDisplay !== 'mean-se'"
-                                        size="small"
-                                    />
                                 </div>
                             </div>
                         </div>
@@ -1163,33 +1068,6 @@ defineExpose({
 .track-checkbox-item {
     display: flex;
     align-items: center;
-    font-size: 0.8rem;
-}
-
-.track-limit-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-}
-
-.track-limit-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    font-size: 0.8rem;
-}
-
-.track-display-mode {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-}
-
-.track-display-mode-item {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
     font-size: 0.8rem;
 }
 

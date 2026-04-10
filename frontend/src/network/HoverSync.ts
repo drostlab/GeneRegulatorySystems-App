@@ -48,14 +48,12 @@ export class HoverSync {
     private onMouseOver = (evt: any): void => {
         const geneId = evt.target.id() as string
         this.fromCy = true
-        console.debug(`[HoverSync] mouseover gene=${geneId}`)
         useViewerStore().setHoveredGene(geneId)
         this.fromCy = false
     }
 
     private onMouseOut = (_evt: any): void => {
         this.fromCy = true
-        console.debug('[HoverSync] mouseout gene')
         useViewerStore().setHoveredGene(null)
         this.fromCy = false
     }
@@ -70,7 +68,6 @@ export class HoverSync {
             if (node && !node.empty()) {
                 node.addClass('gene-hover')
                 this.currentHighlight = gene
-                console.debug(`[HoverSync] highlight network node=${gene}`)
             }
         }
     }

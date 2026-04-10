@@ -3,18 +3,6 @@ import { getTheme, type ThemeMode } from "@/config/theme";
 
 export const PATH_DIM_OPACITY = 0.1
 
-/** Extract the gene id (left of colon) from a `<gene>:<path>` series name. */
-export function extractGene(name: string): string | null {
-    const colonIdx = name.indexOf(':')
-    return colonIdx > 0 ? name.substring(0, colonIdx) : null
-}
-
-/** Extract the execution path (right of colon) from a `<gene>:<path>` series name. */
-export function extractPath(name: string): string | null {
-    const colonIdx = name.indexOf(':')
-    return colonIdx >= 0 ? name.substring(colonIdx + 1) : null
-}
-
 export interface BasePanelOptions {
     parentSurface: SciChartSurface
     wasmContext: TSciChart

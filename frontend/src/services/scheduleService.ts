@@ -12,7 +12,6 @@ export async function loadScheduleFromKey(key: string): Promise<Schedule> {
         `/schedules/${source}/${name}`,
         { method: 'GET' }
     )
-    console.debug(`[ScheduleService] Loaded schedule: ${key}, segments: ${schedule.data?.segments.length ?? 0}`)
     return schedule
 }
 
@@ -30,7 +29,6 @@ export async function loadScheduleFromSpec(spec: string, name: string): Promise<
             body: JSON.stringify({ schedule_name: name, schedule_spec: spec })
         }
     )
-    console.debug(`[ScheduleService] Loaded schedule from spec: ${name}, segments: ${schedule.data?.segments.length ?? 0}`)
     return schedule
 }
 
@@ -46,7 +44,6 @@ export async function uploadSchedule(spec: string, name: string): Promise<Schedu
 }
 
 export async function fetchUnionNetwork(spec: string, segments: TimelineSegment[]): Promise<UnionNetwork> {
-    console.debug(`[ScheduleService] fetchUnionNetwork: ${segments.length} segments`)
     return apiFetchJson<UnionNetwork>(
         '/schedules/union-network',
         {

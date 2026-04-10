@@ -12,7 +12,6 @@
 
 import { apiFetch, apiFetchJson } from '@/utils/api'
 import type { PhaseSpaceResult, SimulationResult, TimeseriesData } from '@/types'
-import type { TimeseriesSummary } from '@/types/displayModes'
 
 /** Normalise a result from HTTP (which may lack total_progress). */
 function normaliseResult(r: SimulationResult): SimulationResult {
@@ -30,7 +29,6 @@ export async function fetchResultsList(): Promise<SimulationResult[]> {
         return []
     }
 
-    console.debug(`[simulationService] Loaded ${data.length} simulation results`)
     return data.map(normaliseResult)
 }
 
@@ -94,23 +92,4 @@ export async function fetchTimeseriesForSpecies(
         },
     )
     return response.timeseries
-}
-
-/**
- * Fetch mean + SE summary across execution paths for specific species.
- */
-export async function fetchTimeseriesSummary(
-    resultId: string,
-    species: string[],
-    nPoints: number = 500,
-): Promise<TimeseriesSummary> {
-    const response = await apiFetchJson<{ summary: TimeseriesSummary }>(
-        `/simulations/${resultId}/timeseries/summary`,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ species, n_points: nPoints }),
-        },
-    )
-    return response.summary
 }

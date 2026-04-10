@@ -119,31 +119,23 @@ export function useSimulationStream() {
 
     function _handleMessage(raw: string): void {
         const msg: WsMessage = JSON.parse(raw)
-        console.debug(`[SimStream] Received: type=${msg.type} sim_id=${msg.simulation_id} tracking=${simulationId.value}`)
 
         // Ignore messages for other simulations
         if (simulationId.value && msg.simulation_id !== simulationId.value) {
-            console.debug(`[SimStream] Ignoring message for different simulation: ${msg.simulation_id} (tracking ${simulationId.value})`)
             return
         }
 
         switch (msg.type) {
             case 'progress':
-                console.debug(`[SimStream] Progress: time=${msg.current_time} frames=${msg.frame_count} hasCallback=${!!onProgress}`)
                 onProgress?.(msg.current_time, msg.frame_count, msg.total_progress ?? null)
                 break
-            case 'timeseries': {
-                const speciesCount = Object.keys(msg.data).length
-                console.debug(`[SimStream] Timeseries: ${speciesCount} species hasCallback=${!!onTimeseries}`)
+            case 'timeseries':
                 onTimeseries?.(msg.data)
                 break
-            }
             case 'status':
-                console.debug(`[SimStream] Status: ${msg.status} hasCallback=${!!onStatus}`, msg.error ?? '')
                 onStatus?.(msg.status, msg.error)
                 break
             case 'phasespace_ready':
-                console.debug(`[SimStream] PhaseSpaceReady: simId=${msg.simulation_id} expecting=${phaseSpaceSimId}`)
                 if (msg.simulation_id === phaseSpaceSimId) {
                     onPhaseSpaceReady?.(msg.simulation_id)
                 }
@@ -164,7 +156,6 @@ export function useSimulationStream() {
     /** Subscribe to species timeseries for the running simulation. */
     function subscribe(species: string[]): void {
         _send({ type: 'subscribe', species })
-        console.debug(`[SimStream] Subscribed to ${species.length} species`)
     }
 
     /** Pause the running simulation. */
@@ -186,7 +177,6 @@ export function useSimulationStream() {
             onStatus?: StatusCallback
         }
     ): void {
-        console.debug(`[SimStream] Tracking simulation: ${id} connected=${isConnected.value}`)
         simulationId.value = id
         onProgress = callbacks.onProgress ?? null
         onTimeseries = callbacks.onTimeseries ?? null

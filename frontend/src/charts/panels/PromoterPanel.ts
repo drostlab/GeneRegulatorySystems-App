@@ -7,8 +7,6 @@ import { getGeneFromSpeciesName } from "@/types/schedule"
 import { CHART_FONT_SIZES, AXIS_THICKNESS } from "../chartConstants"
 import { withOpacity } from "@/utils/colorUtils"
 import { setupTimeAxis } from "../timeFormat"
-import type { PathDisplay } from "@/types/displayModes"
-import { averagePromoterByGene } from "./promoterAverage"
 
 const SWEEP_DURATION_MS = 400
 
@@ -25,12 +23,6 @@ export class PromoterPanel extends TimeseriesPanel {
 
     /** Original hex colour per series key — used by highlightPath to dim fills. */
     private keyColourMap: Map<string, string> = new Map()
-
-    /** Current path display mode. */
-    private _pathDisplay: PathDisplay = 'overlaid'
-
-    /** Cached last timeseries data for re-rendering on mode switch. */
-    private _lastTimeseries: TimeseriesData | null = null
 
     constructor(options: BasePanelOptions) {
         super(options)
@@ -72,16 +64,6 @@ export class PromoterPanel extends TimeseriesPanel {
         this._precomputeBandParams()
     }
 
-    /** Switch path display mode and re-render if data is cached. */
-    setPathDisplay(mode: PathDisplay): void {
-        if (mode === this._pathDisplay) return
-        console.debug(`[PromoterPanel] setPathDisplay: ${this._pathDisplay} -> ${mode}`)
-        this._pathDisplay = mode
-        if (this._lastTimeseries) {
-            this.setData(this._lastTimeseries)
-        }
-    }
-
     /**
      * Pre-compute yCenter and bandHeight for every (gene, path) combination
      * so streaming can use correct layout without needing all data up front.
@@ -106,99 +88,17 @@ export class PromoterPanel extends TimeseriesPanel {
 
     override clearData(): void {
         this.seriesMap.clear()
-        this._lastTimeseries = null
         // Note: bandParams is NOT cleared here -- it's layout, recomputed from setMetadata/setPathYRanges
         super.clearData()
     }
 
     setData(timeseries: TimeseriesData): void {
         if (!timeseries || !this.metadata) {
-            this._lastTimeseries = null
-            this.clearData()
-            return
-        }
-        this._lastTimeseries = timeseries
-
-        if (this._pathDisplay === 'mean-se') {
-            this._setAveragedData(timeseries)
-        } else {
-            this._setPerPathData(timeseries)
-        }
-    }
-
-    /** Render averaged promoter activity: one band per gene across full y-range. */
-    private _setAveragedData(timeseries: TimeseriesData): void {
-        const dataByPath = restructureTimeseriesByPathAndGene(timeseries, this.metadata!)
-        const averaged = averagePromoterByGene(dataByPath)
-        const genes = Object.keys(averaged)
-        const genesCount = genes.length
-        if (genesCount === 0) {
             this.clearData()
             return
         }
 
-        // Use full y-axis range (0-1) divided equally among genes
-        const totalHeight = 1.0
-        const bandHeight = totalHeight / genesCount
-
-        // Build set of expected keys (gene-only, no path)
-        const incomingKeys = new Set(genes.map(g => `avg:${g}`))
-
-        // Remove stale series
-        for (const key of [...this.seriesMap.keys()]) {
-            if (!incomingKeys.has(key)) {
-                this._removeRenderableSeries(key)
-            }
-        }
-
-        // Render one band per gene
-        let created = 0
-        genes.forEach((geneId, geneIndex) => {
-            const { colour, series } = averaged[geneId]!
-            const key = `avg:${geneId}`
-            const yCenter = totalHeight - geneIndex * bandHeight - 0.5 * bandHeight
-            const { xData, yTop, yBottom } = this._buildBandArrays(series, yCenter, bandHeight)
-
-            const existing = this.seriesMap.get(key)
-            if (existing) {
-                existing.clear()
-                if (xData.length > 0) {
-                    existing.appendRange(xData, yTop, yBottom)
-                }
-            } else {
-                const xyyDataSeries = new XyyDataSeries(this.wasmContext, {
-                    isSorted: true,
-                    containsNaN: true,
-                    dataSeriesName: key
-                })
-                if (xData.length > 0) {
-                    xyyDataSeries.appendRange(xData, yTop, yBottom)
-                }
-                this.seriesMap.set(key, xyyDataSeries)
-                this.keyColourMap.set(key, colour)
-
-                const bandSeries = new FastBandRenderableSeries(this.wasmContext, {
-                    dataSeries: xyyDataSeries,
-                    stroke: colour,
-                    strokeThickness: 0.0,
-                    fillY1: colour,
-                    strokeY1: colour,
-                    drawNaNAs: ELineDrawMode.DiscontinuousLine,
-                    resamplingMode: EResamplingMode.None,
-                    animation: new SweepAnimation({ duration: SWEEP_DURATION_MS })
-                })
-                this.surface.renderableSeries.add(bandSeries)
-                created++
-            }
-        })
-        if (created > 0) {
-            console.debug(`[PromoterPanel] _setAveragedData: created ${created} series for ${genesCount} genes`)
-        }
-    }
-
-    /** Original per-path band rendering. */
-    private _setPerPathData(timeseries: TimeseriesData): void {
-        const dataByPath = restructureTimeseriesByPathAndGene(timeseries, this.metadata!)
+        const dataByPath = restructureTimeseriesByPathAndGene(timeseries, this.metadata)
 
         // Build set of keys that should exist and compute new band params
         const incomingKeys = new Set<string>()
@@ -272,9 +172,6 @@ export class PromoterPanel extends TimeseriesPanel {
                 }
             })
         }
-        if (created > 0) {
-            console.debug(`[PromoterPanel] setData: created ${created} new series, ${this.seriesMap.size} total`)
-        }
     }
 
     appendStreamingData(timeseries: TimeseriesData): void {
@@ -288,7 +185,6 @@ export class PromoterPanel extends TimeseriesPanel {
 
                 const params = this.bandParams.get(key)
                 if (!params) {
-                    console.debug(`[PromoterPanel] SKIP key=${key} (no bandParams — key not in layout)`)
                     continue
                 }
 
