@@ -67,7 +67,9 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
     seen_model_paths = Set{String}()
 
     function dryrun_collector(primitive!, x, Δt; path, into=nothing, _...)
-        label = _label(primitive!.f!.model)
+        is_instant = !isfinite(Δt) || Δt == 0.0 || Models.unwrap(primitive!.f!) isa Models.Instant
+        user_label = is_instant ? nothing : get(primitive!.bindings, :label, nothing)
+        label = user_label isa AbstractString ? user_label : _label(primitive!.f!.model)
         model_path = primitive!.path
         push!(segments, TimelineSegment(
             id = next_id[],

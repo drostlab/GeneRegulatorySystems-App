@@ -294,6 +294,24 @@ async function loadResults() {
     results.value = await simulationService.fetchResultsList()
 }
 
+/**
+ * Push already-available store data to the freshly-initialised chart.
+ * Needed because dev-mode Pinia persistence restores scheduleStore before
+ * chart.init() completes, so watchers fire against a not-yet-ready chart.
+ */
+function _hydrateFromPersistedState(): void {
+    const structure = scheduleStore.schedule.data?.structure
+    const segments = viewerStore.filteredSegments
+    const metadata = scheduleStore.timeseriesMetadata
+    if (structure && segments.length > 0 && metadata) {
+        console.debug(`[TrackViewer] Hydrating chart from persisted state: ${segments.length} segments`)
+        chart.setScheduleData(structure, segments, metadata, viewerStore.maxTimelinePaths)
+        scheduleStore.fetchUnionNetwork().catch(e => {
+            console.error('[TrackViewer] Failed to fetch union network:', e)
+        })
+    }
+}
+
 
 onMounted(async () => {
     loadResults()
@@ -384,6 +402,10 @@ onMounted(async () => {
     })
 
     window.addEventListener('keydown', handleEscapeKey)
+
+    // Hydrate chart from persisted store state (dev-mode Pinia persistence).
+    // Watchers fired before chart.init() completed, so push any available data now.
+    _hydrateFromPersistedState()
 })
 
 onBeforeUnmount(() => {
