@@ -4,7 +4,7 @@ Julia HTTP server (Oxygen.jl) for schedule management and simulation execution (
 
 ## Prerequisites
 
-- Julia 1.10+
+- Julia 1.11+
 - The `grs-package/` directory must be present at the repo root (bundled GeneRegulatorySystems.jl)
 
 ## Run

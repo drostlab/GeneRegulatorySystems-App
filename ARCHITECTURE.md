@@ -24,7 +24,7 @@ In Tauri production builds, examples are bundled as resources and seeded into `<
 
 ### Development
 
-`./dev.sh` auto-checks Node.js (>=20.19.0) and Julia (>=1.10), runs `npm install` and `Pkg.instantiate()` if needed.
+`./dev.sh` auto-checks Node.js (>=20.19.0) and Julia (>=1.11), runs `npm install` and `Pkg.instantiate()` if needed.
 
 | Command | Mode |
 | ------- | ---- |
