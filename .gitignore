@@ -1,0 +1,13 @@
+# Runtime data (user schedules, simulation results)
+backend/data/
+
+# Build artifacts
+frontend/node_modules/
+frontend/dist/
+tauri-app/target/
+
+# Julia
+backend/Manifest.toml
+
+.vscode
+.DS_Store

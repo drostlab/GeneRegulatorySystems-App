@@ -1,0 +1,49 @@
+[
+    {"{add}": {
+        "polymerases": 5e5,
+        "ribosomes": 2e6,
+        "proteasomes": 1e6,
+        "1.proteins": 100,
+        "2.proteins": 100
+    }},
+    {
+        "to": 5000.0,
+        "do": {
+            "{regulation/v1}": {
+                "genes": [
+                    {
+                        "base_rates": {
+                            "activation": 2.5,
+                            "deactivation": 10.0,
+                            "trigger": 6.6e-7,
+                            "transcription": 0.001,
+                            "processing": 0.02,
+                            "translation": 2.5e-9,
+                            "abortion": 0.01,
+                            "premrna_decay": 0.001,
+                            "mrna_decay": 0.001,
+                            "protein_decay": 3e-10
+                        },
+                        "proteolysis": [{"from": 2, "k": 0.00001}]
+                    },
+                    {
+                        "base_rates": {
+                            "activation": 2.5,
+                            "deactivation": 10.0,
+                            "trigger": 6.6e-7,
+                            "transcription": 0.001,
+                            "processing": 0.02,
+                            "translation": 2.5e-9,
+                            "abortion": 0.01,
+                            "premrna_decay": 0.001,
+                            "mrna_decay": 0.001,
+                            "protein_decay": 3e-10
+                        },
+                        "repression": [{"from": 1, "at": 5.0}]
+                    }
+                ]
+            }
+        }
+    },
+    {"{extract-proteome-simple}": {"target": 100.0}}
+]

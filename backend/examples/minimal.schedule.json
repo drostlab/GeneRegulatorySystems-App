@@ -1,0 +1,26 @@
+{
+    "to": 10000.0,
+    "step": [
+        {"{add}": {
+            "polymerases": 5e5,
+            "ribosomes": 2e6,
+            "proteasomes": 1e6
+        }},
+        {"{regulation/v1}": {"genes": [
+            {
+                "base_rates": {
+                    "activation": 2.5,
+                    "deactivation": 10.0,
+                    "trigger": 6.6e-7,
+                    "transcription": 0.001,
+                    "processing": 0.02,
+                    "translation": 2.5e-9,
+                    "abortion": 0.01,
+                    "premrna_decay": 0.001,
+                    "mrna_decay": 0.001,
+                    "protein_decay": 3e-10
+                }
+            }
+        ]}}
+    ]
+}

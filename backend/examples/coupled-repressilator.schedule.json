@@ -1,0 +1,82 @@
+{
+    "label": "2-repressilators",
+    "gene": {
+        "base_rates": {
+            "activation": 2.5,
+            "deactivation": 10.0,
+            "trigger": 6.6e-7,
+            "transcription": 0.001,
+            "processing": 0.02,
+            "translation": 2.5e-9,
+            "abortion": 0.01,
+            "premrna_decay": 0.001,
+            "mrna_decay": 0.001,
+            "protein_decay": 3e-10
+        }
+    },
+    "step": {
+        "branch": true,
+        "each": {"length": 5},
+        "step": [
+            {"{add}": {
+                "$": ["defaults", "bootstrap"],
+                "P1.proteins": 100,
+                "P2.proteins": 100,
+                "P3.proteins": 100,
+                "S1.proteins": 100,
+                "S2.proteins": 100,
+                "S3.proteins": 100
+            }},
+            {"to": 1000000.0, "step": 10000.0}
+        ],
+        "do": {"{regulation/v1}": {
+            "genes": [
+                {
+                    "$": ["defaults", "gene"],
+                    "name": "P1",
+                    "activation": [{"from": "P1", "at": 2.0}],
+                    "repression": [{"from": "P3", "at": 4.0}]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "name": "P2",
+                    "activation": [{"from": "P2", "at": 2.0}],
+                    "repression": [{"from": "P1", "at": 4.0}]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "name": "P3",
+                    "activation": [{"from": "P3", "at": 2.0}],
+                    "repression": [{"from": "P2", "at": 4.0}]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "name": "S1",
+                    "activation": [
+                        {"from": "S1", "at": 2.0},
+                        {"from": "P1", "at": 2.0}
+                    ],
+                    "repression": [{"from": "S3", "at": 4.0}]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "name": "S2",
+                    "activation": [{"from": "S2", "at": 2.0}],
+                    "repression": [
+                        {"from": "S1", "at": 4.0},
+                        {"from": "P1", "at": 4.0}
+                    ]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "name": "S3",
+                    "activation": [{"from": "S3", "at":2.0}],
+                    "repression": [
+                        {"from": "S2", "at": 4.0},
+                        {"from": "P1", "at": 4.0}
+                    ]
+                }
+            ]
+        }}
+    }
+}

@@ -1,0 +1,49 @@
+name = "GRSServer"
+uuid = "86ab0978-0466-42e7-a2ae-38e617ed6ea3"
+version = "0.1.0"
+authors = ["nifets <stefanmanol@gmail.com>"]
+
+[deps]
+Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
+Catalyst = "479239e8-5488-4da2-87a7-35f2df7eef83"
+Colors = "5ae59095-9a9b-59fe-a467-6f913c188581"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+GeneRegulatorySystems = "321a2579-640d-4198-9790-c715c19becf3"
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+LoggingExtras = "e6f89c97-d47a-5376-807f-9c37f3926c36"
+ModelingToolkit = "961ee093-0014-501f-94e3-6117800e7a78"
+MultivariateStats = "6f286f6a-111f-5878-ab1e-185364afe411"
+Oxygen = "df9a0d86-3283-4920-82dc-4555fc0d1d8b"
+Setfield = "efcf1570-3423-57d1-acb7-fd33fddbac46"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
+UMAP = "c4f8c510-2410-5be4-91d7-4fbaeb39457e"
+UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+
+[compat]
+Arrow = "2.8.0"
+Catalyst = "15.0.11"
+Colors = "0.13.1"
+Dates = "1.11.0"
+GeneRegulatorySystems = "0.4.0"
+JSON = "1.3.0"
+Logging = "1.11.0"
+LoggingExtras = "1.2.0"
+ModelingToolkit = "9.84.0"
+MultivariateStats = "0.10.4"
+Oxygen = "1.10.0"
+Setfield = "1.1.2"
+Statistics = "1.11.1"
+Tables = "1.12.1"
+UMAP = "0.2.0"
+UUIDs = "1.11.0"
+julia = "1.10"
+
+[extras]
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

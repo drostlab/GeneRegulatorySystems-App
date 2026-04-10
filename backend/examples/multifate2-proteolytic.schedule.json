@@ -1,0 +1,43 @@
+{
+    "label": "multifate2-proteolytic",
+    "step": {
+        "do": {"{regulation/v1}": {
+            "genes": [
+                {
+                    "base_rates": {
+                        "$": ["defaults", "gene", "base_rates"],
+                        "activation": 0.0
+                    }
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 2, "at": 2.0}],
+                    "proteolysis": [
+                        {"from": 1, "k": 0.001},
+                        {"from": 3, "k": 0.001}
+                    ]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 3, "at": 2.0}],
+                    "proteolysis": [
+                        {"from": 1, "k": 0.001},
+                        {"from": 2, "k": 0.001}
+                    ]
+                }
+            ]
+        }},
+        "branch": true,
+        "each": {"length": 5},
+        "step": [
+            {"{add}": {
+                "$": ["defaults", "bootstrap"],
+                "1.proteins": 100,
+                "2.proteins": 100,
+                "3.proteins": 100,
+                "1.mrnas": 100
+            }},
+            {"to": 60000.0}
+        ]
+    }
+}

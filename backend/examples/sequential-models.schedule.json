@@ -1,0 +1,66 @@
+{
+    "label": "sequential-model-switch",
+    "step": [
+        {
+            "label": "phase-1-three-gene-network",
+            "do": {"{regulation/v1}": {
+                "genes": [
+                    {
+                        "$": ["defaults", "gene"],
+                        "activation": [{"from": 1, "at": 2.0}],
+                        "repression": [{"from": 3, "at": 4.0}]
+                    },
+                    {
+                        "$": ["defaults", "gene"],
+                        "activation": [{"from": 2, "at": 2.0}],
+                        "repression": [{"from": 1, "at": 4.0}]
+                    },
+                    {
+                        "$": ["defaults", "gene"],
+                        "activation": [{"from": 3, "at": 2.0}],
+                        "repression": [{"from": 2, "at": 4.0}]
+                    }
+                ]
+            }},
+            "step": [
+                {"{seed}": "${seed}-phase1"},
+                {"{add}": {
+                    "$": ["defaults", "bootstrap"],
+                    "1.proteins": 50
+                }},
+                {"to": 100000.0}
+            ]
+        },
+        {
+            "label": "phase-2-four-gene-network",
+            "do": {"{regulation/v1}": {
+                "genes": [
+                    {
+                        "$": ["defaults", "gene"],
+                        "activation": [{"from": 2, "at": 2.0}],
+                        "repression": [{"from": 1, "at": 4.0}]
+                    },
+                    {
+                        "$": ["defaults", "gene"],
+                        "activation": [{"from": 1, "at": 2.0}],
+                        "repression": [{"from": 2, "at": 4.0}]
+                    },
+                    {
+                        "$": ["defaults", "gene"],
+                        "activation": [{"from": 1, "at": 2.0}],
+                        "repression": [{"from": 2, "at": 4.0}]
+                    },
+                    {
+                        "$": ["defaults", "gene"],
+                        "activation": [{"from": 2, "at": 2.0}],
+                        "repression": [{"from": 1, "at": 4.0}]
+                    }
+                ]
+            }},
+            "step": [
+                {"{seed}": "${seed}-phase2"},
+                {"to": 100000.0}
+            ]
+        }
+    ]
+}

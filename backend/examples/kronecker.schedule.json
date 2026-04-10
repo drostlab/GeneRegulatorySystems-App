@@ -1,0 +1,48 @@
+{
+    "to": 10000.0,
+    "step": [
+        {"{add}": {"$": ["defaults", "bootstrap"]}},
+        {"{regulation/kronecker}": {
+            "seed": "kronecker-${seed}",
+            "base_rates": {"$": ["defaults", "gene", "base_rates"]},
+            "activation": {
+                "adjacency": [
+                    [
+                        [0.7, 0.6],
+                        [0.4, 0.2]
+                    ],
+                    [
+                        [0.7, 0.6],
+                        [0.4, 0.2]
+                    ],
+                    [
+                        [0.7, 0.6],
+                        [0.4, 0.2]
+                    ]
+                ],
+                "at": ["LogNormal", 2.0, 1.0]
+            },
+            "repression": {
+                "adjacency": {
+                    "initiator": [
+                        [0.7, 0.6],
+                        [0.5, 0.2]
+                    ],
+                    "power": 3
+                },
+                "at": ["LogNormal", 2.0, 1.0]
+            },
+            "proteolysis": {
+                "adjacency": {
+                    "initiator": [
+                        [0.7, 0.6],
+                        [0.5, 0.2]
+                    ],
+                    "power": 3,
+                    "expected_links_per_gene": 0.5
+                },
+                "k": ["LogNormal", -5.0, 2.0]
+            }
+        }}
+    ]
+}

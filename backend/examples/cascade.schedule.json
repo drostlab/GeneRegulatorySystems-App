@@ -1,0 +1,62 @@
+{
+    "label": "cascade",
+    "gene": {
+        "base_rates": {
+            "activation": 0.027,
+            "deactivation": 0.0023,
+            "trigger": 6.6e-8,
+            "transcription": 1.0,
+            "processing": 0.02,
+            "translation": 5e-6,
+            "abortion": 0.001,
+            "premrna_decay": 0.001,
+            "mrna_decay": 0.0011,
+            "protein_decay": 1e-6
+        }
+    },
+    "step": {
+        "step": [
+            {"{add}": {
+                "polymerases": 5e5,
+                "ribosomes": 2e6,
+                "proteasomes": 1e6,
+                "1.mrnas": 40
+            }},
+            {"to": 8000}
+        ],
+        "do": {"{regulation/v1}": {
+            "genes": [
+                {
+                    "base_rates": {
+                        "$": ["gene", "base_rates"],
+                        "deactivation": 10.0,
+                        "trigger": 6.6e-9,
+                        "translation": 5e-7,
+                        "protein_decay": 1e-7
+                    }
+                },
+                {
+                    "$": "gene",
+                    "repression": [
+                        {"from": 1, "at": 20.0},
+                        {"from": 3, "at": 9.0},
+                        {"from": 4, "at": 20.0}
+                    ]
+                },
+                {
+                    "$": "gene",
+                    "repression": [
+                        {"from": 1, "at": 2.0}
+                    ]
+                },
+                {
+                    "$": "gene",
+                    "repression": [
+                        {"from": 1, "at": 2.0},
+                        {"from": 2, "at": 20.0}
+                    ]
+                }
+            ]
+        }}
+    }
+}

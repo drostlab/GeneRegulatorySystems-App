@@ -1,0 +1,43 @@
+{
+    "label": "steady-state-variance",
+    "step": [
+        {"{add}": {
+            "$": ["defaults", "bootstrap"],
+            "1": {"proteins": 400, "mrnas": 20},
+            "2": {"proteins": 400, "mrnas": 20}
+        }},
+        {"to": 2000.0}
+    ],
+    "do": {"{regulation/v1}": {
+        "genes": [
+            {
+                "base_rates": {
+                    "activation": 27.0,
+                    "deactivation": 0.0023,
+                    "trigger": 6.6e-7,
+                    "transcription": 0.01,
+                    "processing": 0.02,
+                    "translation": 5e-7,
+                    "abortion": 0.01,
+                    "premrna_decay": 0.001,
+                    "mrna_decay": 0.01,
+                    "protein_decay": 5e-8
+                }
+            },
+            {
+                "base_rates": {
+                    "activation": 27.0,
+                    "deactivation": 0.0023,
+                    "trigger": 6.6e-9,
+                    "transcription": 1.0,
+                    "processing": 0.02,
+                    "translation": 5e-6,
+                    "abortion": 0.01,
+                    "premrna_decay": 0.001,
+                    "mrna_decay": 0.0002,
+                    "protein_decay": 5e-7
+                }
+            }
+        ]
+    }}
+}

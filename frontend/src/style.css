@@ -1,0 +1,283 @@
+:root {
+  font-family: "Montserrat", sans-serif;
+
+  /* Typography Scale */
+  --font-size-xs: 0.65rem;
+  --font-size-sm: 0.75rem;
+  --font-size-md: 0.875rem;
+  --font-size-lg: 1rem;
+  --font-size-xl: 1.25rem;
+
+  /* Spacing Scale */
+  --spacing-xs: 0.125rem;
+  --spacing-sm: 0.25rem;
+  --spacing-md: 0.5rem;
+  --spacing-lg: 0.75rem;
+  --spacing-xl: 1rem;
+  --spacing-2xl: 2rem;
+  --spacing-12xl: 12rem;
+
+  /* Border Radius */
+  --border-radius-sm: 3px;
+  --border-radius-md: 8px;
+  --border-radius-lg: 16px;
+
+  /* Theme Colors */
+  --overlay-background: var(--p-surface-0);
+
+  /* DOM tooltip */
+  --grs-tooltip-bg: #3f3f46;
+  --grs-tooltip-fg: #ffffff;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  font-family: "Montserrat", sans-serif;
+}
+
+/* ========================================================================
+   Utility Classes
+   ======================================================================== */
+
+/* Flexbox utilities */
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flex-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.flex-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gap-xs { gap: var(--spacing-xs); }
+.gap-sm { gap: var(--spacing-sm); }
+.gap-md { gap: var(--spacing-md); }
+.gap-lg { gap: var(--spacing-lg); }
+.gap-xl { gap: var(--spacing-xl); }
+
+/* ========================================================================
+   Component Patterns
+   ======================================================================== */
+
+/* Common header/panel styling */
+.card-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-xl);
+  border-bottom: 1px solid var(--p-surface-border);
+  background: var(--p-surface-card);
+  flex-shrink: 0;
+  box-shadow: var(--p-shadow-sm);
+}
+
+.card-header-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  font-size: var(--font-size-md);
+}
+
+/* ========================================================================
+   PrimeVue Component Overrides
+   ======================================================================== */
+
+/* Dropdown/Select styling */
+.dropdown-small {
+  width: 250px;
+  max-width: 250px;
+}
+
+.dropdown-small :deep(.p-select-option) {
+  font-size: var(--font-size-sm);
+}
+
+.dropdown-small :deep(.p-select-label) {
+  font-size: var(--font-size-sm);
+}
+
+/* Empty state styling for dropdowns */
+:deep(.p-select-empty-message),
+:deep(.p-multiselect-empty-message) {
+  font-size: var(--font-size-sm) !important;
+  padding: var(--spacing-md);
+}
+
+/* Constrain dropdown overlay panels */
+:deep(.p-select-overlay),
+:deep(.p-multiselect-overlay) {
+  max-width: 350px;
+}
+
+.dropdown-option {
+  font-size: var(--font-size-sm);
+}
+
+.dropdown-option-group {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+/* MultiSelect styling */
+:deep(.dropdown-small.p-multiselect) {
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+:deep(.dropdown-small.p-multiselect .p-multiselect-label) {
+  padding: 0 !important;
+}
+
+:deep(.dropdown-small.p-multiselect .p-multiselect-trigger) {
+  width: 2rem;
+  padding: var(--spacing-sm);
+}
+
+/* Button styling */
+:deep(.p-button) {
+  min-width: 2rem;
+  min-height: 2rem;
+  font-size: var(--font-size-md);
+}
+
+/* Menu/MenuItem styling */
+.p-menu {
+  font-size: var(--font-size-sm) !important;
+}
+
+.p-menuitem-text {
+  font-size: var(--font-size-sm) !important;
+}
+
+.p-menu .p-menuitem {
+  padding: 0.5rem 1rem !important;
+}
+
+/* Chip styling */
+:deep(.p-chip),
+:deep(.dropdown-small .p-chip) {
+  padding: 0.25rem 0.5rem !important;
+  font-size: var(--font-size-xs) !important;
+  margin: 0.25rem !important;
+  line-height: 1 !important;
+}
+
+/* Input styling */
+.input-small {
+  font-size: var(--font-size-sm) !important;
+}
+
+/* Shared DOM tooltip (Cytoscape hover, timeline hover, button tooltips) */
+.grs-tooltip {
+  background: var(--grs-tooltip-bg);
+  color: var(--grs-tooltip-fg);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: Montserrat, sans-serif;
+  padding: 4px 10px;
+  white-space: pre;
+}
+
+/* ========================================================================
+   Loading States
+   ======================================================================== */
+
+/** Dim overlay without spinner -- "disabled/pending" state.
+ *  Use when the component is waiting for an earlier loading stage to complete. */
+.disabled-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.08);
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/** Dim overlay with centred content -- "actively loading" state.
+ *  Nest a .loading-card inside for spinner + text. */
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(1, 1, 1, 0);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xl);
+  padding: var(--spacing-2xl);
+  border-radius: 12px;
+  background: var(--p-surface-0);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+  position: relative;
+  z-index: 1001;
+}
+
+.loading-text {
+  font-size: var(--font-size-md);
+  color: var(--p-text-color);
+  font-weight: 400;
+}
+
+/* ========================================================================
+   Chip Containers
+   ======================================================================== */
+
+.chip-container {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.chip {
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--border-radius-lg);
+  font-size: var(--font-size-xs);
+  border: 1px solid;
+  line-height: 1;
+  display: inline-block;
+  white-space: nowrap;
+}
+
+/* ========================================================================
+   Dark Mode Overrides
+   ======================================================================== */
+
+:root.app-dark {
+  --overlay-background: var(--p-surface-900);
+  --grs-tooltip-bg: #e4e4e7;
+  --grs-tooltip-fg: #09090b;
+}
+
+.app-dark .disabled-overlay {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.app-dark .loading-overlay {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.app-dark .loading-card {
+  background: var(--p-surface-900);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+}

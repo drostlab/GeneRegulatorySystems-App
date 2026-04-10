@@ -1,0 +1,41 @@
+{
+    "label": "acdc-simple",
+    "step": {
+        "do": {"{regulation/v1}": {
+            "genes": [
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 1, "at": 2.0}],
+                    "repression": [{"from": 3, "at": 4.0}]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 2, "at": 2.0}],
+                    "repression": [{"from": 1, "at": 4.0}]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 3, "at": 2.0}],
+                    "repression": [{"from": 2, "at": 4.0}, {"from": 1, "at": 4.0}]
+                }
+            ]
+        }},
+        "step": [
+            {"{seed}": "${seed}-rep"},
+            {"{add}": {
+                "$": ["defaults", "bootstrap"],
+                "1.proteins": 100
+            }},
+            {"to": 455000.0},
+            {
+                "branch": true,
+                "each": {"length": 5},
+                "as": "i",
+                "step": [
+                    {"{seed}": "${seed}-repress-${i}"},
+                    {"to": 455000.0}
+                ]
+            }
+        ]
+    }
+}

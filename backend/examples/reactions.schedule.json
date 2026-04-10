@@ -1,0 +1,43 @@
+[
+    {"{add}": {
+        "$": ["defaults", "bootstrap"],
+        "1.proteins": 100,
+        "2.proteins": 100
+    }},
+    {
+        "to": 5000.0,
+        "do": {
+            "{regulation/v1}": {
+                "genes": [
+                    {"$": ["defaults", "gene"]},
+                    {
+                        "$": ["defaults", "gene"],
+                        "repression": [{"from": 1, "at": 5.0}]
+                    }
+                ],
+                "reactions": [
+                    {
+                        "from": [1, 2],
+                        "rate": 0.00001,
+                        "to": [2]
+                    },
+                    {
+                        "from": {"2.proteins": 18},
+                        "rate": 0.0000001,
+                        "to": ["polymerases"]
+                    },
+                    {
+                        "from": ["polymerases"],
+                        "rate": 0.0000001,
+                        "to": []
+                    },
+                    {
+                        "from": [2],
+                        "rates": [0.00001, 0.00002],
+                        "to": {"3": 2, "4": 1}
+                    }
+                ]
+            }
+        }
+    }
+]

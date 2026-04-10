@@ -1,0 +1,1230 @@
+<script setup lang="ts">
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { useSimulationStore } from '@/stores/simulationStore'
+import { useScheduleStore } from '@/stores/scheduleStore'
+import { useViewerStore } from '@/stores/viewerStore'
+import type { SimulationResult } from '@/types/simulation'
+import { formatResultLabel } from '@/types/simulation'
+import { speciesTypeLabels, DEFAULT_VISIBLE_SPECIES_TYPES, SPECIES_TYPES } from '@/types/schedule'
+import type { SpeciesType } from '@/types/schedule'
+import Button from 'primevue/button'
+import Select, { type SelectChangeEvent } from 'primevue/select'
+import MultiSelect from 'primevue/multiselect'
+import InputText from 'primevue/inputtext'
+import AutoComplete, { type AutoCompleteCompleteEvent } from 'primevue/autocomplete'
+import ProgressSpinner from 'primevue/progressspinner'
+import ProgressBar from 'primevue/progressbar'
+import OverlayPanel from 'primevue/overlaypanel'
+import Checkbox from 'primevue/checkbox'
+import InputNumber from 'primevue/inputnumber'
+import SelectButton from 'primevue/selectbutton'
+import * as simulationService from '@/services/simulationService'
+import { MainChart } from '@/charts/MainChart'
+import { useTheme } from '@/composables/useTheme'
+import { buildClientPhaseSpace, recolourPhaseSpace } from '@/charts/phaseSpaceBuilder'
+import { GREEN, RED } from '@/config/theme'
+import { contrastTextColour } from '@/utils/colorUtils'
+import type { TimeseriesData } from '@/types/simulation'
+import { extractPaths, extractChannels, matchesPathPrefix } from '@/types/schedule'
+
+const simulationStore = useSimulationStore()
+const scheduleStore = useScheduleStore()
+const viewerStore = useViewerStore()
+const { isDark, onThemeChange } = useTheme()
+
+const DEFAULT_SELECTED_GENES_COUNT = 5
+
+const containerRef = ref<HTMLDivElement>()
+const results = ref<SimulationResult[]>([])
+const isFullscreen = ref<boolean>(false)
+const selectedTracks = ref<string[]>([])
+const trackSettingsPanel = ref()
+const previousGeneSelection = ref<string[] | null>(null)
+const showPhaseSpace = ref(false)
+const pathSuggestions = ref<string[]>([])
+const channelSuggestions = ref<string[]>([])
+
+const chart = new MainChart()
+
+const geneLayoutOptions = [
+    { label: 'Overlaid', value: 'overlaid' },
+    { label: 'Stacked', value: 'stacked' }
+]
+const pathDisplayOptions = [
+    { label: 'Overlaid', value: 'overlaid' },
+    { label: 'Stacked', value: 'stacked' },
+    { label: 'Mean+SE', value: 'mean-se' }
+]
+
+const isScheduleLoading = computed(() => scheduleStore.isLoading)
+const isSimulationBusy = computed(() => simulationStore.isSimulationRunning || simulationStore.isLoadingResult)
+/** Mean+SE is only available for completed simulations. */
+const isMeanSeDisabled = computed(() => !simulationStore.isLoaded || simulationStore.isSimulationRunning)
+
+const isUiDisabled = computed(() => isScheduleLoading.value || isSimulationBusy.value)
+
+/** Progress percentage for the progress bar (0-100). */
+const progressPercent = computed(() => Math.round(simulationStore.progress * 100))
+
+/** True when timeseries has never been loaded (first fetch needs a full overlay). */
+const isFirstTimeseriesFetch = computed(() =>
+    simulationStore.isFetchingTimeseries && simulationStore.fetchedGenes.size === 0
+)
+
+/** Determine which loading overlay to show with priority (only one shown at a time). */
+const activeLoadingState = computed(() => {
+    // Priority order: schedule > timeseries > result > preparing
+    if (isScheduleLoading.value) return 'schedule'
+    if (isFirstTimeseriesFetch.value) return 'timeseries'
+    if (simulationStore.isLoadingResult) return 'result'
+    if (simulationStore.isPreparingSimulation) return 'preparing'
+    return null
+})
+
+const trackOptions = computed(() => {
+    const options: Array<{ label: string; value: string }> = []
+    
+    // Only include schedule if loaded
+    if (scheduleStore.isLoaded) {
+        options.push({ label: 'Schedule Timeline', value: 'schedule' })
+    }
+    
+    // Only include species types if simulation loaded
+    if (simulationStore.isLoaded) {
+        SPECIES_TYPES.forEach(type => {
+            options.push({ label: speciesTypeLabels[type], value: type })
+        })
+    }
+    
+    return options
+})
+
+watch(
+    () => ({
+        scheduleLoaded: scheduleStore.isLoaded,
+        simulationLoaded: simulationStore.isLoaded
+    }),
+    (state, oldState) => {
+        const validTracks: string[] = []
+        
+        if (state.scheduleLoaded) {
+            validTracks.push('schedule')
+        }
+        
+        if (state.simulationLoaded) {
+            SPECIES_TYPES.forEach(type => validTracks.push(type))
+        }
+
+        // Set defaults when simulation transitions to loaded
+        const simulationJustLoaded = state.simulationLoaded && !oldState?.simulationLoaded
+        if (simulationJustLoaded) {
+            const defaults: string[] = []
+            if (state.scheduleLoaded) {
+                defaults.push('schedule')
+            }
+            defaults.push(...DEFAULT_VISIBLE_SPECIES_TYPES)
+            selectedTracks.value = defaults
+            return
+        }
+        
+        const filtered = selectedTracks.value.filter(t => validTracks.includes(t))
+        
+        if (filtered.length !== selectedTracks.value.length) {
+            selectedTracks.value = filtered
+            updateViewerStore()
+        }
+    }
+)
+
+/** Active phase-space result: client-side for 1-2 genes, server-precomputed otherwise. */
+const activePhaseSpaceResult = computed(() => {
+    const genes = viewerStore.selectedGenes
+    const timeseries = simulationStore.timeseries
+    const metadata = scheduleStore.timeseriesMetadata
+    const resultId = simulationStore.currentResult?.id
+    const pathSet = viewerStore.filteredPaths
+
+    if (genes.length >= 1 && genes.length <= 2 && timeseries && metadata && resultId) {
+        const filtered = pathSet ? filterTimeseriesByPaths(timeseries, pathSet) : timeseries
+        return buildClientPhaseSpace(filtered, genes, metadata.gene_colours, resultId)
+    }
+
+    const serverResult = simulationStore.phaseSpaceResult
+    if (serverResult && genes.length >= 1 && timeseries && metadata) {
+        const filteredResult = pathSet
+            ? { ...serverResult, points: serverResult.points.filter(p => pathSet.has(p.path)) }
+            : serverResult
+        const filtered = pathSet ? filterTimeseriesByPaths(timeseries, pathSet) : timeseries
+        return recolourPhaseSpace(filteredResult, genes, filtered, metadata.gene_colours)
+    }
+    return serverResult
+})
+
+watch(
+    () => activePhaseSpaceResult.value !== null,
+    (available) => {
+        if (available) showPhaseSpace.value = true
+    }
+)
+
+// When showPhaseSpace toggles (button or auto-set), show/hide in MainChart
+watch(showPhaseSpace, (show) => {
+    if (show && activePhaseSpaceResult.value) {
+        chart.showPhaseSpace(activePhaseSpaceResult.value)
+    } else {
+        chart.hidePhaseSpace()
+    }
+})
+
+// When active phase-space result changes, update the chart
+watch(activePhaseSpaceResult, (result) => {
+    if (result && showPhaseSpace.value) {
+        chart.setPhaseSpaceData(result)
+    }
+})
+
+// When timepoint changes, update highlighted position in phase space
+watch(
+    () => viewerStore.currentTimepoint,
+    (t) => {
+        if (activePhaseSpaceResult.value && showPhaseSpace.value) {
+            chart.setPhaseSpaceTimepoint(t)
+        }
+    }
+)
+
+watch(
+    () => ({ structure: scheduleStore.schedule.data?.structure, segments: viewerStore.filteredSegments, metadata: scheduleStore.timeseriesMetadata, maxPaths: viewerStore.maxTimelinePaths }),
+    async ({ structure, segments, metadata, maxPaths }) => {
+        if (structure && segments && segments.length > 0 && metadata) {
+            // Stale-closure guard: ignore if schedule changed mid-flight
+            const specAtStart = scheduleStore.schedule.spec
+            console.debug(`[TrackViewer] Schedule data ready: ${segments.length} segments (filter="${viewerStore.pathFilter}")`)
+            chart.setScheduleData(structure, segments, metadata, maxPaths)
+
+            // Fire network fetch without blocking (chart already rendered)
+            scheduleStore.fetchUnionNetwork().catch(e => {
+                console.error('[TrackViewer] Failed to fetch union network:', e)
+            })
+
+            // Only refresh if schedule hasn't changed during the above
+            if (scheduleStore.schedule.spec === specAtStart) {
+                refreshSimulationData()
+            }
+        }
+    }
+)
+
+watch(
+    () => scheduleStore.allGenes,
+    (allGenes) => {
+        if (allGenes && allGenes.length > 0) {
+            if (simulationStore.isLoaded) {
+                viewerStore.selectedGenes = allGenes.slice(0, DEFAULT_SELECTED_GENES_COUNT)
+            } else {
+                // No simulation: select all genes so the network looks complete
+                viewerStore.selectedGenes = [...allGenes]
+            }
+        }
+    }
+)
+
+// Lazy-fetch timeseries when selected genes change (refresh handled by data watcher below)
+watch(
+    () => viewerStore.selectedGenes,
+    async (genes) => {
+        if (!simulationStore.isLoaded || genes.length === 0) return
+        const capped = genes.slice(0, viewerStore.maxRenderedGenes)
+
+        // During streaming, only update WS subscription (HTTP fetch deferred to completion)
+        if (simulationStore.isSimulationRunning) {
+            simulationStore.updateStreamSubscription(capped)
+            return
+        }
+
+        await simulationStore.fetchGeneTimeseries(capped)
+    },
+    { deep: true }
+)
+
+// Re-fetch/refresh when max rendered genes limit changes
+watch(
+    () => viewerStore.maxRenderedGenes,
+    async (maxGenes) => {
+        if (!simulationStore.isLoaded || viewerStore.selectedGenes.length === 0) return
+        if (simulationStore.isSimulationRunning) return
+        const capped = viewerStore.selectedGenes.slice(0, maxGenes)
+        await simulationStore.fetchGeneTimeseries(capped)
+        refreshSimulationData()
+    }
+)
+
+// Apply display mode changes to chart panels
+watch(
+    () => ({ geneLayout: viewerStore.geneLayout, pathDisplay: viewerStore.pathDisplay }),
+    async ({ geneLayout, pathDisplay }) => {
+        chart.setDisplayMode(geneLayout, pathDisplay)
+        // In mean-se mode, fetch summary data; otherwise refresh normal timeseries
+        if (pathDisplay === 'mean-se' && simulationStore.isLoaded && !simulationStore.isSimulationRunning) {
+            const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
+            if (genes.length > 0) {
+                await simulationStore.fetchSummary(genes)
+                refreshSummaryData()
+            }
+        } else {
+            refreshSimulationData()
+        }
+    }
+)
+
+/** Push current simulation data to chart, filtered by selected genes/paths. */
+function refreshSimulationData(): void {
+    const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
+    const paths = viewerStore.selectedPaths ?? viewerStore.filteredPaths
+    const pathArray = paths ? [...paths] : null
+    const visibleData = simulationStore.getTimeseries(genes, pathArray)
+    if (visibleData) {
+        chart.setSimulationData(visibleData)
+    }
+}
+
+/** Push summary (mean+SE) data to chart panels. */
+function refreshSummaryData(): void {
+    const summary = simulationStore.summary
+    if (summary) {
+        chart.setSummaryData(summary)
+    }
+}
+
+/** Filter timeseries data to only include entries for paths in the given set. */
+function filterTimeseriesByPaths(ts: TimeseriesData, paths: Set<string>): TimeseriesData {
+    return Object.fromEntries(
+        Object.entries(ts).map(([species, pathData]) => [
+            species,
+            Object.fromEntries(
+                Object.entries(pathData).filter(([path]) => paths.has(path))
+            )
+        ])
+    ) as TimeseriesData
+}
+
+/** Compute autocomplete suggestions for the path filter input. */
+function searchPathSuggestions(event: AutoCompleteCompleteEvent): void {
+    const query = event.query
+    const allPaths = extractPaths(scheduleStore.segments)
+    // Show paths that the query is a prefix of (the query matches the path)
+    // plus the root "" which always matches
+    pathSuggestions.value = allPaths.filter(p => matchesPathPrefix(p, query) || p === query)
+}
+
+/** Compute autocomplete suggestions for the channel filter input. */
+function searchChannelSuggestions(event: AutoCompleteCompleteEvent): void {
+    const query = event.query.toLowerCase()
+    const allChannels = extractChannels(scheduleStore.segments)
+    channelSuggestions.value = allChannels.filter(c => c.toLowerCase().includes(query))
+}
+
+function updateViewerStore() {
+    viewerStore.selectedSpeciesTypes = selectedTracks.value.filter(t => t !== 'schedule') as SpeciesType[]
+}
+
+async function loadResults() {
+    results.value = await simulationService.fetchResultsList()
+}
+
+
+onMounted(async () => {
+    loadResults()
+    await chart.init(containerRef, isDark.value)
+    chart.setVisibleTracks(['schedule'])
+    onThemeChange((dark) => chart.applyTheme(dark))
+
+    chart.onTimepointChange((timepoint: number) => {
+        viewerStore.setTimepoint(timepoint)
+    })
+
+    chart.onSelectionChange((selectedGenes: string[]) => {
+        // Skip deselect when this fires in the same event as a segment click
+        if (skipSegmentDeselect) {
+            skipSegmentDeselect = false
+        } else if (viewerStore.selectedSegmentIds) {
+            chart.deselectSegment()
+            viewerStore.selectSegments(null)
+        }
+        if (selectedGenes.length > 0) {
+            // Save the full selection before narrowing (only on first narrowing)
+            if (!previousGeneSelection.value) {
+                previousGeneSelection.value = [...viewerStore.selectedGenes]
+            }
+            viewerStore.selectedGenes = [...selectedGenes]
+        } else if (previousGeneSelection.value) {
+            console.debug(`[TrackViewer] Restoring previous selection: [${previousGeneSelection.value}]`)
+            viewerStore.selectedGenes = previousGeneSelection.value
+            previousGeneSelection.value = null
+        }
+    })
+
+    /**
+     * Flag to prevent onSelectionChange from immediately deselecting a segment
+     * that was just selected in onSegmentClick (both fire in the same event tick).
+     */
+    let skipSegmentDeselect = false
+
+    chart.onSegmentClick(async (segmentId: number, _modelPath: string) => {
+        if (segmentId < 0) {
+            // Deselect: segmentId = -1 signals deselection from TimelinePanel
+            console.debug('[TrackViewer] Segment deselected')
+            viewerStore.selectSegments(null)
+            return
+        }
+        skipSegmentDeselect = true
+        console.debug(`[TrackViewer] Segment click: id=${segmentId}`)
+        viewerStore.selectSegments(new Set([segmentId]))
+    })
+
+    chart.onHoverChange((modelPath: string | null, executionPath: string | null) => {
+        viewerStore.setHoveredRectModel(modelPath, executionPath)
+    })
+
+    chart.onInstantHoverChange((modelPath: string | null) => {
+        viewerStore.setHoveredInstantModel(modelPath)
+    })
+
+    chart.onPhaseSpacePathSelect((path: string) => {
+        viewerStore.selectExecutionPath(path)
+    })
+
+    chart.onPhaseSpaceHover((info) => {
+        if (info) {
+            viewerStore.setTimepoint(info.t)
+            viewerStore.setHoveredRectModel(null, info.path)
+            // Move the timeseries time cursor to match
+            chart.setCursorTime(info.t)
+        } else {
+            viewerStore.setHoveredRectModel(null, null)
+        }
+    })
+
+    // Timeseries panel path hover -> store (bidirectional sync)
+    chart.onTimeseriesPathHover((path: string | null) => {
+        viewerStore.setHoveredRectModel(null, path)
+    })
+
+    // Timeseries panel gene hover -> store (bidirectional sync with network)
+    chart.onTimeseriesGeneHover((gene: string | null) => {
+        viewerStore.setHoveredGene(gene)
+    })
+
+    // Double-click on timeline rectangle -> drill into that execution path
+    chart.onDrillIn((executionPath: string) => {
+        console.debug(`[TrackViewer] Drill-in: path="${executionPath}"`)
+        viewerStore.setPathFilter(executionPath)
+    })
+
+    window.addEventListener('keydown', handleEscapeKey)
+})
+
+onBeforeUnmount(() => {
+    chart.dispose()
+    window.removeEventListener('keydown', handleEscapeKey)
+})
+
+async function loadResult(event: SelectChangeEvent) {
+    const selectedResultId = event.value
+    // Cancel running simulation if switching results while paused
+    if (simulationStore.isSimulationRunning) {
+        simulationStore.cancelSimulation()
+    }
+    simulationStore.clearResult()
+    chart.clearSimulationData()
+    showPhaseSpace.value = false
+
+    await simulationStore.loadResult(selectedResultId)
+
+    // If schedule was same spec, watchers won't fire -- explicitly fetch timeseries
+    const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
+    if (genes.length > 0 && simulationStore.isLoaded) {
+        await simulationStore.fetchGeneTimeseries(genes)
+        // Watcher skips during active fetch; explicitly refresh once fetch completes
+        refreshSimulationData()
+    }
+}
+
+async function runSimulation() {
+    chart.clearSimulationData()
+    showPhaseSpace.value = false
+    // Reset streaming buffer
+    streamingBuffer = {}
+    lastStreamCurrentTime = 0
+    if (streamingRafId !== null) {
+        cancelAnimationFrame(streamingRafId)
+        streamingRafId = null
+    }
+    // runSimulation returns immediately (async server-side), then WS streams data
+    simulationStore.runSimulation().then(() => loadResults())
+}
+
+function pauseSimulation() {
+    simulationStore.pauseSimulation()
+}
+
+function resumeSimulation() {
+    simulationStore.resumeSimulation()
+}
+
+function clearSimulation() {
+    if (simulationStore.isSimulationRunning) {
+        simulationStore.cancelSimulation()
+    }
+    chart.clearSimulationData()
+    chart.hidePhaseSpace()
+    showPhaseSpace.value = false
+    simulationStore.clearResult()
+    selectedTracks.value = scheduleStore.isLoaded ? ['schedule'] : []
+    // Reset streaming buffer
+    streamingBuffer = {}
+    lastStreamCurrentTime = 0
+    if (streamingRafId !== null) {
+        cancelAnimationFrame(streamingRafId)
+        streamingRafId = null
+    }
+}
+
+function toggleFullscreen() {
+    isFullscreen.value = !isFullscreen.value
+}
+
+function handleEscapeKey(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+        // Deselect segment selection first (also zooms back to full extent)
+        if (viewerStore.selectedSegmentIds) {
+            chart.deselectSegment()
+            viewerStore.selectSegments(null)
+            return
+        }
+        if (previousGeneSelection.value) {
+            viewerStore.selectedGenes = previousGeneSelection.value
+            previousGeneSelection.value = null
+            return
+        }
+        if (isFullscreen.value) {
+            isFullscreen.value = false
+        }
+    }
+}
+
+// Path highlight sync: when hoveredExecutionPath changes (from any source),
+// dim all panels to highlight just that path. null restores full opacity.
+watch(
+    () => viewerStore.hoveredExecutionPath,
+    (path) => chart.highlightPath(path ?? null),
+)
+
+// Gene highlight sync: when hoveredGeneId changes (from network hover),
+// dim all panels to highlight just that gene. Composes with path highlight.
+watch(
+    () => viewerStore.hoveredGeneId,
+    (gene) => chart.highlightGene(gene ?? null),
+)
+
+watch(
+    () => selectedTracks.value,
+    (newTracks) => {
+        chart.setVisibleTracks(newTracks)
+        updateViewerStore()
+    }
+)
+
+// Single watcher for all simulation data refresh triggers
+// Fires when timeseries cache, gene selection, or path selection changes
+// Skips during running simulation and during active fetch (avoids double render)
+watch(
+    () => ({ timeseries: simulationStore.timeseries, genes: viewerStore.selectedGenes, paths: viewerStore.selectedPaths, filteredPaths: viewerStore.filteredPaths }),
+    ({ timeseries }) => {
+        if (simulationStore.isSimulationRunning) return
+        if (simulationStore.isFetchingTimeseries) return
+        if (timeseries && scheduleStore.timeseriesMetadata) {
+            refreshSimulationData()
+        } else if (!timeseries) {
+            chart.clearSimulationData()
+        }
+    },
+    { deep: true }
+)
+
+// During a running simulation, push streaming data to the chart via RAF throttle.
+// Multiple WS deltas arriving between frames are merged into a single buffer
+// so the chart only renders once per animation frame.
+let streamingRafId: number | null = null
+let streamingBuffer: Record<string, Record<string, Array<[number, number]>>> = {}
+let lastStreamCurrentTime = 0
+
+/** Merge a timeseries delta into the accumulated buffer. */
+function _mergeIntoBuffer(delta: Record<string, Record<string, Array<[number, number]>>>): void {
+    for (const [species, pathData] of Object.entries(delta)) {
+        if (!streamingBuffer[species]) {
+            streamingBuffer[species] = {}
+        }
+        for (const [path, points] of Object.entries(pathData)) {
+            const existing = streamingBuffer[species]![path]
+            if (existing) {
+                existing.push(...points)
+            } else {
+                streamingBuffer[species]![path] = [...points]
+            }
+        }
+    }
+}
+
+watch(
+    () => simulationStore.currentResult,
+    (result) => {
+        if (!result || !simulationStore.isSimulationRunning) return
+
+        // Sync time cursor with simulation progress
+        if (result.current_time > 0) {
+            viewerStore.setTimepoint(result.current_time)
+        }
+    },
+    { deep: true }
+)
+
+// Watch streaming delta during simulation to push incremental data to chart.
+// Kept separate from the current-time watcher to avoid re-merging stale data
+// when ct changes (which would previously trigger this watcher with the old delta).
+watch(
+    () => simulationStore.streamingDelta,
+    (delta) => {
+        if (!delta) return
+        _mergeIntoBuffer(delta)
+        _scheduleStreamingFlush()
+    }
+)
+
+// Track simulation current time for x-axis range extension — no data merge.
+watch(
+    () => simulationStore.currentResult?.current_time,
+    (ct) => {
+        if (ct !== undefined && ct !== null) {
+            lastStreamCurrentTime = ct
+        }
+    }
+)
+
+function _scheduleStreamingFlush(): void {
+    if (streamingRafId !== null) return
+    streamingRafId = requestAnimationFrame(() => {
+        streamingRafId = null
+        // Always flush buffered data — it was received during the simulation even if
+        // status=completed arrived before this RAF fired (common with step-based schedules
+        // where many WS messages arrive within a single animation frame).
+        const hasData = Object.keys(streamingBuffer).length > 0
+        if (hasData && scheduleStore.timeseriesMetadata) {
+            const bufSummary = Object.entries(streamingBuffer).map(([sp, pd]) =>
+                `${sp}: ${Object.entries(pd).map(([p, pts]) => `${p}[${pts.length}]`).join(', ')}`
+            ).join(' | ')
+            console.debug(`[TrackViewer] flush buffer ct=${lastStreamCurrentTime.toFixed(1)}: ${bufSummary}`)
+            chart.appendStreamingData(streamingBuffer, lastStreamCurrentTime)
+            streamingBuffer = {}
+        }
+    })
+}
+
+defineExpose({
+    exportSVG: () => chart.exportImage(),
+})
+</script>
+
+
+
+<template>
+    <Teleport to="#app" :disabled="!isFullscreen">
+        <div class="simulation-viewer" :class="{ 'fullscreen-mode': isFullscreen }">
+        <div class="card-header">
+            <div class="card-header-row">
+                <div class="header-left">
+                    <div class="results-control">
+                        <Select
+                            v-if="!simulationStore.isSimulationRunning || simulationStore.isPaused"
+                            :model-value="simulationStore.currentResultId"
+                            :options="results"
+                            :disabled="isScheduleLoading"
+                            option-value="id"
+                            size="small"
+                            placeholder="Load simulation result..."
+                            @change="loadResult"
+                            class="dropdown-small"
+                            append-to="body"
+                        >
+                            <template #option="slotProps">
+                                <div class="dropdown-option">{{ formatResultLabel(slotProps.option) }}</div>
+                            </template>
+                            <template #value="slotProps">
+                                <div v-if="slotProps.value" class="dropdown-option">
+                                    {{ formatResultLabel(results.find(r => r.id === slotProps.value)!) }}
+                                </div>
+                                <span v-else class="dropdown-option">Load simulation result...</span>
+                            </template>
+                            <template #empty>
+                                <div class="dropdown-option">No available results</div>
+                            </template>
+                        </Select>
+
+                        <InputText
+                            v-if="simulationStore.isSimulationRunning && !simulationStore.isPaused"
+                            :model-value="simulationStore.currentResultLabel"
+                            disabled
+                            size="small"
+                            class="input-small"
+                        />
+                    </div>
+
+                    <Button
+                        v-if="!simulationStore.isSimulationRunning"
+                        label="Run Simulation"
+                        icon="pi pi-play-circle"
+                        :disabled="isUiDisabled"
+                        size="small"
+                        severity="success"
+                        @click="runSimulation"
+                        class="run-simulation-btn"
+                    />
+
+                    <Button
+                        v-if="simulationStore.isSimulationRunning && !simulationStore.isPaused"
+                        icon="pi pi-pause"
+                        size="small"
+                        severity="warn"
+                        @click="pauseSimulation"
+                        title="Pause simulation"
+                    />
+                    <Button
+                        v-if="simulationStore.isSimulationRunning && simulationStore.isPaused"
+                        icon="pi pi-play"
+                        size="small"
+                        severity="success"
+                        @click="resumeSimulation"
+                        title="Resume simulation"
+                    />
+
+                    <div v-if="simulationStore.isSimulationRunning" class="progress-wrapper">
+                        <ProgressBar
+                            :value="progressPercent"
+                            :show-value="true"
+                            style="height: 20px; width: 300px; font-size: 0.7rem"
+                            class="progress-bar-red"
+                        />
+                    </div>
+                </div>
+
+                <div class="header-right">
+                    <div class="filter-stack">
+                        <div class="filter-row">
+                            <AutoComplete
+                                :model-value="viewerStore.pathFilter"
+                                @update:model-value="(v: string | undefined) => viewerStore.setPathFilter(v ?? '')"
+                                :suggestions="pathSuggestions"
+                                @complete="searchPathSuggestions"
+                                :complete-on-focus="true"
+                                size="small"
+                                placeholder="Path filter..."
+                                class="filter-autocomplete"
+                                input-class="filter-input"
+                                append-to="body"
+                                empty-search-message="Type to filter paths"
+                                panel-class="filter-overlay"
+                            />
+                            <Button
+                                v-if="viewerStore.pathFilter !== ''"
+                                icon="pi pi-times"
+                                size="small"
+                                text
+                                severity="secondary"
+                                @click="viewerStore.setPathFilter('')"
+                                class="filter-clear-btn"
+                                title="Clear path filter"
+                            />
+                        </div>
+                        <div class="filter-row">
+                            <AutoComplete
+                                :model-value="viewerStore.channelFilter"
+                                @update:model-value="(v: string | undefined) => viewerStore.setChannelFilter(v ?? '')"
+                                :suggestions="channelSuggestions"
+                                @complete="searchChannelSuggestions"
+                                :complete-on-focus="true"
+                                size="small"
+                                placeholder="Channel filter..."
+                                class="filter-autocomplete"
+                                input-class="filter-input"
+                                append-to="body"
+                                empty-search-message="No channels in schedule"
+                                panel-class="filter-overlay"
+                            />
+                            <Button
+                                v-if="viewerStore.channelFilter !== ''"
+                                icon="pi pi-times"
+                                size="small"
+                                text
+                                severity="secondary"
+                                @click="viewerStore.setChannelFilter('')"
+                                class="filter-clear-btn"
+                                title="Clear channel filter"
+                            />
+                        </div>
+                    </div>
+
+                    <div v-if="simulationStore.currentResultId" class="gene-selector-wrapper">
+                        <MultiSelect
+                            v-model="viewerStore.selectedGenes"
+                            :options="scheduleStore.allGenes || []"
+                            :disabled="isScheduleLoading"
+                            size="small"
+                            placeholder="Filter genes..."
+                            :max-selected-labels="3"
+                            class="dropdown-small"
+                            style="width: 620px; font-size: 0.75rem"
+                            filter
+                            :virtual-scroller-options="{ itemSize: 44 }"
+                            :loading="simulationStore.isFetchingTimeseries"
+                        >
+                        <template #value="{ value }">
+                            <div class="chip-container">
+                                <span
+                                    v-for="geneId in value"
+                                    :key="geneId"
+                                    class="custom-gene-chip"
+                                    :style="{ backgroundColor: scheduleStore.geneColours?.[geneId], borderColor: scheduleStore.geneColours?.[geneId], color: scheduleStore.geneColours?.[geneId] ? contrastTextColour(scheduleStore.geneColours[geneId]!) : undefined }"
+                                >
+                                    {{ geneId }}
+                                    <i 
+                                        class="pi pi-times"
+                                        @click.stop="viewerStore.selectedGenes = viewerStore.selectedGenes.filter((g: string) => g !== geneId)"
+                                        style="cursor: pointer; margin-left: 0.25rem; font-size: 0.6rem"
+                                    />
+                                </span>
+                            </div>
+                        </template>
+                        <template #option="slotProps">
+                            <div style="font-size: 0.75rem; display: flex; align-items: center; gap: 0.5rem">
+                                <span
+                                    style="width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; border: 1px solid"
+                                    :style="{ backgroundColor: scheduleStore.geneColours?.[slotProps.option], borderColor: scheduleStore.geneColours?.[slotProps.option] }"
+                                />
+                                {{ slotProps.option }}
+                            </div>
+                        </template>
+                    </MultiSelect>
+                    </div>
+
+                    <Button
+                        v-if="simulationStore.currentResultId"
+                        :icon="showPhaseSpace ? 'pi pi-chart-scatter' : 'pi pi-chart-scatter'"
+                        :disabled="isScheduleLoading"
+                        size="small"
+                        text
+                        :severity="showPhaseSpace ? 'secondary' : undefined"
+                        @click="showPhaseSpace = !showPhaseSpace"
+                        title="Toggle phase space view"
+                    />
+
+                    <Button
+                        v-if="simulationStore.currentResultId"
+                        icon="pi pi-sliders-v"
+                        :disabled="isScheduleLoading"
+                        size="small"
+                        text
+                        @click="(e) => trackSettingsPanel.toggle(e)"
+                        title="Track settings"
+                    />
+                    <OverlayPanel ref="trackSettingsPanel" :show-close-button="false">
+                        <div class="track-settings">
+                            <h4>Display Tracks</h4>
+                            <div class="track-checkbox-list">
+                                <div v-for="option in trackOptions" :key="option.value" class="track-checkbox-item">
+                                    <Checkbox
+                                        :model-value="selectedTracks"
+                                        :value="option.value"
+                                        :disabled="selectedTracks.length === 1 && selectedTracks.includes(option.value)"
+                                        @update:model-value="(val) => {
+                                            if (val.length > 0) {
+                                                selectedTracks = val
+                                            }
+                                        }"
+                                    />
+                                    <label style="margin-left: 0.5rem">{{ option.label }}</label>
+                                </div>
+                            </div>
+                            <h4 style="margin-top: 1rem">Limits</h4>
+                            <div class="track-limit-list">
+                                <div class="track-limit-item">
+                                    <label>Max rendered genes</label>
+                                    <InputNumber
+                                        v-model="viewerStore.maxRenderedGenes"
+                                        :min="1"
+                                        :max="100"
+                                        show-buttons
+                                        :step="1"
+                                        style="width: 7rem"
+                                        size="small"
+                                    />
+                                </div>
+                                <div class="track-limit-item">
+                                    <label>Max timeline paths</label>
+                                    <InputNumber
+                                        v-model="viewerStore.maxTimelinePaths"
+                                        :min="1"
+                                        :max="200"
+                                        show-buttons
+                                        :step="5"
+                                        style="width: 7rem"
+                                        size="small"
+                                    />
+                                </div>
+                            </div>
+                            <h4 style="margin-top: 1rem">Display Mode</h4>
+                            <div class="track-display-mode">
+                                <div class="track-display-mode-item">
+                                    <label>Gene layout</label>
+                                    <SelectButton
+                                        v-model="viewerStore.geneLayout"
+                                        :options="geneLayoutOptions"
+                                        option-label="label"
+                                        option-value="value"
+                                        :allow-empty="false"
+                                        size="small"
+                                    />
+                                </div>
+                                <div class="track-display-mode-item">
+                                    <label>Path display</label>
+                                    <SelectButton
+                                        v-model="viewerStore.pathDisplay"
+                                        :options="pathDisplayOptions"
+                                        option-label="label"
+                                        option-value="value"
+                                        :allow-empty="false"
+                                        :disabled="isMeanSeDisabled && viewerStore.pathDisplay !== 'mean-se'"
+                                        size="small"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </OverlayPanel>
+
+                    <Button
+                        v-if="simulationStore.currentResultId"
+                        icon="pi pi-times"
+                        :disabled="isScheduleLoading"
+                        size="small"
+                        text
+                        @click="clearSimulation"
+                        title="Clear loaded simulation"
+                    />
+
+                    <Button
+                        :icon="isFullscreen ? 'pi pi-window-minimize' : 'pi pi-window-maximize'"
+                        :title="isFullscreen ? 'Exit fullscreen (ESC)' : 'Enter fullscreen'"
+                        size="small"
+                        text
+                        @click="toggleFullscreen"
+                    />
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-wrapper">
+            <div ref="containerRef" class="chart-container"></div>
+
+            <ProgressSpinner
+                v-if="simulationStore.isFetchingTimeseries && !isFirstTimeseriesFetch"
+                class="chart-fetch-spinner"
+                style="width: 24px; height: 24px"
+                stroke-width="4"
+            />
+            
+            <div 
+                v-if="!scheduleStore.isLoaded && !isScheduleLoading"
+                class="chart-overlay"
+            >
+                <div class="overlay-text">No schedule is loaded</div>
+            </div>
+        </div>
+
+        <!-- Single loading overlay - shows only the highest priority loading state -->
+        <div v-if="activeLoadingState" class="loading-overlay">
+            <div class="loading-card">
+                <ProgressSpinner style="width: 50px; height: 50px" stroke-width="3" />
+                <div class="loading-text">
+                    <span v-if="activeLoadingState === 'schedule'">Loading schedule...</span>
+                    <span v-else-if="activeLoadingState === 'timeseries'">Loading timeseries...</span>
+                    <span v-else-if="activeLoadingState === 'result'">Loading result...</span>
+                    <span v-else-if="activeLoadingState === 'preparing'">Preparing simulation...</span>
+                </div>
+            </div>
+        </div>
+        </div>
+    </Teleport>
+</template>
+
+<style>
+/* Global styles (not scoped) - for overlays appended to body */
+.p-select-overlay,
+.p-multiselect-overlay,
+.p-overlaypanel,
+.p-component-overlay,
+[data-pc-section="root"][role="dialog"],
+[data-pc-name="overlaypanel"] {
+    z-index: 10000 !important;
+}
+
+/* Fullscreen header colours: CSS vars don't resolve after teleport, use Aura palette values */
+.simulation-viewer.fullscreen-mode .card-header {
+    background: #f8fafc; /* Aura slate.50 = surface-ground light */
+}
+.app-dark .simulation-viewer.fullscreen-mode .card-header {
+    background: #09090b; /* Aura zinc.950 = surface-ground dark */
+}
+</style>
+
+<style scoped>
+/* Component-specific layout */
+.simulation-viewer {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+    background: var(--p-surface-ground);
+    overflow: hidden;
+    position: relative;
+}
+
+.card-header-row {
+    display: flex;
+    gap: var(--spacing-md);
+    align-items: center;
+    justify-content: space-between;
+}
+
+.card-header {
+    background: var(--p-surface-ground);
+    z-index: 100;
+    position: relative;
+}
+
+.header-left {
+    display: flex;
+    gap: var(--spacing-md);
+    align-items: center;
+}
+
+.progress-wrapper {
+    display: flex;
+    align-items: center;
+}
+
+.progress-bar-red :deep(.p-progressbar-value) {
+    background-color: v-bind('RED[400]');
+}
+
+.header-right {
+    display: flex;
+    gap: var(--spacing-md);
+    align-items: center;
+}
+
+.filter-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.filter-row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+}
+
+.filter-autocomplete {
+    font-size: 0.7rem;
+}
+
+:deep(.filter-autocomplete .p-autocomplete-input) {
+    width: 150px;
+    height: 1.5rem;
+    font-size: 0.7rem;
+    font-family: var(--font-family);
+    padding: 0.15rem 0.4rem;
+}
+
+.filter-clear-btn {
+    margin-left: -0.25rem;
+    width: 1.25rem;
+    height: 1.25rem;
+}
+
+.chart-wrapper {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    position: relative;
+}
+
+.chart-container {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+}
+
+.chart-fetch-spinner {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+.results-control {
+    display: flex;
+    gap: var(--spacing-md);
+    align-items: center;
+    flex: 1;
+    margin-right: var(--spacing-1xl);
+}
+
+/* Domain-specific overlay */
+.chart-overlay {
+    position: absolute;
+    inset: 0;
+    background: var(--p-overlay-ground);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+.overlay-text {
+    font-size: var(--font-size-xl);
+    color: var(--p-text-color-secondary);
+}
+
+/* Fullscreen mode */
+.simulation-viewer.fullscreen-mode {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 9999;
+    border-radius: 0;
+    background: var(--p-surface-ground);
+}
+
+
+
+/* Gene-specific chip styling (dynamic colors) */
+.chip-container {
+    display: flex;
+    min-height: 26px;
+    max-height: 26px;
+    overflow-y: auto;
+}
+
+.custom-gene-chip {
+    color: #3f3f46; /* GREY[700] */
+    padding: var(--spacing-sm) var(--spacing-sm);
+    border-radius: var(--border-radius-lg);
+    font-size: var(--font-size-xs);
+    border: 1px solid;
+}
+
+/* Smaller chips in track selector */
+:deep(.dropdown-small.p-multiselect .p-chip) {
+    padding: 0.25rem 0.5rem !important;
+    margin: 0.25rem !important;
+    font-size: 0.7rem !important;
+}
+
+/* Track settings panel styling */
+.track-settings {
+    min-width: 200px;
+}
+
+.track-settings h4 {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.875rem;
+    font-weight: normal;
+}
+
+.track-checkbox-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.track-checkbox-item {
+    display: flex;
+    align-items: center;
+    font-size: 0.8rem;
+}
+
+.track-limit-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.track-limit-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    font-size: 0.8rem;
+}
+
+.track-display-mode {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.track-display-mode-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+}
+
+:deep(.run-simulation-btn .p-button-label) {
+    font-weight: 400 !important;
+    font-family: inherit;
+}
+
+
+:deep(.run-simulation-btn) {
+    background: v-bind('GREEN[500]');
+    border-color: v-bind('GREEN[500]');
+    color: #ffffff;
+}
+:deep(.run-simulation-btn:hover) {
+    background: v-bind('GREEN[600]') !important;
+    border-color: v-bind('GREEN[600]') !important;
+}
+:deep(.run-simulation-btn:active) {
+    background: v-bind('GREEN[700]') !important;
+    border-color: v-bind('GREEN[700]') !important;
+}
+</style>
+
+<style>
+/* Global styles for filter overlay (appended to body, outside scoped CSS). */
+.filter-overlay .p-autocomplete-option {
+    font-size: 0.7rem;
+    font-family: monospace;
+    padding: 0.25rem 0.5rem;
+}
+
+.filter-overlay .p-autocomplete-empty-message {
+    font-size: 0.7rem;
+    padding: 0.25rem 0.5rem;
+    color: var(--p-text-muted-color);
+}
+</style>

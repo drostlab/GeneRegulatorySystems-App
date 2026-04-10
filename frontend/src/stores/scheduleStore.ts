@@ -1,0 +1,201 @@
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import type { Schedule } from '@/types/schedule'
+import type { UnionNetwork } from '@/types/network'
+import * as scheduleService from '@/services/scheduleService'
+import {
+    computeScheduleKey, extractAllGeneIds, getSpeciesForGene,
+    getSpeciesForType, getTimeExtent, parseScheduleKey
+} from '@/types/schedule'
+import type { SpeciesType } from '@/types/schedule'
+import type { TimeseriesMetadata } from '@/types/simulation'
+import { useViewerStore } from './viewerStore'
+import { saveFile } from '@/utils/saveFile'
+
+export const useScheduleStore = defineStore(
+    'schedule',
+    () => {
+        const scheduleKey = computed(() => computeScheduleKey(schedule.value.name, schedule.value.source))
+        const schedule = ref<Schedule>({
+            name: '',
+            source: 'user',
+            spec: '',
+            data: null,
+            validationMessages: []
+        })
+
+        const scheduleMessages = computed(() => schedule.value.validationMessages ?? [])
+        const isLoading = ref<boolean>(false)
+
+        const allGenes = computed(() => schedule.value.data ? extractAllGeneIds(schedule.value.data) : null)
+        const geneColours = computed(() => schedule.value.data?.gene_colours ?? null)
+        const segments = computed(() => schedule.value.data?.segments || [])
+        const isLoaded = computed(() => schedule.value.data !== null)
+
+        const timeseriesMetadata = computed((): TimeseriesMetadata | null => {
+            if (!schedule.value.data) return null
+            return {
+                genes: schedule.value.data.genes,
+                gene_colours: geneColours.value || {},
+                time_extent: getTimeExtent(schedule.value.data.segments)
+            }
+        })
+
+        const unionNetwork = ref<UnionNetwork | null>(null)
+        const isNetworkLoading = ref<boolean>(false)
+
+        /** All model paths available in the union network. */
+        const modelPaths = computed((): string[] => {
+            if (!unionNetwork.value) return []
+            return Object.keys(unionNetwork.value.model_exclusions)
+        })
+
+        function clearNetwork(): void {
+            unionNetwork.value = null
+            const viewerStore = useViewerStore()
+            viewerStore.selectSegments(null)
+        }
+
+        async function fetchUnionNetwork(): Promise<UnionNetwork | null> {
+            if (!schedule.value.data) return null
+            if (unionNetwork.value) return unionNetwork.value
+
+            isNetworkLoading.value = true
+            try {
+                const segs = schedule.value.data.segments
+                const result = await scheduleService.fetchUnionNetwork(schedule.value.spec, segs)
+                unionNetwork.value = result
+
+                console.debug(`[ScheduleStore] Union network loaded: ${result.nodes.length} nodes, ${result.links.length} links, ${Object.keys(result.model_exclusions).length} models`)
+                return result
+            } finally {
+                isNetworkLoading.value = false
+            }
+        }
+
+        async function loadScheduleByKey(key: string): Promise<Schedule> {
+            const { source, name } = parseScheduleKey(key)
+
+            // Set editor state immediately (name/source visible before fetch)
+            schedule.value.name = name
+            schedule.value.source = source as any
+            schedule.value.validationMessages = []
+
+            isLoading.value = true
+            try {
+                // Fetch spec text first (fast file read) so editor shows JSON early
+                const specText = await scheduleService.getScheduleSpec(key)
+                const isSameSpec = schedule.value.data !== null && schedule.value.spec === specText
+                schedule.value.spec = specText
+
+                // Skip full reload if data already loaded for same spec
+                if (isSameSpec) {
+                    console.debug(`[ScheduleStore] Same spec already loaded, skipping data reload: ${key}`)
+                    // Still fetch validation messages
+                    const res = await scheduleService.loadScheduleFromKey(key)
+                    schedule.value.validationMessages = res.validationMessages ?? []
+                    return schedule.value
+                }
+
+                // Full load (validation + data generation)
+                // Don't clear data/network yet -- keep old content visible during validation
+                const res = await scheduleService.loadScheduleFromKey(key)
+
+                // Now that we have new data, clear old state and replace
+                clearNetwork()
+                schedule.value = res
+                console.debug(`[ScheduleStore] Loaded schedule: ${key}`)
+                return schedule.value
+            } finally {
+                isLoading.value = false
+            }
+        }
+
+        async function loadScheduleBySpec(spec: string, name: string): Promise<Schedule> {
+            // Skip full reload if data already loaded for same spec
+            const isSameSpec = schedule.value.data !== null && schedule.value.spec === spec
+
+            // Set editor state immediately
+            schedule.value.name = name
+            schedule.value.source = 'snapshot'
+            schedule.value.spec = spec
+            schedule.value.validationMessages = []
+
+            if (isSameSpec) {
+                console.debug(`[ScheduleStore] Same spec already loaded, skipping data reload: ${name}`)
+                return schedule.value
+            }
+
+            isLoading.value = true
+
+            try {
+                // Don't clear data/network yet -- keep old content visible during validation
+                const res = await scheduleService.loadScheduleFromSpec(spec, name)
+
+                // Now that we have new data, clear old state and replace
+                clearNetwork()
+                schedule.value = res
+                console.debug(`[ScheduleStore] Loaded schedule from spec: ${name}`)
+                return schedule.value
+            } finally {
+                isLoading.value = false
+            }
+        }
+
+        /** Directly set a pre-loaded schedule (e.g. from upload response), avoiding a redundant server fetch. */
+        function setSchedule(loaded: Schedule): void {
+            clearNetwork()
+            schedule.value = loaded
+            console.debug(`[ScheduleStore] Set schedule directly: ${loaded.source}/${loaded.name}`)
+        }
+
+        function getSpeciesForGeneId(gene: string): string[] {
+            if (!schedule.value.data) return []
+            return getSpeciesForGene(schedule.value.data, gene)
+        }
+
+        function getSpeciesForSpeciesType(speciesType: SpeciesType): string[] {
+            if (!schedule.value.data) return []
+            return getSpeciesForType(schedule.value.data, speciesType)
+        }
+
+        function downloadSchedule(): void {
+            const spec = schedule.value.spec
+            const name = schedule.value.name || 'schedule'
+            if (!spec) return
+            const blob = new Blob([spec], { type: 'application/json' })
+            saveFile(blob, {
+                filename: `${name}.schedule.json`,
+                mimeType: 'application/json',
+                filterName: 'JSON',
+                extensions: ['json'],
+            })
+        }
+
+        return {
+            schedule,
+            scheduleKey,
+            scheduleMessages,
+            isLoading,
+            isNetworkLoading,
+            allGenes,
+            geneColours,
+            segments,
+            isLoaded,
+            timeseriesMetadata,
+            unionNetwork,
+            modelPaths,
+            loadScheduleByKey,
+            loadScheduleBySpec,
+            setSchedule,
+            fetchUnionNetwork,
+            getSpeciesForGeneId,
+            getSpeciesForSpeciesType,
+            downloadSchedule
+        }
+    },
+    {
+        persist: import.meta.env.DEV ? true : false
+    }
+)
+

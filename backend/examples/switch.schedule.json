@@ -1,0 +1,41 @@
+{
+    "anchor": "${channel}",
+    "step": {
+        "do": {"{regulation/v1}": {
+            "genes": [
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 1, "at": 2.0}],
+                    "repression": [{"from": 2, "at": 4.0}]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 2, "at": 2.0}],
+                    "repression": [{"from": 1, "at": 4.0}]
+                }
+            ]
+        }},
+        "each": {"start": 0, "step": 25, "stop": 100},
+        "as": "a",
+        "step": {
+            "each": {"start": 0, "step": 25, "stop": 100},
+            "as": "b",
+            "step": {
+                "label": "switch-${a}-${b}",
+                "branch": true,
+                "each": {"length": 3},
+                "step": {
+                    "channel": "${anchor}",
+                    "step": [
+                        {"{add}": {
+                            "$": ["defaults", "bootstrap"],
+                            "1.proteins": {"$": "a"},
+                            "2.proteins": {"$": "b"}
+                        }},
+                        {"to": 100000.0}
+                    ]
+                }
+            }
+        }
+    }
+}

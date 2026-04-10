@@ -1,0 +1,52 @@
+{
+    "label": "multifate2-dimer",
+    "step": {
+        "do": {"{regulation/v1}": {
+            "genes": [
+                {
+                    "name": "A",
+                    "base_rates": {
+                        "$": ["defaults", "gene", "base_rates"],
+                        "activation": 0.1,
+                        "protein_decay": 3.1e-9
+                    },
+                    "activation": [{"from": "AA", "at": 2.0}]
+                },
+                {
+                    "name": "B",
+                    "base_rates": {
+                        "$": ["defaults", "gene", "base_rates"],
+                        "activation": 0.1,
+                        "protein_decay": 3.1e-9
+                    },
+                    "activation": [{"from": "BB", "at": 2.0}]
+                }
+            ],
+            "reactions": [
+                {"from": ["A", "A"], "rates": [0.02, 0.02], "to": ["AA"]},
+                {"from": ["A", "B"], "rates": [0.02, 0.04], "to": ["AB"]},
+                {"from": ["B", "B"], "rates": [0.02, 0.02], "to": ["BB"]}
+            ]
+        }},
+        "each": {"start": 50, "step": 25, "stop": 300},
+        "as": "x",
+        "step": {
+            "each": {"start": 50, "step": 25, "stop": 300},
+            "as": "y",
+            "step": {
+                "each": {"length": 20},
+                "branch": true,
+                "step": [
+                    {"{add}": {
+                        "$": ["defaults", "bootstrap"],
+                        "A.proteins": {"$": "x"},
+                        "B.proteins": {"$": "y"},
+                        "A.mrnas": 30,
+                        "B.mrnas": 30
+                    }},
+                    {"to": 100000.0, "step": 1000.0}
+                ]
+            }
+        }
+    }
+}

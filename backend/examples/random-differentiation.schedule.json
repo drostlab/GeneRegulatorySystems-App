@@ -1,0 +1,75 @@
+{
+    "typical_base_rates": {
+        "activation": 2.5,
+        "deactivation": 10.0,
+        "trigger": 6.6e-7,
+        "transcription": 0.015,
+        "processing": 0.02,
+        "translation": 2.5e-9,
+        "abortion": 0.01,
+        "premrna_decay": 0.001,
+        "mrna_decay": 0.0075,
+        "protein_decay": 2e-10
+    },
+    "step": {
+        "step": [
+            {"{add}": {"polymerases": 5e5, "ribosomes": 2e6, "proteasomes": 1e6}},
+            {"{bootstrap/differentiation}": {"$": "do"}},
+            {"to": 100000.0, "step": 100.0}
+        ],
+        "do": {"{regulation/random-differentiation}": {
+            "seed": "differentiation-${seed}",
+            "differentiation": {
+                "ratios": ["Dirichlet", 6, 5.0],
+                "differentiator_base_rates": {"$": "typical_base_rates"},
+                "timer_base_rates": {
+                    "$": "typical_base_rates",
+                    "activation": 0.1,
+                    "deactivation": 0.1,
+                    "transcription": 2.5e7,
+                    "translation": 1e-9,
+                    "mrna_decay": 0.01,
+                    "protein_decay": 1.0
+                },
+                "duration": ["LogNormal", 10.0, 1.0],
+                "trigger_deposit": 500,
+                "timer_deposit": {"mrnas": 5, "proteins": 30},
+                "buffer": [0.002, 0.008],
+                "buffer_deposit": 500
+            },
+            "peripheral": {
+                "base_rates": {"$": "typical_base_rates"},
+                "activation": {
+                    "adjacency": {
+                        "initiator": [
+                            [0.8, 0.6],
+                            [0.4, 0.2]
+                        ],
+                        "power": 4,
+                        "expected_links_per_gene": 0.3
+                    },
+                    "at": ["LogNormal", 2.0, 1.0]
+                },
+                "repression": {
+                    "adjacency": {
+                        "initiator": [
+                            [0.6, 0.5],
+                            [0.4, 0.2]
+                        ],
+                        "power": 4,
+                        "expected_links_per_gene": 0.4
+                    },
+                    "at": ["LogNormal", 2.0, 1.0]
+                }
+            },
+            "activation": {
+                "count": ["DiscreteNonParametric", [0, 1, 2], [0.5, 0.4, 0.1]],
+                "at": ["LogNormal", 2.0, 1.0]
+            },
+            "repression": {
+                "count": ["DiscreteNonParametric", [0, 1, 2], [0.6, 0.3, 0.1]],
+                "at": ["LogNormal", 2.0, 1.0]
+            }
+        }}
+    }
+}

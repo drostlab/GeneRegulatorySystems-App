@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en" class="app">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=block" rel="stylesheet">
+    <title>Gene Regulatory Systems</title>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Static loading screen — replaced when Vue mounts -->
+      <div id="startup-screen" style="
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        width: 100vw;
+        background: #09090b;
+        color: #a1a1aa;
+        font-family: 'Montserrat', sans-serif;
+        gap: 1.25rem;
+      ">
+        <div style="font-size: 1.25rem; font-weight: 600; color: #fafafa; letter-spacing: 0.02em;">
+          Gene Regulatory Systems
+        </div>
+        <div id="startup-spinner" style="
+          width: 28px; height: 28px;
+          border: 3px solid #27272a;
+          border-top-color: #a1a1aa;
+          border-radius: 50%;
+          animation: grs-spin 0.8s linear infinite;
+        "></div>
+        <div id="startup-message" style="font-size: 0.8rem; color: #71717a;">
+          Starting up...
+        </div>
+
+        <!-- Julia choice prompt (hidden by default) -->
+        <div id="julia-choice" style="display: none; text-align: center; max-width: 420px;">
+          <div id="julia-choice-text" style="font-size: 0.8rem; color: #a1a1aa; margin-bottom: 0.75rem;"></div>
+          <div id="julia-choice-buttons" style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
+            <!-- Buttons injected by tauri.ts -->
+          </div>
+        </div>
+
+        <!-- Collapsible terminal output -->
+        <div id="startup-terminal-wrapper" style="width: 90%; max-width: 700px; margin-top: 0.5rem;">
+          <button id="startup-terminal-toggle" style="
+            background: none; border: none; color: #52525b; cursor: pointer;
+            font-family: 'Montserrat', sans-serif; font-size: 0.7rem;
+            padding: 0.25rem 0; display: none;
+          ">Show details</button>
+          <pre id="startup-terminal" style="
+            display: none;
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 6px;
+            padding: 0.75rem;
+            font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+            font-size: 0.65rem;
+            line-height: 1.5;
+            color: #a1a1aa;
+            max-height: 220px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin: 0.25rem 0 0 0;
+          "></pre>
+        </div>
+      </div>
+      <style>
+        @keyframes grs-spin {
+          to { transform: rotate(360deg); }
+        }
+        #julia-choice-buttons button {
+          background: #27272a;
+          border: 1px solid #3f3f46;
+          color: #fafafa;
+          font-family: 'Montserrat', sans-serif;
+          font-size: 0.75rem;
+          font-weight: 500;
+          padding: 0.5rem 1.25rem;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        #julia-choice-buttons button:hover {
+          background: #3f3f46;
+        }
+        #julia-choice-buttons button.primary {
+          background: #2563eb;
+          border-color: #3b82f6;
+        }
+        #julia-choice-buttons button.primary:hover {
+          background: #1d4ed8;
+        }
+      </style>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

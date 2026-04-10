@@ -1,0 +1,48 @@
+{
+    "label": "repressilator-entrained",
+    "repressilator": {
+        "genes": [
+            {
+                "$": ["defaults", "gene"],
+                "activation": [{"from": 1, "at": 2.0}],
+                "repression": [{"from": 3, "at": 4.0}]
+            },
+            {
+                "$": ["defaults", "gene"],
+                "activation": [{"from": 2, "at": 2.0}],
+                "repression": [{"from": 1, "at": 4.0}]
+            },
+            {
+                "$": ["defaults", "gene"],
+                "activation": [{"from": 3, "at": 2.0}],
+                "repression": [{"from": 2, "at": 4.0}]
+            }
+        ]
+    },
+    "step": {
+        "dark_model": {"{regulation/v1}": {"$": "repressilator"}},
+        "light_model": {"{regulation/v1}": {
+            "$": "repressilator",
+            "reactions": [{"from": [2], "rate": 0.001, "to": []}]
+        }},
+        "step": [
+            {"{seed}": "${seed}-rep"},
+            {"{add}": {
+                "$": ["defaults", "bootstrap"],
+                "1.proteins": 100
+            }},
+            {"to": 455000.0, "step": [
+                {"to": 60000.0, "do": {"$": "dark_model"}},
+                {"to": 5000.0, "do": {"$": "light_model"}}
+            ]},
+            {
+                "branch": true,
+                "each": {"length": 5},
+                "step": {"to": 455000.0, "step": [
+                    {"to": 60000.0, "do": {"$": "dark_model"}},
+                    {"to": 5000.0, "do": {"$": "light_model"}}
+                ]}
+            }
+        ]
+    }
+}

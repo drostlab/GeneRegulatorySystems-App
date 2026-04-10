@@ -1,0 +1,53 @@
+{
+    "label": "multifate3-proteolytic",
+    "step": {
+        "do": {"{regulation/v1}": {
+            "genes": [
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 1, "at": 2.0}],
+                    "proteolysis": [
+                        {"from": 2, "k": 0.001},
+                        {"from": 3, "k": 0.001}
+                    ]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 2, "at": 2.0}],
+                    "proteolysis": [
+                        {"from": 1, "k": 0.001},
+                        {"from": 3, "k": 0.001}
+                    ]
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "activation": [{"from": 3, "at": 2.0}],
+                    "proteolysis": [
+                        {"from": 1, "k": 0.001}, 
+                        {"from": 2, "k": 0.001}
+                    ]
+                }
+            ]
+        }},
+        "each": [150.0, 200.0, 250.0, 300.0],
+        "as": "n",
+        "step": {
+            "each": [150.0, 200.0, 250.0, 300.0],
+            "as": "m",
+            "step": {
+                "branch": true,
+                "each": [150.0, 200.0, 250.0, 300.0],
+                "as": "p",
+                "step": [
+                    {"{add}": {
+                        "$": ["defaults", "bootstrap"],
+                        "1.proteins": {"$": "n"},
+                        "2.proteins": {"$": "m"},
+                        "3.proteins": {"$": "p"}
+                    }},
+                    {"to": 10000.0}
+                ]
+            }
+        }
+    }
+}

@@ -1,0 +1,45 @@
+{
+    "into": "${channel}",
+    "each": {"start": 5, "stop": 7},
+    "as": "k",
+    "step": [
+        {"{add}": {"$": ["defaults", "bootstrap"]}},
+        {
+            "branch": true,
+            "each": {"length": 3},
+            "as": "realization",
+            "step": {
+                "label": "SKG-k${k}-realization-${realization}",
+                "into": "${into}-k${k}-${realization}",
+                "to": 50000.0,
+                "step": 10.0,
+                "do": {"{regulation/kronecker}": {
+                    "seed": "kronecker-${seed}-${k}-${realization}",
+                    "base_rates": {"$": ["defaults", "gene", "base_rates"]},
+                    "activation": {
+                        "adjacency": {
+                            "initiator": [
+                                [0.8, 0.6],
+                                [0.4, 0.2]
+                            ],
+                            "power": {"$": "k"},
+                            "expected_links_per_gene": 0.8
+                        },
+                        "at": ["LogNormal", 2.0, 1.0]
+                    },
+                    "repression": {
+                        "adjacency": {
+                            "initiator": [
+                                [0.6, 0.5],
+                                [0.4, 0.2]
+                            ],
+                            "power": {"$": "k"},
+                            "expected_links_per_gene": 0.7
+                        },
+                        "at": ["LogNormal", 2.0, 1.0]
+                    }
+                }}
+            }
+        }
+    ]
+}
