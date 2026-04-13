@@ -7,16 +7,14 @@ on:
     branches: [main]
 
 jobs:
-  ci:
+  backend-smoke-test:
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: macos-latest
             julia_arch: aarch64
-          - runner: macos-13
-            julia_arch: x86_64
-          - runner: ubuntu-22.04
+          - runner: ubuntu-latest
             julia_arch: x64
           - runner: windows-latest
             julia_arch: x64

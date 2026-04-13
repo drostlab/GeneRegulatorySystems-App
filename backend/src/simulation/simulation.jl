@@ -123,12 +123,12 @@ end
 """
     generate_simulation_id()
 
-Generate a unique simulation ID using ISO 8601 timestamp format.
+Generate a unique simulation ID using a filesystem-safe timestamp.
 
-Format: YYYY-MM-DDTHH:MM:SS.sss (e.g., 2025-11-24T23:00:33.954)
+Format: YYYY-MM-DD_HH-MM-SS (e.g., 2025-11-24_23-00-33)
 """
 function generate_simulation_id()
-    Dates.format(now(), "yyyy-mm-ddTHH:MM:SS.sss")
+    Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
 end
 
 """
@@ -187,7 +187,7 @@ function prepare_result(schedule_name::String, schedule_spec::String; max_time::
     end
 
     created_at = try
-        Dates.DateTime(result_id, "yyyy-mm-ddTHH:MM:SS.sss")
+        Dates.DateTime(result_id, "yyyy-mm-dd_HH-MM-SS")
     catch
         now()
     end
@@ -358,7 +358,7 @@ function load_result(simulation_id::String)::Union{SimulationResult, Nothing}
     metadata = JSON.parsefile(metadata_file)
 
     created_at = try
-        Dates.DateTime(metadata["id"], "yyyy-mm-ddTHH:MM:SS.sss")
+        Dates.DateTime(metadata["id"], "yyyy-mm-dd_HH-MM-SS")
     catch
         now()
     end
