@@ -10,7 +10,7 @@ const SWEEP_DURATION_MS = 400
 
 
 export class CountsPanel extends TimeseriesPanel {
-    /** Persistent data series map for streaming: `geneId:path` -> XyDataSeries */
+    /** Persistent data series map for streaming: `label:path` -> XyDataSeries */
     private seriesMap: Map<string, XyDataSeries> = new Map()
 
     constructor(options: BasePanelOptions, title: string) {
@@ -65,8 +65,8 @@ export class CountsPanel extends TimeseriesPanel {
         const incomingKeys = new Set<string>()
         for (const [species, pathData] of Object.entries(timeseries)) {
             for (const path of Object.keys(pathData)) {
-                const geneId = getGeneFromSpeciesName(species) ?? ""
-                incomingKeys.add(`${geneId}:${path}`)
+                const label = getGeneFromSpeciesName(species) ?? species
+                incomingKeys.add(`${label}:${path}`)
             }
         }
 
@@ -81,8 +81,8 @@ export class CountsPanel extends TimeseriesPanel {
         let created = 0
         for (const [species, pathData] of Object.entries(timeseries)) {
             for (const [path, series] of Object.entries(pathData)) {
-                const geneId = getGeneFromSpeciesName(species) ?? ""
-                const key = `${geneId}:${path}`
+                const label = getGeneFromSpeciesName(species) ?? species
+                const key = `${label}:${path}`
                 const time = series.map(pair => pair[0])
                 // -1 is the gap marker inserted between non-contiguous episodes
                 const counts = series.map(pair => pair[1] === -1 ? NaN : pair[1])
@@ -94,7 +94,7 @@ export class CountsPanel extends TimeseriesPanel {
                     existing.appendRange(time, counts)
                 } else {
                     // New series: create with sweep animation
-                    const colour = this.metadata.gene_colours[geneId] ?? this.theme.chart.fallbackSeries
+                    const colour = this.metadata.gene_colours[label] ?? this.theme.chart.fallbackSeries
                     const xySeries = new XyDataSeries(this.wasmContext, {
                         isSorted: true,
                         containsNaN: true,
@@ -124,12 +124,12 @@ export class CountsPanel extends TimeseriesPanel {
         this.surface.suspendUpdates()
         for (const [species, pathData] of Object.entries(timeseries)) {
             for (const [path, points] of Object.entries(pathData)) {
-                const geneId = getGeneFromSpeciesName(species) ?? ""
-                const key = `${geneId}:${path}`
+                const label = getGeneFromSpeciesName(species) ?? species
+                const key = `${label}:${path}`
 
                 let xySeries = this.seriesMap.get(key)
                 if (!xySeries) {
-                    xySeries = this._createStreamingSeries(key, geneId)
+                    xySeries = this._createStreamingSeries(key, label)
                 }
 
                 const time: number[] = []
@@ -146,8 +146,8 @@ export class CountsPanel extends TimeseriesPanel {
     }
 
     /** Create a new XyDataSeries + FastLineRenderableSeries for a streaming key. */
-    private _createStreamingSeries(key: string, geneId: string): XyDataSeries {
-        const colour = this.metadata!.gene_colours[geneId] ?? this.theme.chart.fallbackSeries
+    private _createStreamingSeries(key: string, label: string): XyDataSeries {
+        const colour = this.metadata!.gene_colours[label] ?? this.theme.chart.fallbackSeries
         const xySeries = new XyDataSeries(this.wasmContext, {
             isSorted: true,
             containsNaN: true,

@@ -1,5 +1,8 @@
-export const SPECIES_TYPES = ['active', 'elongations', 'premrnas', 'mrnas', 'proteins'] as const
+export const SPECIES_TYPES = ['active', 'elongations', 'premrnas', 'mrnas', 'proteins', 'other'] as const
 export type SpeciesType = typeof SPECIES_TYPES[number]
+
+/** Canonical gene-derived species types (excludable from "other" detection). */
+export const GENE_SPECIES_TYPES = ['active', 'elongations', 'premrnas', 'mrnas', 'proteins'] as const
 
 export const DEFAULT_VISIBLE_SPECIES_TYPES: SpeciesType[] = ['active', 'mrnas', 'proteins']
 
@@ -8,7 +11,8 @@ export const speciesTypeLabels: Record<SpeciesType, string> = {
     'elongations': 'Elongation counts',
     'premrnas': 'Pre-mRNA counts',
     'mrnas': 'mRNA counts',
-    'proteins': 'Protein counts'
+    'proteins': 'Protein counts',
+    'other': 'Other species'
 }
 
 export interface TimelineSegment {
@@ -60,7 +64,7 @@ export type Schedule = ReifiedSchedule
  * Returns null if the species suffix is not a known SPECIES_TYPE.
  */
 export function getGeneFromSpeciesName(species: string): string | null {
-    for (const t of SPECIES_TYPES) {
+    for (const t of GENE_SPECIES_TYPES) {
         if (species.endsWith(`.${t}`)) {
             return species.slice(0, -(t.length + 1))
         }
@@ -73,7 +77,7 @@ export function extractAllGeneIds(data: ScheduleData): string[] {
 }
 
 export function getSpeciesForGene(_data: ScheduleData, gene: string): string[] {
-    return SPECIES_TYPES.map(t => `${gene}.${t}`)
+    return GENE_SPECIES_TYPES.map(t => `${gene}.${t}`)
 }
 
 export function getSpeciesForType(data: ScheduleData, speciesType: SpeciesType): string[] {

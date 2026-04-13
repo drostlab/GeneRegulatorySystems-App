@@ -41,6 +41,9 @@ export const useSimulationStore = defineStore(
         /** Set of genes already fetched (avoids duplicate HTTP requests). */
         const fetchedGenes = ref<Set<string>>(new Set())
 
+        /** Set of other species already fetched (avoids duplicate HTTP requests). */
+        const fetchedOtherSpecies = ref<Set<string>>(new Set())
+
         /** Currently in-flight gene fetch (prevents concurrent fetches). */
         const isFetchingTimeseries = ref(false)
 
@@ -111,16 +114,39 @@ export const useSimulationStore = defineStore(
             }
         }
 
+        /** Fetch timeseries for non-gene species (e.g. dimer products) by direct name. */
+        async function fetchOtherSpeciesTimeseries(speciesNames: string[]): Promise<void> {
+            const resultId = currentResultId.value
+            if (!resultId) return
+
+            const newSpecies = speciesNames.filter(s => !fetchedOtherSpecies.value.has(s))
+            if (newSpecies.length === 0) return
+
+            newSpecies.forEach(s => fetchedOtherSpecies.value.add(s))
+
+            isFetchingTimeseries.value = true
+            try {
+                const data = await simulationService.fetchTimeseriesForSpecies(resultId, newSpecies)
+                _mergeTimeseries(data)
+            } catch (e) {
+                newSpecies.forEach(s => fetchedOtherSpecies.value.delete(s))
+                throw e
+            } finally {
+                isFetchingTimeseries.value = false
+            }
+        }
+
         /**
-         * Get timeseries filtered by genes and paths.
-         * Returns data from cache only -- call fetchGeneTimeseries first.
+         * Get timeseries filtered by genes (+ optional other species) and paths.
+         * Returns data from cache only -- call fetchGeneTimeseries / fetchOtherSpeciesTimeseries first.
          */
-        function getTimeseries(genes?: string[] | null, paths?: string[] | null) {
+        function getTimeseries(genes?: string[] | null, paths?: string[] | null, otherSpecies?: string[] | null) {
             if (!timeseries.value) return null
 
             const scheduleStore = useScheduleStore()
 
-            if (genes !== null && genes !== undefined && genes.length === 0) return {}
+            if (genes !== null && genes !== undefined && genes.length === 0
+                && (otherSpecies === null || otherSpecies === undefined || otherSpecies.length === 0)) return {}
             if (paths !== null && paths !== undefined && paths.length === 0) return {}
 
             const speciesIds = new Set(
@@ -128,6 +154,11 @@ export const useSimulationStore = defineStore(
                     ? Object.keys(timeseries.value)
                     : genes.flatMap(gene => scheduleStore.getSpeciesForGeneId(gene))
             )
+
+            // Include other species (direct names) in the filter set
+            if (otherSpecies) {
+                for (const s of otherSpecies) speciesIds.add(s)
+            }
 
             const pathSet = paths === null || paths === undefined
                 ? null
@@ -199,6 +230,10 @@ export const useSimulationStore = defineStore(
                     if (genes.length > 0) {
                         fetchGeneTimeseries(genes.slice(0, DEFAULT_STREAM_GENE_COUNT))
                     }
+                    const otherSpecies = scheduleStore.allOtherSpecies
+                    if (otherSpecies.length > 0) {
+                        fetchOtherSpeciesTimeseries(otherSpecies)
+                    }
                 }
             }
             if (status === 'paused') {
@@ -217,11 +252,14 @@ export const useSimulationStore = defineStore(
             console.debug(`[SimulationStore] Phase space loaded: ${data?.n_cells ?? 0} cells, method=${data?.method ?? 'n/a'}`)
         }
 
-        /** Update the set of species streamed via WS based on selected genes. */
-        function updateStreamSubscription(genes: string[]): void {
+        /** Update the set of species streamed via WS based on selected genes + other species. */
+        function updateStreamSubscription(genes: string[], otherSpecies: string[] = []): void {
             if (!isSimulationRunning.value) return
             const scheduleStore = useScheduleStore()
-            const species = genes.flatMap(gene => scheduleStore.getSpeciesForGeneId(gene))
+            const species = [
+                ...genes.flatMap(gene => scheduleStore.getSpeciesForGeneId(gene)),
+                ...otherSpecies,
+            ]
             getSimulationStream().subscribe(species)
         }
 
@@ -280,7 +318,11 @@ export const useSimulationStore = defineStore(
             // with the first episode — avoids the late-subscribe race.
             const allGenes = scheduleStore.allGenes ?? []
             const initialGenes = allGenes.slice(0, DEFAULT_STREAM_GENE_COUNT)
-            const initialSpecies = initialGenes.flatMap(g => scheduleStore.getSpeciesForGeneId(g))
+            const initialOtherSpecies = scheduleStore.allOtherSpecies
+            const initialSpecies = [
+                ...initialGenes.flatMap(g => scheduleStore.getSpeciesForGeneId(g)),
+                ...initialOtherSpecies,
+            ]
 
             const result = await simulationService.runSimulation(
                 scheduleStore.schedule.name,
@@ -344,6 +386,7 @@ export const useSimulationStore = defineStore(
         function clearTimeseriesCache(): void {
             timeseriesCache.value = {}
             fetchedGenes.value = new Set()
+            fetchedOtherSpecies.value = new Set()
             streamingDelta.value = null
         }
 
@@ -400,6 +443,7 @@ export const useSimulationStore = defineStore(
             fetchedGenes,
             getTimeseries,
             fetchGeneTimeseries,
+            fetchOtherSpeciesTimeseries,
             runSimulation,
             loadResult,
             pauseSimulation,

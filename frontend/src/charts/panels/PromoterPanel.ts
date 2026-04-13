@@ -15,7 +15,7 @@ export type PathYRanges = Map<string, { yMin: number; yMax: number }>
 export class PromoterPanel extends TimeseriesPanel {
     private pathYRanges: PathYRanges = new Map()
 
-    /** Persistent data series map for streaming: `geneId:path` -> XyyDataSeries */
+    /** Persistent data series map for streaming: `label:path` -> XyyDataSeries */
     private seriesMap: Map<string, XyyDataSeries> = new Map()
 
     /** Cached band layout params per series key: { yCenter, bandHeight } */
@@ -180,8 +180,8 @@ export class PromoterPanel extends TimeseriesPanel {
         this.surface.suspendUpdates()
         for (const [species, pathData] of Object.entries(timeseries)) {
             for (const [path, points] of Object.entries(pathData)) {
-                const geneId = getGeneFromSpeciesName(species) ?? ""
-                const key = `${geneId}:${path}`
+                const label = getGeneFromSpeciesName(species) ?? species
+                const key = `${label}:${path}`
 
                 const params = this.bandParams.get(key)
                 if (!params) {
@@ -191,7 +191,7 @@ export class PromoterPanel extends TimeseriesPanel {
                 const isNew = !this.seriesMap.has(key)
                 let xyyData = this.seriesMap.get(key)
                 if (!xyyData) {
-                    xyyData = this._createStreamingSeries(key, geneId)
+                    xyyData = this._createStreamingSeries(key, label)
                 }
 
                 const { yCenter, bandHeight } = params
@@ -271,8 +271,8 @@ export class PromoterPanel extends TimeseriesPanel {
     }
 
     /** Create a new XyyDataSeries + FastBandRenderableSeries for streaming. */
-    private _createStreamingSeries(key: string, geneId: string): XyyDataSeries {
-        const colour = this.metadata!.gene_colours[geneId] ?? this.theme.chart.fallbackSeries
+    private _createStreamingSeries(key: string, label: string): XyyDataSeries {
+        const colour = this.metadata!.gene_colours[label] ?? this.theme.chart.fallbackSeries
         this.keyColourMap.set(key, colour)
         const xyyData = new XyyDataSeries(this.wasmContext, {
             isSorted: true,

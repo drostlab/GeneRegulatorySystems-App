@@ -94,7 +94,8 @@ export class MainChart {
             { id: 'elongations', panel: new CountsPanel(options, "Elongations") },
             { id: 'premrnas', panel: new CountsPanel(options, "Pre-mRNAs") },
             { id: 'mrnas', panel: new CountsPanel(options, "mRNAs") },
-            { id: 'proteins', panel: new CountsPanel(options, "Proteins") }
+            { id: 'proteins', panel: new CountsPanel(options, "Proteins") },
+            { id: 'other', panel: new CountsPanel(options, "Other species") }
         ]
 
         // -- Set up panel groups --

@@ -1,9 +1,9 @@
 /**
  * TimeseriesHoverModifier -- hover tooltip for timeseries sub-surfaces.
  *
- * Each series in a timeseries panel is named `geneId:path`.  On hover, this
+ * Each series in a timeseries panel is named `label:path`.  On hover, this
  * modifier finds the nearest data point via hitTestNearest and shows a tooltip
- * with the gene, path, and y-value.
+ * with the label (gene or species name), path, and y-value.
  *
  * Attach directly to each timeseries sub-surface (CountsPanel / PromoterPanel).
  * Uses shouldProcessEvent so only the sub-surface under the cursor responds.

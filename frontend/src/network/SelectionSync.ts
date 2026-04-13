@@ -28,6 +28,7 @@ export class SelectionSync {
         this.stopWatches = [
             watch(() => store.selectedGenes, () => this.syncFromStore(), { immediate: true, deep: true }),
             watch(() => store.selectedSpeciesNodes, () => this.syncFromStore(), { deep: true }),
+            watch(() => store.selectedOtherSpecies, () => this.syncFromStore(), { deep: true }),
         ]
     }
 
@@ -63,12 +64,17 @@ export class SelectionSync {
         const origEvent = evt.originalEvent as MouseEvent | undefined
         const isToggle = origEvent?.ctrlKey === true || origEvent?.metaKey === true
 
+        console.debug(`[SelectionSync] Tap: id=${node.id()} kind=${node.data('kind')} classes=${node.classes()} isToggle=${isToggle}`)
+
         if (node.data('kind') === 'gene') {
             const id = node.id()
             store.selectedGenes = applySelectionAction(store.selectedGenes, id, isToggle)
         } else {
+            // Orphan species: toggle in both selectedSpeciesNodes (network dimming)
+            // and selectedOtherSpecies (chart panel fetching)
             const id = node.id()
             store.selectedSpeciesNodes = applySelectionAction(store.selectedSpeciesNodes, id, isToggle)
+            store.selectedOtherSpecies = applySelectionAction(store.selectedOtherSpecies, id, isToggle)
         }
 
         this.updating = false
@@ -85,12 +91,15 @@ export class SelectionSync {
         const cy = this.cy
         const store = useViewerStore()
 
-        // Rebuild local visual selection as union of both store arrays
+        // Rebuild local visual selection as union of all store arrays
         this.visualSelection = new Set([
             ...store.selectedGenes,
             ...store.selectedSpeciesNodes,
+            ...store.selectedOtherSpecies,
         ])
         const vis = this.visualSelection
+
+        console.debug(`[SelectionSync] syncFromStore: vis=${JSON.stringify([...vis])} genes=${JSON.stringify(store.selectedGenes)} speciesNodes=${JSON.stringify(store.selectedSpeciesNodes)} otherSpecies=${JSON.stringify(store.selectedOtherSpecies)}`)
 
         cy.startBatch()
 
@@ -100,7 +109,11 @@ export class SelectionSync {
             cy.nodes().forEach((node: any) => {
                 const key = resolveSelectable(node)
                 const isSelected = key !== null && vis.has(key)
-                node.toggleClass('highlighted', isSelected && node.data('kind') === 'gene')
+                const isHighlightable = node.data('kind') === 'gene' || node.hasClass('orphan-species')
+                if (node.hasClass('orphan-species')) {
+                    console.debug(`[SelectionSync] orphan node=${node.id()} key=${key} isSelected=${isSelected} isHighlightable=${isHighlightable}`)
+                }
+                node.toggleClass('highlighted', isSelected && isHighlightable)
                 node.toggleClass('dimmed', !isSelected)
             })
 
@@ -136,9 +149,9 @@ function resolveSelectable(node: any): string | null {
     if (!node || node.empty()) return null
     const kind = node.data('kind')
     if (kind === 'gene') return node.id()
+    if (node.hasClass('orphan-species')) return node.id()
     const parent = node.data('geneParent')
     if (parent) return parent
-    if (node.hasClass('orphan-species')) return node.id()
     return null
 }
 

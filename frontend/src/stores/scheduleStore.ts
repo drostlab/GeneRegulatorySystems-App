@@ -5,7 +5,7 @@ import type { UnionNetwork } from '@/types/network'
 import * as scheduleService from '@/services/scheduleService'
 import {
     computeScheduleKey, extractAllGeneIds, getSpeciesForGene,
-    getSpeciesForType, getTimeExtent, parseScheduleKey
+    getSpeciesForType, getTimeExtent, parseScheduleKey, GENE_SPECIES_TYPES
 } from '@/types/schedule'
 import type { SpeciesType } from '@/types/schedule'
 import type { TimeseriesMetadata } from '@/types/simulation'
@@ -48,6 +48,15 @@ export const useScheduleStore = defineStore(
         const modelPaths = computed((): string[] => {
             if (!unionNetwork.value) return []
             return Object.keys(unionNetwork.value.model_exclusions)
+        })
+
+        /** Species names not belonging to any gene (e.g. dimer products from reactions). */
+        const allOtherSpecies = computed((): string[] => {
+            if (!unionNetwork.value) return []
+            const geneTypes = new Set<string>(GENE_SPECIES_TYPES)
+            return unionNetwork.value.nodes
+                .filter(n => n.kind === 'species' && !geneTypes.has(n.properties?.species_type ?? ''))
+                .map(n => String(n.name))
         })
 
         function clearNetwork(): void {
@@ -155,6 +164,7 @@ export const useScheduleStore = defineStore(
         }
 
         function getSpeciesForSpeciesType(speciesType: SpeciesType): string[] {
+            if (speciesType === 'other') return allOtherSpecies.value
             if (!schedule.value.data) return []
             return getSpeciesForType(schedule.value.data, speciesType)
         }
@@ -185,6 +195,7 @@ export const useScheduleStore = defineStore(
             timeseriesMetadata,
             unionNetwork,
             modelPaths,
+            allOtherSpecies,
             loadScheduleByKey,
             loadScheduleBySpec,
             setSchedule,

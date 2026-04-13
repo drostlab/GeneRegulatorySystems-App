@@ -16,6 +16,7 @@ export const useViewerStore = defineStore('viewer', () => {
     const currentTimepoint = ref<number>(0)
     const selectedGenes = ref<string[]>([])
     const selectedSpeciesNodes = ref<string[]>([])
+    const selectedOtherSpecies = ref<string[]>([])
     const selectedSpeciesTypes = ref<SpeciesType[]>([])
     const selectedSegmentIds = ref<Set<number> | null>(null)
     /** Execution-path prefix filter (empty = show all). Mirrors inspect tool's items_prefix. */
@@ -196,6 +197,7 @@ export const useViewerStore = defineStore('viewer', () => {
         currentTimepoint.value = 0
         selectedGenes.value = []
         selectedSpeciesNodes.value = []
+        selectedOtherSpecies.value = []
         selectedSegmentIds.value = null
         hoveredRectModelPath.value = null
         hoveredInstantModelPath.value = null
@@ -209,6 +211,7 @@ export const useViewerStore = defineStore('viewer', () => {
         currentTimepoint,
         selectedGenes,
         selectedSpeciesNodes,
+        selectedOtherSpecies,
         selectedSpeciesTypes,
         selectedSegmentIds,
         pathFilter,

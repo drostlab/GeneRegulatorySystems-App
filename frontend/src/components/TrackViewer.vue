@@ -5,7 +5,7 @@ import { useScheduleStore } from '@/stores/scheduleStore'
 import { useViewerStore } from '@/stores/viewerStore'
 import type { SimulationResult } from '@/types/simulation'
 import { formatResultLabel } from '@/types/simulation'
-import { speciesTypeLabels, DEFAULT_VISIBLE_SPECIES_TYPES, SPECIES_TYPES } from '@/types/schedule'
+import { speciesTypeLabels, DEFAULT_VISIBLE_SPECIES_TYPES, GENE_SPECIES_TYPES } from '@/types/schedule'
 import type { SpeciesType } from '@/types/schedule'
 import Button from 'primevue/button'
 import Select, { type SelectChangeEvent } from 'primevue/select'
@@ -44,6 +44,8 @@ const channelSuggestions = ref<string[]>([])
 
 const chart = new MainChart()
 
+const OTHER_SPECIES_COLOUR = '#9e9e9e'
+
 const isScheduleLoading = computed(() => scheduleStore.isLoading)
 const isSimulationBusy = computed(() => simulationStore.isSimulationRunning || simulationStore.isLoadingResult)
 const isUiDisabled = computed(() => isScheduleLoading.value || isSimulationBusy.value)
@@ -66,6 +68,67 @@ const activeLoadingState = computed(() => {
     return null
 })
 
+// -- Combined gene/species selector --------------------------------------------------
+
+/** Set of other-species names for quick lookup. */
+const otherSpeciesSet = computed(() => new Set(scheduleStore.allOtherSpecies))
+
+/** Grouped options for the combined MultiSelect. */
+const selectorOptionGroups = computed(() => {
+    const groups: Array<{ group: string; items: Array<{ label: string; value: string }> }> = []
+    const genes = scheduleStore.allGenes ?? []
+    if (genes.length > 0) {
+        groups.push({ group: 'Genes', items: genes.map(g => ({ label: g, value: g })) })
+    }
+    const other = scheduleStore.allOtherSpecies
+    if (other.length > 0) {
+        groups.push({ group: 'Other species', items: other.map(s => ({ label: s, value: s })) })
+    }
+    return groups
+})
+
+/** Merged selection array for the MultiSelect model. */
+const combinedSelection = computed(() => [
+    ...viewerStore.selectedGenes,
+    ...viewerStore.selectedOtherSpecies,
+])
+
+/** Route selection changes back to the correct store arrays. */
+function onCombinedSelectionChange(newValues: string[]): void {
+    const others = otherSpeciesSet.value
+    viewerStore.selectedGenes = newValues.filter(v => !others.has(v))
+    viewerStore.selectedOtherSpecies = newValues.filter(v => others.has(v))
+}
+
+/** Remove a single item from the combined selection. */
+function removeCombinedSelection(id: string): void {
+    if (otherSpeciesSet.value.has(id)) {
+        viewerStore.selectedOtherSpecies = viewerStore.selectedOtherSpecies.filter(s => s !== id)
+    } else {
+        viewerStore.selectedGenes = viewerStore.selectedGenes.filter(g => g !== id)
+    }
+}
+
+/** Chip style: gene colour for genes, neutral grey for other species. */
+function selectorChipStyle(id: string): Record<string, string | undefined> {
+    const isOther = otherSpeciesSet.value.has(id)
+    const bg = isOther ? OTHER_SPECIES_COLOUR : scheduleStore.geneColours?.[id]
+    return {
+        backgroundColor: bg,
+        borderColor: bg,
+        color: bg ? contrastTextColour(bg) : undefined,
+    }
+}
+
+/** Swatch style for dropdown options. */
+function selectorSwatchStyle(id: string): Record<string, string | undefined> {
+    const isOther = otherSpeciesSet.value.has(id)
+    const bg = isOther ? OTHER_SPECIES_COLOUR : scheduleStore.geneColours?.[id]
+    return { backgroundColor: bg, borderColor: bg }
+}
+
+// -------------------------------------------------------------------------------------
+
 const trackOptions = computed(() => {
     const options: Array<{ label: string; value: string }> = []
     
@@ -76,9 +139,13 @@ const trackOptions = computed(() => {
     
     // Only include species types if simulation loaded
     if (simulationStore.isLoaded) {
-        SPECIES_TYPES.forEach(type => {
+        GENE_SPECIES_TYPES.forEach(type => {
             options.push({ label: speciesTypeLabels[type], value: type })
         })
+        // Only show "Other species" when the schedule has non-gene species
+        if (scheduleStore.allOtherSpecies.length > 0) {
+            options.push({ label: speciesTypeLabels['other'], value: 'other' })
+        }
     }
     
     return options
@@ -87,7 +154,8 @@ const trackOptions = computed(() => {
 watch(
     () => ({
         scheduleLoaded: scheduleStore.isLoaded,
-        simulationLoaded: simulationStore.isLoaded
+        simulationLoaded: simulationStore.isLoaded,
+        hasOtherSpecies: scheduleStore.allOtherSpecies.length > 0
     }),
     (state, oldState) => {
         const validTracks: string[] = []
@@ -97,7 +165,10 @@ watch(
         }
         
         if (state.simulationLoaded) {
-            SPECIES_TYPES.forEach(type => validTracks.push(type))
+            GENE_SPECIES_TYPES.forEach(type => validTracks.push(type))
+            if (state.hasOtherSpecies) {
+                validTracks.push('other')
+            }
         }
 
         // Set defaults when simulation transitions to loaded
@@ -223,7 +294,7 @@ watch(
 
         // During streaming, only update WS subscription (HTTP fetch deferred to completion)
         if (simulationStore.isSimulationRunning) {
-            simulationStore.updateStreamSubscription(capped)
+            simulationStore.updateStreamSubscription(capped, viewerStore.selectedOtherSpecies)
             return
         }
 
@@ -245,14 +316,40 @@ watch(
     }
 )
 
+// Auto-select all other species when union network loads
+watch(
+    () => scheduleStore.allOtherSpecies,
+    (otherSpecies) => {
+        viewerStore.selectedOtherSpecies = [...otherSpecies]
+    }
+)
+
+// Lazy-fetch timeseries when selected other species change
+watch(
+    () => viewerStore.selectedOtherSpecies,
+    async (species) => {
+        if (!simulationStore.isLoaded || species.length === 0) return
+
+        if (simulationStore.isSimulationRunning) {
+            const capped = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
+            simulationStore.updateStreamSubscription(capped, species)
+            return
+        }
+
+        await simulationStore.fetchOtherSpeciesTimeseries(species)
+        refreshSimulationData()
+    },
+    { deep: true }
+)
+
 /** Push current simulation data to chart, filtered by selected genes/paths. */
 function refreshSimulationData(): void {
     if (!simulationStore.isLoaded || simulationStore.isSimulationRunning) return
     const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
-    if (genes.length === 0) return
+    if (genes.length === 0 && viewerStore.selectedOtherSpecies.length === 0) return
     const paths = viewerStore.selectedPaths ?? viewerStore.filteredPaths
     const pathArray = paths ? [...paths] : null
-    const visibleData = simulationStore.getTimeseries(genes, pathArray)
+    const visibleData = simulationStore.getTimeseries(genes, pathArray, viewerStore.selectedOtherSpecies)
     if (visibleData) {
         chart.setSimulationData(visibleData)
     }
@@ -434,7 +531,12 @@ async function loadResult(event: SelectChangeEvent) {
     const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
     if (genes.length > 0 && simulationStore.isLoaded) {
         await simulationStore.fetchGeneTimeseries(genes)
-        // Watcher skips during active fetch; explicitly refresh once fetch completes
+    }
+    const otherSpecies = viewerStore.selectedOtherSpecies
+    if (otherSpecies.length > 0 && simulationStore.isLoaded) {
+        await simulationStore.fetchOtherSpeciesTimeseries(otherSpecies)
+    }
+    if (simulationStore.isLoaded) {
         refreshSimulationData()
     }
 }
@@ -528,7 +630,7 @@ watch(
 // Fires when timeseries cache, gene selection, or path selection changes
 // Skips during running simulation and during active fetch (avoids double render)
 watch(
-    () => ({ timeseries: simulationStore.timeseries, genes: viewerStore.selectedGenes, paths: viewerStore.selectedPaths, filteredPaths: viewerStore.filteredPaths }),
+    () => ({ timeseries: simulationStore.timeseries, genes: viewerStore.selectedGenes, otherSpecies: viewerStore.selectedOtherSpecies, paths: viewerStore.selectedPaths, filteredPaths: viewerStore.filteredPaths }),
     ({ timeseries }) => {
         if (simulationStore.isSimulationRunning) return
         if (simulationStore.isFetchingTimeseries) return
@@ -679,7 +781,6 @@ defineExpose({
                         v-if="simulationStore.isSimulationRunning && !simulationStore.isPaused"
                         icon="pi pi-pause"
                         size="small"
-                        severity="warn"
                         @click="pauseSimulation"
                         v-grs-tooltip="'Pause simulation'"
                     />
@@ -760,11 +861,16 @@ defineExpose({
 
                     <div v-if="simulationStore.currentResultId" class="gene-selector-wrapper">
                         <MultiSelect
-                            v-model="viewerStore.selectedGenes"
-                            :options="scheduleStore.allGenes || []"
+                            :model-value="combinedSelection"
+                            @update:model-value="onCombinedSelectionChange"
+                            :options="selectorOptionGroups"
+                            option-label="label"
+                            option-value="value"
+                            option-group-label="group"
+                            option-group-children="items"
                             :disabled="isScheduleLoading"
                             size="small"
-                            placeholder="Filter genes..."
+                            placeholder="Filter genes/species..."
                             :max-selected-labels="3"
                             class="dropdown-small"
                             style="width: 620px; font-size: 0.75rem"
@@ -775,27 +881,30 @@ defineExpose({
                         <template #value="{ value }">
                             <div class="chip-container">
                                 <span
-                                    v-for="geneId in value"
-                                    :key="geneId"
+                                    v-for="id in value"
+                                    :key="id"
                                     class="custom-gene-chip"
-                                    :style="{ backgroundColor: scheduleStore.geneColours?.[geneId], borderColor: scheduleStore.geneColours?.[geneId], color: scheduleStore.geneColours?.[geneId] ? contrastTextColour(scheduleStore.geneColours[geneId]!) : undefined }"
+                                    :style="selectorChipStyle(id)"
                                 >
-                                    {{ geneId }}
+                                    {{ id }}
                                     <i 
                                         class="pi pi-times"
-                                        @click.stop="viewerStore.selectedGenes = viewerStore.selectedGenes.filter((g: string) => g !== geneId)"
+                                        @click.stop="removeCombinedSelection(id)"
                                         style="cursor: pointer; margin-left: 0.25rem; font-size: 0.6rem"
                                     />
                                 </span>
                             </div>
                         </template>
+                        <template #optiongroup="slotProps">
+                            <div class="dropdown-option-group">{{ slotProps.option.group }}</div>
+                        </template>
                         <template #option="slotProps">
                             <div style="font-size: 0.75rem; display: flex; align-items: center; gap: 0.5rem">
                                 <span
                                     style="width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; border: 1px solid"
-                                    :style="{ backgroundColor: scheduleStore.geneColours?.[slotProps.option], borderColor: scheduleStore.geneColours?.[slotProps.option] }"
+                                    :style="selectorSwatchStyle(slotProps.option.value)"
                                 />
-                                {{ slotProps.option }}
+                                {{ slotProps.option.label }}
                             </div>
                         </template>
                     </MultiSelect>
