@@ -64,6 +64,12 @@ function set_examples_dir(path::String)
     @info "Examples directory configured" path
 end
 
+### Health check
+
+@get "/health" function()
+    return Dict("status" => "ok")
+end
+
 ### Schedule service
 
 # return available schedule keys (in format "source/name")

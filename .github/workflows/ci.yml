@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Julia
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+
+      - name: Cache Julia depot
+        uses: actions/cache@v4
+        with:
+          path: ~/.julia
+          key: julia-depot-${{ runner.os }}-${{ hashFiles('backend/Project.toml', 'backend/Manifest.toml') }}
+          restore-keys: julia-depot-${{ runner.os }}-
+
+      - name: Instantiate Julia backend
+        working-directory: backend
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Run smoke test
+        run: ./backend/smoke-test.sh

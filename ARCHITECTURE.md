@@ -32,6 +32,13 @@ In Tauri production builds, examples are bundled as resources and seeded into `<
 | `./dev.sh --tauri` | Desktop: Tauri spawns Julia on random port |
 | `./dev.sh --sync-version` | Propagate VERSION to all package files |
 
+### Testing
+
+| File | Purpose |
+| ---- | ------- |
+| `backend/smoke-test.sh` | End-to-end smoke test: boots Julia server, loads a schedule, runs a simulation, polls until completion. |
+| `.github/workflows/ci.yml` | CI workflow: runs smoke test on PRs and pushes to `main`. Caches Julia depot. |
+
 ## Desktop Shell (Tauri + Rust)
 
 | File | Purpose |
