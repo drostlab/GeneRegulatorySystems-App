@@ -311,6 +311,7 @@ export class MainChart {
             // Only zoom if the panel has data to avoid NaN range errors
             if (panel.surface.renderableSeries.asArray().length > 0) {
                 panel.surface.zoomExtentsY()
+                panel.surface.zoomExtentsX()
             }
         })
 

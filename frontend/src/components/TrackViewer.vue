@@ -559,6 +559,14 @@ function pauseSimulation() {
     simulationStore.pauseSimulation()
 }
 
+// Watch for auto-run trigger from ScheduleEditor save
+watch(() => simulationStore.pendingAutoRun, (pending) => {
+    if (pending) {
+        simulationStore.pendingAutoRun = false
+        runSimulation()
+    }
+})
+
 function resumeSimulation() {
     simulationStore.resumeSimulation()
 }
@@ -775,6 +783,16 @@ defineExpose({
                         severity="success"
                         @click="runSimulation"
                         class="run-simulation-btn"
+                    />
+
+                    <Button
+                        v-if="!simulationStore.isSimulationRunning"
+                        :icon="simulationStore.autoRunOnSave ? 'pi pi-bolt' : 'pi pi-bolt'"
+                        :severity="simulationStore.autoRunOnSave ? 'primary' : 'secondary'"
+                        :outlined="!simulationStore.autoRunOnSave"
+                        size="small"
+                        @click="simulationStore.autoRunOnSave = !simulationStore.autoRunOnSave"
+                        v-grs-tooltip="simulationStore.autoRunOnSave ? 'Auto-run enabled: simulation will run on save' : 'Auto-run disabled: click to run simulation on save'"
                     />
 
                     <Button

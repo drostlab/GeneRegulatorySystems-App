@@ -32,6 +32,12 @@ export const useSimulationStore = defineStore(
         const isPaused = ref(false)
         const isLoadingResult = ref(false)
 
+        /** When true, saving a schedule automatically triggers a simulation run. */
+        const autoRunOnSave = ref(false)
+
+        /** Set by ScheduleEditor after save; consumed by TrackViewer to trigger run with chart cleanup. */
+        const pendingAutoRun = ref(false)
+
         /** True between clicking Run and receiving the first streaming frame. */
         const isPreparingSimulation = ref(false)
 
@@ -444,6 +450,8 @@ export const useSimulationStore = defineStore(
             getTimeseries,
             fetchGeneTimeseries,
             fetchOtherSpeciesTimeseries,
+            autoRunOnSave,
+            pendingAutoRun,
             runSimulation,
             loadResult,
             pauseSimulation,

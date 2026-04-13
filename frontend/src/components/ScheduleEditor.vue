@@ -146,6 +146,11 @@ async function saveEdit() {
     availableScheduleKeys.value = await scheduleService.fetchAvailableSchedules()
 
     resetEditor()
+
+    // Auto-run simulation if enabled and schedule changed
+    if (hasChanges && simulationStore.autoRunOnSave) {
+        simulationStore.pendingAutoRun = true
+    }
 }
 
 function cancelEdit() {
