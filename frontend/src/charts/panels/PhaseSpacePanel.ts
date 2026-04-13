@@ -24,7 +24,6 @@ import { BasePanel, PATH_DIM_OPACITY, type BasePanelOptions } from "./BasePanel"
 import type { PhaseSpacePoint, PhaseSpaceResult } from "@/types/simulation"
 import { CHART_FONT_SIZES } from "../chartConstants"
 import { PhaseSpaceHoverModifier } from "../modifiers/PhaseSpaceHoverModifier"
-import { GREY } from "@/config/theme"
 export type { HoverInfo } from "../modifiers/PhaseSpaceHoverModifier"
 
 const LINE_ALPHA = 0.9
@@ -144,7 +143,7 @@ export class PhaseSpacePanel extends BasePanel {
         byPath.forEach((pts, path) => {
             const xs = pts.map(p => p.x)
             const ys = pts.map(p => p.y)
-            const pathColour = GREY[300]
+            const pathColour = this.theme.phaseSpace.trajectoryLine
 
             const lineData = new XyDataSeries(this.wasmContext, {
                 isSorted: false,
@@ -275,11 +274,16 @@ export class PhaseSpacePanel extends BasePanel {
         // Skip clearData()/highlight recreation -- surface.delete() handles full cleanup.
     }
 
-    /** Re-apply theme; update highlight marker stroke colour. */
+    /** Re-apply theme; update highlight marker stroke colour and trajectory lines. */
     override applyTheme(isDark: boolean): void {
         super.applyTheme(isDark)
         if (this.highlightSeries?.pointMarker) {
             this.highlightSeries.pointMarker.stroke = this.theme.text.base
+        }
+        // Update trajectory line colours
+        const lineColour = this.theme.phaseSpace.trajectoryLine
+        for (const lineSeries of this.pathLineSeries.values()) {
+            lineSeries.stroke = withAlpha(lineColour, LINE_ALPHA)
         }
     }
 

@@ -173,7 +173,7 @@ export class SharedTimeCursorModifier extends ChartModifierBase2D {
             y1: 1,
             verticalAnchorPoint: EVerticalAnchorPoint.Bottom,
             horizontalAnchorPoint: EHorizontalAnchorPoint.Center,
-            fontSize: 8,
+            fontSize: 10,
             textColor: t.chart.cursorText,
             background: t.chart.cursor,
             opacity: 1.0,

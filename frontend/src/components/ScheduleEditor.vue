@@ -258,7 +258,7 @@ onBeforeUnmount(() =>
                     icon="pi pi-pencil"
                     severity="secondary"
                     rounded
-                    title="Edit"
+                    v-grs-tooltip="'Edit'"
                     @click="startEdit"
                     size="small"
                     :disabled="isLoading"
@@ -270,7 +270,7 @@ onBeforeUnmount(() =>
                     icon="pi pi-check"
                     severity="success"
                     rounded
-                    title="Save"
+                    v-grs-tooltip="'Save'"
                     @click="saveEdit"
                     size="small"
                     :disabled="isLoading"
@@ -282,7 +282,7 @@ onBeforeUnmount(() =>
                     icon="pi pi-times"
                     severity="error"
                     rounded
-                    title="Cancel"
+                    v-grs-tooltip="'Cancel'"
                     @click="cancelEdit"
                     size="small"
                 />

@@ -48,6 +48,9 @@ const INSTANT_FONT_SIZE_MIN = 6
 const INSTANT_FONT_SIZE_MAX = 9
 const INSTANT_FONT_SIZE_MULTIPLIER = 0.03
 
+/** Minimum pixel height per instant slice before labels are merged. */
+const MIN_INSTANT_SLICE_PX = 20
+
 export type SegmentClickCallback = (segmentId: number, modelPath: string) => void
 export type HoverChangeCallback = (modelPath: string | null, executionPath: string | null) => void
 
@@ -337,7 +340,8 @@ export class TimelinePanel extends BasePanel {
                 const rs = source as FastRectangleRenderableSeries
                 // Don't override selection colours on hover
                 if (this.selectedSegmentId !== segmentId) {
-                    rs.fill = withOpacity(colour, hovered ? RECT_FILL_OPACITY_HOVER : RECT_FILL_OPACITY)
+                    const currentColour = this.colourForChannel(channel)
+                    rs.fill = withOpacity(currentColour, hovered ? RECT_FILL_OPACITY_HOVER : RECT_FILL_OPACITY)
                     rs.stroke = hovered ? this.theme.timeline.rect.hover.stroke : this.theme.timeline.rect.normal.stroke
                     const lbl = this.segmentLabelMap.get(segmentId)
                     if (lbl) lbl.textColor = hovered ? this.theme.timeline.rect.hover.text : this.theme.timeline.rect.normal.text
@@ -424,14 +428,66 @@ export class TimelinePanel extends BasePanel {
         // Divide vertical space equally among labels
         const n = instants.length
         const sliceHeight = (yMax - yMin) / n
+        const slicePx = sliceHeight * this.subchartHeightPx()
 
-        instants.forEach((rect, i) => {
-            const sliceTop = yMax - i * sliceHeight
-            const sliceBottom = sliceTop - sliceHeight
-            const sliceMidY = (sliceTop + sliceBottom) / 2
+        if (n > 1 && slicePx < MIN_INSTANT_SLICE_PX) {
+            this.addMergedInstantLabel(instants, line, x, (yMin + yMax) / 2, yMax - yMin)
+        } else {
+            instants.forEach((rect, i) => {
+                const sliceTop = yMax - i * sliceHeight
+                const sliceBottom = sliceTop - sliceHeight
+                const sliceMidY = (sliceTop + sliceBottom) / 2
 
-            this.addInstantLabel(rect, line, x, sliceMidY, sliceHeight)
+                this.addInstantLabel(rect, line, x, sliceMidY, sliceHeight)
+            })
+        }
+    }
+
+    /** Merged label for a group of instants that don't fit individually. */
+    private addMergedInstantLabel(
+        instants: LayoutRectangle[],
+        line: LineAnnotation,
+        x: number,
+        yCenter: number,
+        bandHeight: number,
+    ): void {
+        const perModel = instants.map(r => {
+            const name = r.label ?? r.executionPath
+            return `${name}\npath=${r.executionPath}`
         })
+        const inlineText = `${instants.length} models`
+        const tooltipText = perModel.join('\n---\n') + `\nt=${formatTime(x)}`
+        const fontSize = this.computeInstantFontSize(bandHeight)
+
+        const text = new TextAnnotation({
+            x1: x,
+            y1: yCenter,
+            text: inlineText,
+            fontSize,
+            textColor: this.theme.timeline.instant.normal.text,
+            background: this.theme.timeline.instant.normal.bg,
+            horizontalAnchorPoint: EHorizontalAnchorPoint.Left,
+            verticalAnchorPoint: EVerticalAnchorPoint.Center,
+            xCoordShift: INSTANT_LABEL_X_SHIFT,
+            padding: new Thickness(3, 6, 3, 9),
+            onHover: (args) => {
+                const hovered = args.isHovered
+                this.surface.suspendUpdates()
+                line.stroke = hovered ? this.theme.timeline.instant.hover.line : this.theme.timeline.instant.normal.line
+                line.strokeThickness = hovered ? INSTANT_LINE_THICKNESS_HOVER : INSTANT_LINE_THICKNESS
+                text.background = hovered ? this.theme.timeline.instant.hover.bg : this.theme.timeline.instant.normal.bg
+                text.textColor = hovered ? this.theme.timeline.instant.hover.text : this.theme.timeline.instant.normal.text
+                if (hovered) {
+                    this.showTooltipAt(tooltipText)
+                } else {
+                    this.hideTooltipDiv()
+                }
+                this.surface.resumeUpdates()
+                this.isHoveringInstant = hovered
+            },
+        })
+        this.addDataAnnotation(text)
+        this.instantLabelSliceMap.set(text, bandHeight)
     }
 
     /** Single instant label: a TextAnnotation with background fill and hover highlight. */

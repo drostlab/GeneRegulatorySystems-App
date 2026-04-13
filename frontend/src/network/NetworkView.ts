@@ -74,7 +74,7 @@ export class NetworkView {
 
         if (!this.container) return
 
-        const elements = getGeneViewElements(network, geneColours)
+        const elements = getGeneViewElements(network, geneColours, this.isDark)
 
         this.cy = cytoscape({
             container: this.container,
@@ -103,6 +103,7 @@ export class NetworkView {
     applyTheme(isDark: boolean): void {
         this.isDark = isDark
         this.applyContainerBackground()
+        this.adaptiveZoom.applyTheme(isDark)
         if (this.cy) {
             this.cy.style(buildStylesheet(isDark))
         }
@@ -177,7 +178,7 @@ export class NetworkView {
         layout.one('layoutstop', () => {
             if (!this.cy) return
 
-            this.adaptiveZoom.attach(this.cy, network, geneColours)
+            this.adaptiveZoom.attach(this.cy, network, geneColours, this.isDark)
             this.modelFilter.attach(this.cy)
             this.selectionSync.attach(this.cy)
             this.hoverSync.attach(this.cy)

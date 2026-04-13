@@ -149,6 +149,11 @@ export class MainChart {
             panel.onGeneHover(gene => this.timeseriesGeneHoverCallback?.(gene))
         }
 
+        // Explicitly apply theme on the parent surface so SciChart's internal
+        // previousThemeProvider is seeded. Without this, the first applyTheme
+        // on a sub-surface crashes accessing parentSurface.previousThemeProvider.
+        this.surface.applyTheme(getTheme(isDark).sciChartTheme)
+
         console.debug(`[MainChart] Initialised with ${this.tracks.length} tracks`)
     }
 

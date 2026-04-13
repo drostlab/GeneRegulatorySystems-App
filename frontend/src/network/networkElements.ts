@@ -13,7 +13,7 @@ import type { UnionNetwork, Node, Link } from '@/types/network'
 import { MODEL_NODE_KINDS, MACHINERY_SPECIES, linkId } from '@/types/network'
 import { getEdgeColour, shouldShowEdgeLabel } from './networkStyles'
 import { getTheme } from '@/config/theme'
-import { lighten, contrastTextColour } from '@/utils/colorUtils'
+import { lighten, darken, contrastTextColour } from '@/utils/colorUtils'
 import logging from '@/utils/logging'
 
 const log = logging.getLogger('networkElements')
@@ -38,6 +38,7 @@ const DETAIL_KINDS = new Set(['species', 'reaction'])
 export function getGeneViewElements(
     network: UnionNetwork,
     geneColours: Record<string, string>,
+    isDark = false,
 ): cytoscape.ElementDefinition[] {
     const elements: cytoscape.ElementDefinition[] = []
     const geneNames = buildGeneNameSet(network)
@@ -50,7 +51,7 @@ export function getGeneViewElements(
         if (node.kind === 'reaction') continue
         if (node.kind === 'species' && hasGeneParent(node, geneNames)) continue
 
-        const el = buildNodeElement(node, geneColours, geneNames, false)
+        const el = buildNodeElement(node, geneColours, geneNames, false, isDark)
         if (el) elements.push(el)
     }
 
@@ -94,6 +95,7 @@ export function getGeneViewElements(
 export function getSpeciesViewElements(
     network: UnionNetwork,
     geneColours: Record<string, string>,
+    isDark = false,
 ): cytoscape.ElementDefinition[] {
     const elements: cytoscape.ElementDefinition[] = []
     const geneNames = buildGeneNameSet(network)
@@ -104,7 +106,7 @@ export function getSpeciesViewElements(
         if (!DETAIL_KINDS.has(node.kind)) continue
         if (isMachinery(node)) continue
 
-        const el = buildNodeElement(node, geneColours, geneNames, true)
+        const el = buildNodeElement(node, geneColours, geneNames, true, isDark)
         if (el) elements.push(el)
     }
 
@@ -232,6 +234,7 @@ function buildNodeElement(
     geneColours: Record<string, string>,
     geneNames: Set<string>,
     asCompoundChild: boolean,
+    isDark = false,
 ): cytoscape.ElementDefinition | null {
     const colour = getNodeColour(node, geneColours)
     const isOrphanSpecies = node.kind === 'species' && !hasGeneParent(node, geneNames)
@@ -248,9 +251,9 @@ function buildNodeElement(
         ? String(node.properties.species_type)
         : node.name
 
-    // Parent colour for reaction label backgrounds (lightened)
+    // Parent colour for reaction label backgrounds (lightened/darkened per theme)
     const parentColour = node.parent && node.parent in geneColours
-        ? lighten(geneColours[node.parent]!, 0.7)
+        ? (isDark ? darken(geneColours[node.parent]!, 0.3) : lighten(geneColours[node.parent]!, 0.7))
         : colour
 
     const textColour = node.kind === 'gene' ? contrastTextColour(colour) : undefined

@@ -111,8 +111,8 @@ watch(() => store.lines.length, async () => {
     left: 0;
     right: 0;
     height: 280px;
-    background: var(--p-surface-0);
-    border-top: 1px solid var(--p-surface-200);
+    background: var(--p-content-background);
+    border-top: 1px solid var(--p-surface-border);
     display: flex;
     flex-direction: column;
     z-index: 2000;

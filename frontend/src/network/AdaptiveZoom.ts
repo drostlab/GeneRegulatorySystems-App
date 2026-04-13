@@ -50,6 +50,7 @@ export class AdaptiveZoom {
     private cy: Core | null = null
     private network: UnionNetwork | null = null
     private geneColours: Record<string, string> = {}
+    private isDark = false
     private detailVisible = false
     private manualOverride = false
     private timeout: ReturnType<typeof setTimeout> | null = null
@@ -72,10 +73,11 @@ export class AdaptiveZoom {
      * @param network - union network data from backend
      * @param geneColours - gene name to colour mapping
      */
-    attach(cy: Core, network: UnionNetwork, geneColours: Record<string, string>): void {
+    attach(cy: Core, network: UnionNetwork, geneColours: Record<string, string>, isDark = false): void {
         this.cy = cy
         this.network = network
         this.geneColours = geneColours
+        this.isDark = isDark
         this.detailVisible = false
 
         // Precompute elements for both views
@@ -83,6 +85,25 @@ export class AdaptiveZoom {
 
         this.handler = () => this.scheduleCheck()
         cy.on('zoom', this.handler)
+    }
+
+    /**
+     * Rebuild cached elements with updated theme and update live reaction nodes.
+     */
+    applyTheme(isDark: boolean): void {
+        this.isDark = isDark
+        this.precomputeElements()
+        // Update parentColour on live reaction nodes
+        if (this.cy) {
+            for (const el of this.speciesViewElements) {
+                if (el.data.kind === 'reaction' && el.data.id && el.data.parentColour) {
+                    const node = this.cy.getElementById(el.data.id as string)
+                    if (node.nonempty()) {
+                        node.data('parentColour', el.data.parentColour)
+                    }
+                }
+            }
+        }
     }
 
     destroy(): void {
@@ -132,11 +153,11 @@ export class AdaptiveZoom {
         if (!this.network) return
 
         // Gene-view: extract only edges (nodes are already in the graph)
-        const geneView = getGeneViewElements(this.network, this.geneColours)
+        const geneView = getGeneViewElements(this.network, this.geneColours, this.isDark)
         this.geneViewEdges = geneView.filter(e => e.data.source !== undefined)
 
         // Species-view: all nodes + edges
-        this.speciesViewElements = getSpeciesViewElements(this.network, this.geneColours)
+        this.speciesViewElements = getSpeciesViewElements(this.network, this.geneColours, this.isDark)
 
         log.debug(
             `Precomputed: ${this.geneViewEdges.length} gene edges, ` +

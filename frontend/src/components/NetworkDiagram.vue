@@ -20,12 +20,17 @@ networkView.onDetailChange = (visible: boolean) => {
 }
 
 /** Label for the active model shown in the bottom-left overlay.
- * Rect hover changes the active model (branch switching); instant hover does not. */
+ * Rect hover changes the active model (branch switching); instant hover does not.
+ * When an execution path is available (rect hover), prefer matching by that to
+ * disambiguate branches sharing the same model definition. */
 const activeModelLabel = computed(() => {
     const modelPath = viewerStore.activeModelPath
     if (!modelPath) return null
     const segments = scheduleStore.segments
-    const seg = segments.find(s => s.model_path === modelPath && s.from !== s.to)
+    const execPath = viewerStore.hoveredExecutionPath
+    const seg = execPath
+        ? segments.find(s => s.execution_path === execPath && s.from !== s.to)
+        : segments.find(s => s.model_path === modelPath && s.from !== s.to)
     if (!seg) return null
     return {
         label: seg.label || modelPath,

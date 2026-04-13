@@ -160,6 +160,11 @@ export interface ThemeMode {
         /** Gene node label colour. */
         geneLabelText: string
     }
+    /** Phase-space panel. */
+    phaseSpace: {
+        /** Colour for trajectory lines between scatter points. */
+        trajectoryLine: string
+    }
     /** SciChart IThemeProvider instance. */
     sciChartTheme: IThemeProvider
 }
@@ -207,6 +212,9 @@ const light: ThemeMode = {
         nodeFallback:         GREY[400],
         geneLabelText:        GREY[950],
     },
+    phaseSpace: {
+        trajectoryLine:       GREY[300],
+    },
     sciChartTheme: new SciChartJSLightTheme(),
 }
 
@@ -223,15 +231,15 @@ const dark: ThemeMode = {
     },
     chart: {
         gridLine:       GREY[700],
-        cursor:         GREY[800],
-        cursorText:     GREY[0],
+        cursor:         GREEN[300],
+        cursorText:     GREY[950],
         tooltipBg:      GREY[200],
         tooltipFg:      GREY[950],
         fallbackSeries: GREY[500],
     },
     timeline: {
         instant: {
-            normal: { line: GREY[500], bg: GREY[800], text: GREY[300] },
+            normal: { line: GREY[800], bg: GREY[800], text: GREY[300] },
             hover:  { line: RED[400],  bg: RED[400],  text: GREY[50]  },
         },
         rect: {
@@ -253,6 +261,9 @@ const dark: ThemeMode = {
         nodeFallback:         GREY[500],
         geneLabelText:        GREY[100],
     },
+    phaseSpace: {
+        trajectoryLine:       GREY[600],
+    },
     sciChartTheme: new SciChartJSDarkv2Theme(),
 }
 
@@ -263,6 +274,5 @@ const dark: ThemeMode = {
 /** Returns the fully resolved theme for the given mode. */
 export function getTheme(isDark: boolean): ThemeMode {
     const t = isDark ? dark : light
-    log.debug(`Resolved theme: ${isDark ? 'dark' : 'light'}`)
     return t
 }

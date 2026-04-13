@@ -70,7 +70,7 @@ export abstract class BasePanel {
     /** Re-apply theme colours after a dark-mode toggle. */
     applyTheme(isDark: boolean): void {
         this.theme = getTheme(isDark)
-        this.surface.applyTheme(getTheme(isDark).sciChartTheme)
+        this.surface.applyTheme(this.theme.sciChartTheme)
         // Update explicitly-set grid line colours
         for (const axis of this.surface.yAxes.asArray()) {
             axis.majorGridLineStyle = { color: this.theme.chart.gridLine }

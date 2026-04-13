@@ -315,9 +315,14 @@ function _hydrateFromPersistedState(): void {
 
 onMounted(async () => {
     loadResults()
-    await chart.init(containerRef, isDark.value)
+    const themeAtStart = isDark.value
+    await chart.init(containerRef, themeAtStart)
     chart.setVisibleTracks(['schedule'])
     onThemeChange((dark) => chart.applyTheme(dark))
+    // Reconcile only if the theme actually changed during async init
+    if (isDark.value !== themeAtStart) {
+        chart.applyTheme(isDark.value)
+    }
 
     chart.onTimepointChange((timepoint: number) => {
         viewerStore.setTimepoint(timepoint)
@@ -676,7 +681,7 @@ defineExpose({
                         size="small"
                         severity="warn"
                         @click="pauseSimulation"
-                        title="Pause simulation"
+                        v-grs-tooltip="'Pause simulation'"
                     />
                     <Button
                         v-if="simulationStore.isSimulationRunning && simulationStore.isPaused"
@@ -684,7 +689,7 @@ defineExpose({
                         size="small"
                         severity="success"
                         @click="resumeSimulation"
-                        title="Resume simulation"
+                        v-grs-tooltip="'Resume simulation'"
                     />
 
                     <div v-if="simulationStore.isSimulationRunning" class="progress-wrapper">
@@ -722,7 +727,7 @@ defineExpose({
                                 severity="secondary"
                                 @click="viewerStore.setPathFilter('')"
                                 class="filter-clear-btn"
-                                title="Clear path filter"
+                                v-grs-tooltip="'Clear path filter'"
                             />
                         </div>
                         <div class="filter-row">
@@ -748,7 +753,7 @@ defineExpose({
                                 severity="secondary"
                                 @click="viewerStore.setChannelFilter('')"
                                 class="filter-clear-btn"
-                                title="Clear channel filter"
+                                v-grs-tooltip="'Clear channel filter'"
                             />
                         </div>
                     </div>
@@ -804,7 +809,7 @@ defineExpose({
                         text
                         :severity="showPhaseSpace ? 'secondary' : undefined"
                         @click="showPhaseSpace = !showPhaseSpace"
-                        title="Toggle phase space view"
+                        v-grs-tooltip="'Toggle phase space view'"
                     />
 
                     <Button
@@ -814,7 +819,7 @@ defineExpose({
                         size="small"
                         text
                         @click="(e) => trackSettingsPanel.toggle(e)"
-                        title="Track settings"
+                        v-grs-tooltip="'Track settings'"
                     />
                     <OverlayPanel ref="trackSettingsPanel" :show-close-button="false">
                         <div class="track-settings">
@@ -844,12 +849,12 @@ defineExpose({
                         size="small"
                         text
                         @click="clearSimulation"
-                        title="Clear loaded simulation"
+                        v-grs-tooltip="'Clear loaded simulation'"
                     />
 
                     <Button
                         :icon="isFullscreen ? 'pi pi-window-minimize' : 'pi pi-window-maximize'"
-                        :title="isFullscreen ? 'Exit fullscreen (ESC)' : 'Enter fullscreen'"
+                        v-grs-tooltip="isFullscreen ? 'Exit fullscreen (ESC)' : 'Enter fullscreen'"
                         size="small"
                         text
                         @click="toggleFullscreen"
