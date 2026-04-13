@@ -28,7 +28,7 @@ jobs:
 
       - name: Instantiate Julia backend
         working-directory: backend
-        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate(update_registry=false)'
 
       - name: Install jq
         run: sudo apt-get install -y jq
