@@ -1,5 +1,4 @@
 {
-    "label": "repressilator-plain",
     "step": {
         "do": {"{regulation/v1}": {
             "genes": [
@@ -26,14 +25,14 @@
                 "$": ["defaults", "bootstrap"],
                 "1.proteins": 100
             }},
-            {"to": 455000.0},
+            {"to": 45500.0},
             {
                 "branch": true,
                 "each": {"length": 5},
                 "as": "i",
                 "step": [
                     {"{seed}": "${seed}-repress-${i}"},
-                    {"to": 455000.0}
+                    {"to": 45500.0}
                 ]
             }
         ]

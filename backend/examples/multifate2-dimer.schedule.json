@@ -1,5 +1,4 @@
 {
-    "label": "multifate2-dimer",
     "step": {
         "do": {"{regulation/v1}": {
             "genes": [
@@ -28,13 +27,13 @@
                 {"from": ["B", "B"], "rates": [0.02, 0.02], "to": ["BB"]}
             ]
         }},
-        "each": {"start": 50, "step": 25, "stop": 300},
+        "each": {"start": 50, "step": 50, "stop": 150},
         "as": "x",
         "step": {
-            "each": {"start": 50, "step": 25, "stop": 300},
+            "each": {"start": 50, "step": 50, "stop": 150},
             "as": "y",
             "step": {
-                "each": {"length": 20},
+                "each": {"length": 2},
                 "branch": true,
                 "step": [
                     {"{add}": {
@@ -44,7 +43,7 @@
                         "A.mrnas": 30,
                         "B.mrnas": 30
                     }},
-                    {"to": 100000.0, "step": 1000.0}
+                    {"to": 100000.0, "step": 1000.0, "label": "x: ${x} | y: ${y}"}
                 ]
             }
         }

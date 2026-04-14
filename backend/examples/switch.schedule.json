@@ -15,15 +15,15 @@
                 }
             ]
         }},
-        "each": {"start": 0, "step": 25, "stop": 100},
+        "each": {"start": 0, "step": 50, "stop": 100},
         "as": "a",
         "step": {
-            "each": {"start": 0, "step": 25, "stop": 100},
+            "each": {"start": 0, "step": 50, "stop": 100},
             "as": "b",
             "step": {
                 "label": "switch-${a}-${b}",
                 "branch": true,
-                "each": {"length": 3},
+                "each": {"length": 2},
                 "step": {
                     "channel": "${anchor}",
                     "step": [

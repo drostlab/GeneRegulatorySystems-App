@@ -1,0 +1,124 @@
+{
+    "fast_gene": {
+            "$": ["defaults", "gene"],
+            "base_rates": {
+                "$": ["defaults", "gene", "base_rates"],
+                "protein_decay": 1e-8
+            }
+    },
+    "step": {
+        "do": {"{regulation/v1}": {
+            "genes": [
+                {
+                    "$": ["fast_gene"],
+                    "color": "#adadad",
+                    "name": "skn-1"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "skn-1", "at": 0.05}],
+                    "color": "#76574D",
+                    "name": "med-2"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "skn-1", "at": 2.0}, {"from": "med-2", "at":2.0}],
+                    "color": "#A1887F",
+                    "name": "med-1"
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "color": "#67acc1",
+                    "name": "pop-1"
+                },
+                {
+                    "$": ["defaults", "gene"],
+                    "color": "#508697",
+                    "name": "P2-signal-pathway"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "skn-1", "at": 2.0}, {"from": "med-2", "at":2.0}, {"from": "med-1", "at":2.0}, {"from": "POP-1*", "at": 1.0}],
+                    "repression": [{"from": "pop-1", "at": 0.5}],
+                    "color": "#b7d18c",
+                    "name": "end-3"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "skn-1", "at": 2.0}, {"from": "med-1", "at":2.0}, {"from": "end-3", "at":2.0}, {"from": "POP-1*", "at": 1.0}],
+                    "repression": [{"from": "elt-2", "at": 4.0}, {"from": "pop-1", "at": 0.5}],
+                    "color": "#a3ca8c",
+                    "name": "end-1"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "end-3", "at": 2.0}, {"from": "end-1", "at":2.0}, {"from": "elt-7", "at":2.0}],
+                    "color": "#81C784",
+                    "name": "elt-7"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "elt-2", "at": 2.0}, {"from": "end-1", "at":2.0}, {"from": "elt-7", "at":2.0}, {"from": "end-3", "at":2.0}],
+                    "color": "#4CAF50",
+                    "name": "elt-2"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "elt-7", "at": 2.0}, {"from": "elt-2", "at":2.0}, {"from": "end-3", "at":2.0}],
+                    "color": "#38983d",
+                    "name": "intestine fate"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "med-1", "at": 2.0}, {"from": "med-2", "at":2.0}],
+                    "color": "#c7604e",
+                    "name": "tbx-35"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "tbx-35", "at": 2.0}],
+                    "color": "#cc4129",
+                    "name": "ceh-51"
+                },
+                {
+                    "$": ["fast_gene"],
+                    "activation": [{"from": "tbx-35", "at": 2.0}, {"from": "ceh-51", "at": 2.0}],
+                    "color": "#d3442b",
+                    "name": "mesodermal fate"
+                }
+            ],
+            "reactions": [
+                {"from": ["pop-1", "P2-signal-pathway"], "rates": [0.02, 0.02], "to": ["POP-1*", "P2-signal-pathway"]}
+            ]
+        }},
+        "step": [
+            {"{add}": {
+                "$": ["defaults", "bootstrap"],
+                "skn-1.proteins": 100
+            }},
+            [
+                {
+                    "branch": true,
+                    "each": {"length": 1},
+                    "as": "i",
+                    "label": "E lineage",
+                    "step": [
+                        {"{seed}": "${seed}-E-${i}"},
+                        {"to": 5000.0, "step": 20}
+                    ]
+                },
+                {
+                    "branch": true,
+                    "each": {"length": 1},
+                    "as": "i",
+                    "label": "MS lineage",
+                    "step": [
+                        {"{seed}": "${seed}-MS-${i}"},
+                        {"{add}": {"P2-signal-pathway.proteins": 1000}}, 
+                        {"to": 5000.0, "step": 20}
+                    ]
+                }
+            ]
+        ]
+    }
+}

@@ -1,5 +1,4 @@
 {
-    "label": "multifate3-proteolytic",
     "step": {
         "do": {"{regulation/v1}": {
             "genes": [
@@ -45,7 +44,7 @@
                         "2.proteins": {"$": "m"},
                         "3.proteins": {"$": "p"}
                     }},
-                    {"to": 10000.0}
+                    {"to": 10000.0, "step": 20, "label": "n: ${n} | m: ${m} | p: ${p}"}
                 ]
             }
         }

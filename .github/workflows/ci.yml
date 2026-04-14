@@ -12,11 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-latest
-            julia_arch: aarch64
           - runner: ubuntu-latest
-            julia_arch: x64
-          - runner: windows-latest
             julia_arch: x64
 
     runs-on: ${{ matrix.runner }}

@@ -11,16 +11,19 @@
         "mrna_decay": 0.0075,
         "protein_decay": 2e-10
     },
-    "step": {
-        "step": [
-            {"{add}": {"polymerases": 5e5, "ribosomes": 2e6, "proteasomes": 1e6}},
-            {"{bootstrap/differentiation}": {"$": "do"}},
-            {"to": 100000.0, "step": 100.0}
-        ],
-        "do": {"{regulation/random-differentiation}": {
+    "step": [
+        {
+            "step": [
+                {"{add}": {"polymerases": 5e5, "ribosomes": 2e6, "proteasomes": 1e6}},
+                {"{bootstrap/differentiation}": {"$": "do"}},
+                {"each": {"length": 20}, "branch": true, "step": {
+                    "to": 800000.0, "step": 2000.0
+                }}
+            ],
+            "do": {"{regulation/random-differentiation}": {
             "seed": "differentiation-${seed}",
             "differentiation": {
-                "ratios": ["Dirichlet", 6, 5.0],
+                "ratios": ["Dirichlet", 25, 5.0],
                 "differentiator_base_rates": {"$": "typical_base_rates"},
                 "timer_base_rates": {
                     "$": "typical_base_rates",
@@ -31,7 +34,7 @@
                     "mrna_decay": 0.01,
                     "protein_decay": 1.0
                 },
-                "duration": ["LogNormal", 10.0, 1.0],
+                "duration": ["LogNormal", 12.0, 1.0],
                 "trigger_deposit": 500,
                 "timer_deposit": {"mrnas": 5, "proteins": 30},
                 "buffer": [0.002, 0.008],
@@ -45,7 +48,7 @@
                             [0.8, 0.6],
                             [0.4, 0.2]
                         ],
-                        "power": 4,
+                        "power": 7,
                         "expected_links_per_gene": 0.3
                     },
                     "at": ["LogNormal", 2.0, 1.0]
@@ -56,7 +59,7 @@
                             [0.6, 0.5],
                             [0.4, 0.2]
                         ],
-                        "power": 4,
+                        "power": 7,
                         "expected_links_per_gene": 0.4
                     },
                     "at": ["LogNormal", 2.0, 1.0]
@@ -71,5 +74,6 @@
                 "at": ["LogNormal", 2.0, 1.0]
             }
         }}
-    }
+        }
+    ]
 }

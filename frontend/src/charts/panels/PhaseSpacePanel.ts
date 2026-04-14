@@ -31,8 +31,8 @@ const POINT_SIZE = 3.5
 const HIGHLIGHT_SIZE = 14
 
 /** Stroke thickness / point size for highlighted / dimmed path (external highlight). */
-const LINE_THICKNESS_NORMAL = 3
-const LINE_THICKNESS_HOVER = 5.0
+const LINE_THICKNESS_NORMAL = 1
+const LINE_THICKNESS_HOVER = 2.0
 const POINT_SIZE_HOVER = 5
 const POINT_SIZE_DIM = 2
 
@@ -140,6 +140,7 @@ export class PhaseSpacePanel extends BasePanel {
         // Temporarily remove highlight so new series go underneath, then re-add
         this.surface.renderableSeries.remove(this.highlightSeries!)
 
+        // Build all series first, then add lines before scatters so points always render on top
         byPath.forEach((pts, path) => {
             const xs = pts.map(p => p.x)
             const ys = pts.map(p => p.y)
@@ -174,15 +175,20 @@ export class PhaseSpacePanel extends BasePanel {
                 paletteProvider: buildPointPalette(pts.map(p => p.colour)),
             })
 
-            this.surface.renderableSeries.add(lineSeries)
-            this.surface.renderableSeries.add(scatterSeries)
-
             this.pathLineData.set(path, lineData)
             this.pathScatterData.set(path, scatterData)
             this.pathLineSeries.set(path, lineSeries)
             this.pathScatterSeries.set(path, scatterSeries)
             this.pathPoints.set(path, pts)
         })
+
+        // All lines first, then all scatter points on top
+        for (const lineSeries of this.pathLineSeries.values()) {
+            this.surface.renderableSeries.add(lineSeries)
+        }
+        for (const scatterSeries of this.pathScatterSeries.values()) {
+            this.surface.renderableSeries.add(scatterSeries)
+        }
 
         // Highlight always on top
         this.surface.renderableSeries.add(this.highlightSeries!)

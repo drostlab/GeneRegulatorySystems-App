@@ -10,6 +10,12 @@
 
 Graphical user interface (GUI) for [GeneRegulatorySystems.jl](https://github.com/drostlab/GeneRegulatorySystems.jl/), a tool for designing complex simulation schedules of stochastic gene regulatory networks. Software documentation is available at <https://drostlab.github.io/GeneRegulatorySystems.jl/>.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshot-light.png">
+  <img src="docs/screenshot-light.png" alt="GeneRegulatorySystems App screenshot" />
+</picture>
+
 ## Installation
 
 Download the latest app release from the [Releases page](https://github.com/drostlab/GeneRegulatorySystems-App/releases). This will automatically install all the required dependencies and start up the app in a desktop window.
