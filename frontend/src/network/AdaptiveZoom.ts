@@ -263,7 +263,6 @@ export class AdaptiveZoom {
         // Run per-gene physics refinement for non-cascade nodes
         this.runSpeciesLayout(() => {
             this.detailVisible = true
-            log.debug('Switched to species view')
             this.onDetailChange?.(true)
         })
     }
@@ -315,7 +314,6 @@ export class AdaptiveZoom {
         cy.endBatch()
 
         this.detailVisible = false
-        log.debug('Switched to gene view')
         this.onDetailChange?.(false)
     }
 

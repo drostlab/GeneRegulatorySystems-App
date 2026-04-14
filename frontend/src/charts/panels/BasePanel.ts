@@ -1,7 +1,7 @@
 import { ChartModifierBase2D, NumberRange, SciChartSubSurface, type SciChartSurface, type TSciChart } from "scichart";
 import { getTheme, type ThemeMode } from "@/config/theme";
 
-export const PATH_DIM_OPACITY = 0.1
+export const PATH_DIM_OPACITY = 0.05
 
 export interface BasePanelOptions {
     parentSurface: SciChartSurface

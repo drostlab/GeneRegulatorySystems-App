@@ -57,3 +57,55 @@ jobs:
       - name: Run smoke test
         shell: bash
         run: ./backend/smoke-test.sh
+
+  frontend-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check and build frontend
+        working-directory: frontend
+        run: npm run build
+
+  tauri-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            tauri-app/target/
+          key: cargo-${{ runner.os }}-${{ hashFiles('tauri-app/Cargo.toml', 'tauri-app/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Cargo check
+        working-directory: tauri-app
+        run: cargo check

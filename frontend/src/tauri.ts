@@ -301,7 +301,36 @@ export async function setupAppMenu(): Promise<void> {
     const { Menu } = await import('@tauri-apps/api/menu')
     const { Submenu } = await import('@tauri-apps/api/menu/submenu')
     const { MenuItem } = await import('@tauri-apps/api/menu/menuItem')
-    const { PredefinedMenuItem } = await import('@tauri-apps/api/menu/predefinedMenuItem')
+    const { invoke } = await import('@tauri-apps/api/core')
+    const { openPath } = await import('@tauri-apps/plugin-opener')
+
+    const dataDir: string = await invoke('get_data_dir')
+    logger.info(`Data directory: ${dataDir}`)
+
+    const revealFolder = async (subfolder: string): Promise<void> => {
+        const path = `${dataDir}/${subfolder}`
+        logger.info(`Opening folder: ${path}`)
+        try {
+            await openPath(path)
+            logger.info(`Opened folder: ${path}`)
+        } catch (e) {
+            logger.error(`Failed to open folder ${path}: ${e}`)
+        }
+    }
+
+    const fileMenu = await Submenu.new({
+        text: 'File',
+        items: [
+            await MenuItem.new({
+                text: 'Open Schedules Folder',
+                action: () => { revealFolder('schedules') },
+            }),
+            await MenuItem.new({
+                text: 'Open Results Folder',
+                action: () => { revealFolder('results') },
+            }),
+        ],
+    })
 
     const viewMenu = await Submenu.new({
         text: 'View',
@@ -314,22 +343,9 @@ export async function setupAppMenu(): Promise<void> {
         ],
     })
 
-    const editMenu = await Submenu.new({
-        text: 'Edit',
-        items: [
-            await PredefinedMenuItem.new({ item: 'Undo' }),
-            await PredefinedMenuItem.new({ item: 'Redo' }),
-            await PredefinedMenuItem.new({ item: 'Separator' }),
-            await PredefinedMenuItem.new({ item: 'Cut' }),
-            await PredefinedMenuItem.new({ item: 'Copy' }),
-            await PredefinedMenuItem.new({ item: 'Paste' }),
-            await PredefinedMenuItem.new({ item: 'SelectAll' }),
-        ],
-    })
-
     const menu = await Menu.new({
         items: [
-            editMenu,
+            fileMenu,
             viewMenu,
         ],
     })

@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
+use tauri::menu::MenuBuilder;
 
 // ===========================================================================
 // Types
@@ -55,6 +56,11 @@ struct FrontendReadyChannel {
     tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
+/// Shared data directory path, accessible from menu event handlers.
+struct DataDirState {
+    path: PathBuf,
+}
+
 // ===========================================================================
 // IPC commands
 // ===========================================================================
@@ -63,6 +69,12 @@ struct FrontendReadyChannel {
 #[tauri::command]
 fn get_backend_port(state: tauri::State<BackendState>) -> u16 {
     state.port
+}
+
+/// IPC command: returns the data directory path (schedules, results, etc.).
+#[tauri::command]
+fn get_data_dir(state: tauri::State<DataDirState>) -> String {
+    state.path.to_string_lossy().into_owned()
 }
 
 /// IPC command: the user chose which Julia runtime to use.
@@ -562,6 +574,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_backend_port,
+            get_data_dir,
             resolve_julia_choice,
             frontend_ready,
         ])
@@ -581,9 +594,19 @@ pub fn run() {
             // Filesystem plugin (write exported files to disk)
             app.handle().plugin(tauri_plugin_fs::init())?;
 
+            // Opener plugin (reveal folders in native file manager)
+            app.handle().plugin(tauri_plugin_opener::init())?;
+
+            // Start with an empty menu (frontend replaces it once loaded)
+            let empty_menu = MenuBuilder::new(app.handle()).build()?;
+            app.set_menu(empty_menu)?;
+
             let handle = app.handle().clone();
             let data_dir = resolve_data_dir(app);
             let examples_dir = resolve_examples_dir(&data_dir);
+
+            // Store data_dir for IPC access
+            app.manage(DataDirState { path: data_dir.clone() });
 
             // Move the setup logic to a thread so the IPC handler
             // can receive the Julia choice while we block on the channel.

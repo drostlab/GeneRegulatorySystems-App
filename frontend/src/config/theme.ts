@@ -19,10 +19,7 @@
  */
 
 import { type IThemeProvider, SciChartJSDarkv2Theme, SciChartJSLightTheme } from 'scichart'
-import logging from '@/utils/logging'
 import { desaturate, rotateHue, lighten } from '@/utils/colorUtils'
-
-const log = logging.getLogger('theme')
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. PALETTES  (single source of hex truth)
