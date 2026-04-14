@@ -10,6 +10,7 @@
 
 import { config, isTauri, setBackendHost } from '@/config/api'
 import { useLogStore } from '@/stores/logStore'
+import { useViewerStore } from '@/stores/viewerStore'
 import logging from '@/utils/logging'
 
 const logger = logging.getLogger('tauri')
@@ -301,6 +302,7 @@ export async function setupAppMenu(): Promise<void> {
     const { Menu } = await import('@tauri-apps/api/menu')
     const { Submenu } = await import('@tauri-apps/api/menu/submenu')
     const { MenuItem } = await import('@tauri-apps/api/menu/menuItem')
+    const { CheckMenuItem } = await import('@tauri-apps/api/menu/checkMenuItem')
     const { invoke } = await import('@tauri-apps/api/core')
     const { openPath } = await import('@tauri-apps/plugin-opener')
 
@@ -332,6 +334,18 @@ export async function setupAppMenu(): Promise<void> {
         ],
     })
 
+    const viewerStore = useViewerStore()
+
+    const editorHighlightItem = await CheckMenuItem.new({
+        id: 'toggle-editor-highlight',
+        text: 'Highlight Editor on Hover',
+        checked: viewerStore.editorHighlightEnabled,
+        action: async () => {
+            viewerStore.editorHighlightEnabled = !viewerStore.editorHighlightEnabled
+            await editorHighlightItem.setChecked(viewerStore.editorHighlightEnabled)
+        },
+    })
+
     const viewMenu = await Submenu.new({
         text: 'View',
         items: [
@@ -340,6 +354,7 @@ export async function setupAppMenu(): Promise<void> {
                 accelerator: 'CmdOrCtrl+Shift+L',
                 action: () => useLogStore().showDrawer(),
             }),
+            editorHighlightItem,
         ],
     })
 

@@ -133,6 +133,11 @@ export function buildStylesheet(isDark = false): any[] {
                 'font-size': 7,
                 'min-width': `${TIMER_SIZE}px`,
                 'min-height': `${TIMER_SIZE}px`,
+            } as any,
+        },
+        {
+            selector: 'node.gene[model_kind = "timer"][nodeColour]',
+            style: {
                 'border-color': 'data(nodeColour)'
             } as any,
         },

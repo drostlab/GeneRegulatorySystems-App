@@ -28,6 +28,8 @@ export const useViewerStore = defineStore('viewer', () => {
     const maxRenderedGenes = ref<number>(10)
     /** Maximum concurrently visible execution-path rows in the timeline. */
     const maxTimelinePaths = ref<number>(20)
+    /** Whether hovering timeline segments highlights the corresponding JSON in the editor. */
+    const editorHighlightEnabled = ref<boolean>(true)
 
     /** Segments filtered by both pathFilter and channelFilter. */
     const filteredSegments = computed(() => {
@@ -73,6 +75,7 @@ export const useViewerStore = defineStore('viewer', () => {
      * Never falls back to timepoint — only set during explicit hover.
      */
     const editorHighlightModelPath = computed((): string | null => {
+        if (!editorHighlightEnabled.value) return null
         return hoveredInstantModelPath.value ?? hoveredRectModelPath.value
     })
 
@@ -218,6 +221,7 @@ export const useViewerStore = defineStore('viewer', () => {
         channelFilter,
         maxRenderedGenes,
         maxTimelinePaths,
+        editorHighlightEnabled,
         filteredSegments,
         filteredPaths,
         hoveredExecutionPath,

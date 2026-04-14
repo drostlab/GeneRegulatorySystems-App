@@ -179,7 +179,7 @@ const light: ThemeMode = {
     },
     chart: {
         gridLine:       GREY[100],
-        cursor:         GREY[700],
+        cursor:         GREY[800],
         cursorText:     GREY[0],
         tooltipBg:      GREY[700],
         tooltipFg:      GREY[0],
@@ -228,8 +228,8 @@ const dark: ThemeMode = {
     },
     chart: {
         gridLine:       GREY[700],
-        cursor:         GREEN[300],
-        cursorText:     GREY[950],
+        cursor:         GREY[900],
+        cursorText:     GREY[0],
         tooltipBg:      GREY[200],
         tooltipFg:      GREY[950],
         fallbackSeries: GREY[500],
