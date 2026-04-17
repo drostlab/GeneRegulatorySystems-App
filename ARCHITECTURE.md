@@ -43,7 +43,7 @@ In Tauri production builds, examples are bundled as resources and seeded into `<
 
 | File | Purpose |
 | ------ | --------- |
-| `tauri-app/src/lib.rs` | Tauri app entry. Spawns Julia backend, resolves data + examples directories, handles Julia provisioning IPC. |
+| `tauri-app/src/lib.rs` | Tauri app entry. Spawns Julia backend, resolves data + examples directories, handles Julia provisioning IPC. `RunEvent::Exit` handler explicitly kills the Julia process (belt-and-braces with `Drop`). |
 | `tauri-app/src/julia.rs` | Julia runtime provisioning + system detection. Downloads pinned release if needed. |
 | `tauri-app/tauri.conf.json` | Tauri config: window size, bundle targets, dev/build URLs. Bundles `backend/examples/`, `backend/src/`, `grs-package/`. |
 | `frontend/src/tauri.ts` | Frontend Tauri bridge. `initialiseBackend()` — Tauri mode calls IPC, browser mode resolves immediately. |
@@ -78,7 +78,7 @@ In Tauri production builds, examples are bundled as resources and seeded into `<
 | ------ | --------- |
 | `simulation.jl` | `Simulation` module — result management, execution, filtered timeseries loading from Arrow. |
 | `timeseries_summary.jl` | `TimeseriesSummary` module — computes mean + SE across execution paths. Auto-detects shared grid (step-based schedules) vs uniform interpolation (continuous). `compute_summary(path, species; n_points)`. |
-| `simulation_controller.jl` | `SimulationControl` module — live simulation lifecycle (pause/resume, WS streaming, gene subscriptions). |
+| `simulation_controller.jl` | `SimulationControl` module — live simulation lifecycle (pause/resume, WS streaming, gene subscriptions). `SimulationController` holds `ws_ref`/`ws_lock` (shared Ref to global WS client) and looks up the WebSocket lazily on each `send_*` call, avoiding the race where the WS connects after the controller is constructed. |
 | `streaming_sink.jl` | `StreamingSink` module — Arrow IPC storage + real-time WS streaming during execution. Uses `GapTracker`. Per-segment progress tracking via `SegmentProgress` for monotonic progress with branching schedules. |
 | `gap_tracking.jl` | `GapTracking` module — shared gap detection logic (`GapTracker`, `register_episode!`, `check_gap`, `check_synthetic_start`) used by both streaming and post-hoc loading. |
 
@@ -164,10 +164,10 @@ In Tauri production builds, examples are bundled as resources and seeded into `<
 ### Simulation Streaming
 
 **Backend flow:**
-1. `POST /simulations/run` creates a `SimulationController` and stores it as `active_controller`. Returns immediately with `status=running`.
-2. `StreamingSimulationSink` receives every simulation event. It writes Arrow IPC to disk, and if the controller has subscribed species, accumulates timeseries data per species/path.
-3. At time-window intervals (`stream_interval = 1000.0` sim-time units), the sink sends a `progress` message and a `timeseries` batch to the WS client via the controller.
-4. When the simulation completes, the sink sends a final `status: completed` message.
+1. `POST /simulations/run` creates a `SimulationController` with `ws_ref` pointing to the global `ws_client` Ref and `ws_lock = WS_LOCK`. Returns immediately with `status=running`.
+2. `StreamingSimulationSink` receives every simulation event. It writes Arrow IPC to disk, and if the controller has subscribed species, accumulates timeseries data per species/path. WS sends use the controller's lazy `ws_ref` lookup.
+3. At time-window intervals (`stream_interval = 500ms` wall-clock), the sink sends a `progress` message and a `timeseries` batch to the WS client via the controller.
+4. When the simulation completes, the controller sends a final `status: completed` message.
 
 **WS protocol** (`/ws`):
 - Client -> Server: `{ type: "subscribe", species: [...] }`, `{ type: "pause" }`, `{ type: "resume" }`
@@ -176,7 +176,7 @@ In Tauri production builds, examples are bundled as resources and seeded into `<
 **Pause/resume:** `check_pause!(controller)` is called on every sink event. When paused, the simulation thread blocks on a `Threads.Condition`. Resume notifies the condition.
 
 **Frontend flow:**
-1. `simulationStore.runSimulation()` connects the WS via `useSimulationStream`, tracks the simulation ID, and subscribes the first N selected genes.
+1. `simulationStore.runSimulation()` awaits `stream.connect()` (returns a Promise that resolves on `ws.onopen`), then fires the HTTP POST. This ensures the backend has a valid `ws_client` before the simulation starts. Tracks the simulation ID, and subscribes the first N selected genes.
 2. WS `progress` callbacks update `currentResult.current_time`; `streamingDelta` holds the latest timeseries batch (not cumulative).
 3. `TrackViewer.vue` watches `streamingDelta` with RAF throttle, calling `MainChart.appendStreamingData(data, currentTime)` which routes to `CountsPanel` / `PromoterPanel`. During streaming, the timeseries cache watcher is skipped (`isSimulationRunning` guard) to prevent `setData` from overwriting incremental appends.
 4. Each panel maintains a `seriesMap` of persistent `XyDataSeries` / `XyyDataSeries` and a **trailing cursor extension point**: a temporary last point at `min(currentTime, pathEndTime)` with the last known value. Cursor points are clamped to the path's time range via `pathTimeRanges` (computed from segments by `getPathTimeRanges`) so they don't extend into later segments.
@@ -217,7 +217,7 @@ Simulation timeseries: first-ever fetch shows full overlay on chart; subsequent 
 | `App.vue` | 3-panel splitter layout |
 | `TrackViewer.vue` | Toolbar (run/load/gene filter/track settings/phase-space toggle) + MainChart. `showPhaseSpace` ref auto-set true when `isPhaseSpaceAvailable` becomes true; toggles `chart.showPhaseSpace(result)` / `chart.hidePhaseSpace()`. Watches phase-space result + timepoint. |
 | `NetworkDiagram.vue` | Cytoscape graph via `NetworkView`. Model label overlay (bottom-left). Watches `scheduleStore.unionNetwork`. |
-| `ScheduleEditor.vue` | Schedule dropdown + Monaco JSON editor + validation. Watches `viewerStore.hoveredModelPath` and `selectedSegmentIds`; resolves the corresponding `json_path` from loaded segments via `findRangeForJsonPath`, then calls `highlightScope`/`clearScopeHighlight` to highlight and optionally scroll to the active scope in the editor. |
+| `ScheduleEditor.vue` | Schedule dropdown + Monaco JSON editor + validation. No schedule is loaded on startup; user must select one. Watches `viewerStore.hoveredModelPath` and `selectedSegmentIds`; resolves the corresponding `json_path` from loaded segments via `findRangeForJsonPath`, then calls `highlightScope`/`clearScopeHighlight` to highlight and optionally scroll to the active scope in the editor. |
 
 ### Utils and Services
 

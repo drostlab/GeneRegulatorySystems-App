@@ -243,6 +243,17 @@ export class MainChart {
         this.timeCursorModifier?.onSubChartVisibilityChanged()
     }
 
+    /** Zoom all visible panels to fit their data on both axes. */
+    zoomExtentsAll(): void {
+        for (const { panel } of this.tracks) {
+            if (!panel.isVisible) continue
+            if (panel.surface.renderableSeries.asArray().length > 0) {
+                panel.surface.zoomExtentsY()
+                panel.surface.zoomExtentsX()
+            }
+        }
+    }
+
     clear() {
         this.selectSyncModifier?.clearSelection()
         this.timeCursorModifier?.hideCursor()

@@ -70,4 +70,23 @@ GRSServer.set_data_dir(data_dir)
 
 # Start server (enable Revise hot-reload only when available)
 revise_mode = isdefined(Main, :Revise) ? :lazy : :off
+
+# Parent-PID watchdog: if our parent process dies (e.g. SIGKILL on Tauri),
+# exit gracefully so we don't leave an orphan Julia process.
+@static if Sys.isunix()
+    _parent_pid = ccall(:getppid, Cint, ())
+    if _parent_pid > 1
+        Threads.@spawn begin
+            while true
+                sleep(5)
+                ret = ccall(:kill, Cint, (Cint, Cint), _parent_pid, 0)
+                if ret != 0
+                    @info "[Watchdog] Parent process $_parent_pid gone, exiting"
+                    exit(0)
+                end
+            end
+        end
+    end
+end
+
 GRSServer.serve(revise=revise_mode, middleware=[Cors()], host=host, port=port)

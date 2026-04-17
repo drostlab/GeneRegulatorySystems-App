@@ -687,6 +687,20 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building Tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                log::info!("App exiting -- killing Julia backend");
+                let state: tauri::State<BackendState> = app_handle.state();
+                let mut guard = match state.process.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                if let Some(mut child) = guard.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        });
 }

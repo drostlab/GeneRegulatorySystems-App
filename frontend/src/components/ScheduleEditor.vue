@@ -194,13 +194,7 @@ onMounted(async () => {
     }
 
     await initMonaco()
-    // Load first schedule if none loaded
-    if (!store.schedule.name && availableScheduleKeys.value.length > 0) {
-        await store.loadScheduleByKey(availableScheduleKeys.value[0]!)
-    }
-    else {
-        resetEditor()
-    }
+    resetEditor()
 })
 
 onBeforeUnmount(() =>

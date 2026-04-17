@@ -65,34 +65,46 @@ export function useSimulationStream() {
 
     const wsUrl = computed(() => config.getWebSocketUrl())
 
-    function connect(): void {
-        if (ws && ws.readyState <= WebSocket.OPEN) return
+    function connect(): Promise<void> {
+        if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve()
+        if (ws && ws.readyState === WebSocket.CONNECTING) {
+            return new Promise<void>((resolve, reject) => {
+                const prev = ws!.onopen
+                ws!.onopen = (ev) => { (prev as ((ev: Event) => void))?.(ev); resolve() }
+                const prevErr = ws!.onerror
+                ws!.onerror = (ev) => { (prevErr as ((ev: Event) => void))?.(ev); reject(ev) }
+            })
+        }
 
         console.debug('[SimStream] Connecting to', wsUrl.value)
         ws = new WebSocket(wsUrl.value)
 
-        ws.onopen = () => {
-            isConnected.value = true
-            console.debug('[SimStream] Connected')
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer)
-                reconnectTimer = null
+        return new Promise<void>((resolve, reject) => {
+            ws!.onopen = () => {
+                isConnected.value = true
+                console.debug('[SimStream] Connected')
+                if (reconnectTimer) {
+                    clearTimeout(reconnectTimer)
+                    reconnectTimer = null
+                }
+                resolve()
             }
-        }
 
-        ws.onclose = () => {
-            isConnected.value = false
-            console.debug('[SimStream] Disconnected')
-            _scheduleReconnect()
-        }
+            ws!.onclose = () => {
+                isConnected.value = false
+                console.debug('[SimStream] Disconnected')
+                _scheduleReconnect()
+            }
 
-        ws.onerror = (event) => {
-            console.warn('[SimStream] WebSocket error', event)
-        }
+            ws!.onerror = (event) => {
+                console.warn('[SimStream] WebSocket error', event)
+                reject(event)
+            }
 
-        ws.onmessage = (event) => {
-            _handleMessage(event.data as string)
-        }
+            ws!.onmessage = (event) => {
+                _handleMessage(event.data as string)
+            }
+        })
     }
 
     function disconnect(): void {
@@ -133,6 +145,7 @@ export function useSimulationStream() {
                 onTimeseries?.(msg.data)
                 break
             case 'status':
+                console.debug(`[SimStream] Status: ${msg.status} for ${msg.simulation_id}`)
                 onStatus?.(msg.status, msg.error)
                 break
             case 'phasespace_ready':

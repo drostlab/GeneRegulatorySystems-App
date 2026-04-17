@@ -16,10 +16,10 @@ using GeneRegulatorySystems.Models.Scheduling
 include("schedule_bindings.jl")
 include("network_representation.jl")
 include("simulation/gap_tracking.jl")
+include("simulation/simulation_controller.jl")
 include("simulation/streaming_sink.jl")
 include("schedule/schedule_storage.jl")
 include("schedule/schedule_visualisation.jl")
-include("simulation/simulation_controller.jl")
 include("simulation/simulation.jl")
 include("simulation/timeseries_summary.jl")
 include("phase_space.jl")
@@ -254,19 +254,15 @@ end
     # Prepare result directory and metadata
     result = Simulation.prepare_result(data.payload.schedule_name, data.payload.schedule_spec; max_time)
 
-    # Get current websocket client
-    current_ws = lock(WS_LOCK) do
-        ws_client[]
-    end
-
     # Create simulation controller for pause/resume and gene subscriptions.
-    # Initial subscribed_species from the request so streaming starts immediately
-    # without waiting for a separate subscribe WS message.
+    # Uses ws_client/WS_LOCK refs so the controller lazily reads the latest WS
+    # client on each send (handles the race where WS connects after POST fires).
     initial_species = Set(Symbol.(data.payload.subscribed_species))
     ctrl = SimulationController(
         result_path = result.path,
         simulation_id = result.id,
-        ws_client = current_ws,
+        ws_ref = ws_client,
+        ws_lock = WS_LOCK,
         subscribed_species = initial_species
     )
     active_controller[] = ctrl
@@ -290,7 +286,7 @@ end
 
     # Spawn async simulation task
     simulation_task[] = @async begin
-        Simulation.run_simulation(result, model, current_ws; controller = ctrl, segments = timeline_segments)
+        Simulation.run_simulation(result, model; controller = ctrl, segments = timeline_segments)
         active_controller[] = nothing
 
         # After simulation completes, compute phase-space embedding on a thread

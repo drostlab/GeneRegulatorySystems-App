@@ -206,20 +206,19 @@ function prepare_result(schedule_name::String, schedule_spec::String; max_time::
 end
 
 """
-    run_simulation(result, schedule, ws_client; controller=nothing, segments=nothing)
+    run_simulation(result, schedule; controller=nothing, segments=nothing)
 
 Execute a simulation, stream progress/timeseries via WS, and write results to disk.
 
 If `segments` is provided (from reify_schedule), per-segment progress tracking is enabled.
 """
-function run_simulation(result::SimulationResult, schedule::Models.Model, ws_client::Union{HTTP.WebSocket, Nothing};
+function run_simulation(result::SimulationResult, schedule::Models.Model;
                         controller::Union{SimulationController, Nothing} = nothing,
                         segments = nothing)
     @info "[Simulation] Starting simulation" id=result.id schedule=result.schedule_name
 
     sink = StreamingSink.StreamingSimulationSink(
         location = result.path,
-        ws_client = ws_client,
         controller = controller
     )
 
@@ -256,15 +255,9 @@ function run_simulation(result::SimulationResult, schedule::Models.Model, ws_cli
         current_time = result.max_time
     )
 
-    # Notify WebSocket client of completion
-    if !isnothing(ws_client)
-        @info "[Simulation] Notifying WebSocket client" id=result.id
-        send(ws_client, JSON.json(Dict(
-            "type" => "status",
-            "simulation_id" => result.id,
-            "status" => "completed",
-            "frame_count" => frame_count
-        )))
+    # Notify WebSocket client of completion via controller
+    if !isnothing(controller)
+        send_status(controller, "completed")
     end
     @info "[Simulation] Completed successfully" id=result.id
 end

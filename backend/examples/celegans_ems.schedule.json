@@ -3,7 +3,12 @@
             "$": ["defaults", "gene"],
             "base_rates": {
                 "$": ["defaults", "gene", "base_rates"],
-                "protein_decay": 1e-8
+                "protein_decay": 1e-8,
+                "activation": 0.015,
+                "deactivation": 12,
+                "transcription": 0.005,
+                "translation": 1e-7,
+                "premrna_decay": 0.006
             }
     },
     "step": {
@@ -12,53 +17,61 @@
                 {
                     "$": ["fast_gene"],
                     "color": "#adadad",
-                    "name": "skn-1"
+                    "name": "skn-1",
+                    "base_rates": {
+                        "$": ["fast_gene", "base_rates"],
+                        "protein_decay": 2e-8
+                    }
                 },
                 {
                     "$": ["fast_gene"],
-                    "activation": [{"from": "skn-1", "at": 0.05}],
+                    "activation": [{"from": "skn-1", "at": 0.5}],
                     "color": "#76574D",
                     "name": "med-2"
                 },
                 {
                     "$": ["fast_gene"],
-                    "activation": [{"from": "skn-1", "at": 2.0}, {"from": "med-2", "at":2.0}],
+                    "activation": [{"from": "skn-1", "at": 0.5}, {"from": "med-2", "at":2.0}],
                     "color": "#A1887F",
                     "name": "med-1"
                 },
                 {
-                    "$": ["defaults", "gene"],
+                    "$": ["fast_gene"],
                     "color": "#67acc1",
-                    "name": "pop-1"
+                    "name": "pop-1",
+                    "base_rates": {
+                        "$": ["fast_gene", "base_rates"],
+                        "protein_decay": 1e-10
+                    }
                 },
                 {
-                    "$": ["defaults", "gene"],
+                    "$": ["fast_gene"],
                     "color": "#508697",
                     "name": "P2-signal-pathway"
                 },
                 {
                     "$": ["fast_gene"],
-                    "activation": [{"from": "skn-1", "at": 2.0}, {"from": "med-2", "at":2.0}, {"from": "med-1", "at":2.0}, {"from": "POP-1*", "at": 1.0}],
-                    "repression": [{"from": "pop-1", "at": 0.5}],
+                    "activation": [{"from": "skn-1", "at": 2.0}, {"from": "med-2", "at":0.5}, {"from": "med-1", "at":0.5}, {"from": "POP-1*", "at": 4.0}],
+                    "repression": [{"from": "pop-1", "at": 0.4}],
                     "color": "#b7d18c",
                     "name": "end-3"
                 },
                 {
                     "$": ["fast_gene"],
-                    "activation": [{"from": "skn-1", "at": 2.0}, {"from": "med-1", "at":2.0}, {"from": "end-3", "at":2.0}, {"from": "POP-1*", "at": 1.0}],
-                    "repression": [{"from": "elt-2", "at": 4.0}, {"from": "pop-1", "at": 0.5}],
+                    "activation": [{"from": "skn-1", "at": 2.0}, {"from": "med-1", "at":1.5}, {"from": "end-3", "at": 0.05}, {"from": "POP-1*", "at": 3.0}],
+                    "repression": [{"from": "elt-2", "at": 12.0}, {"from": "pop-1", "at": 0.4}],
                     "color": "#a3ca8c",
                     "name": "end-1"
                 },
                 {
                     "$": ["fast_gene"],
-                    "activation": [{"from": "end-3", "at": 2.0}, {"from": "end-1", "at":2.0}, {"from": "elt-7", "at":2.0}],
+                    "activation": [{"from": "end-3", "at": 2.0}, {"from": "end-1", "at":1.5}, {"from": "elt-7", "at":1.0}],
                     "color": "#81C784",
                     "name": "elt-7"
                 },
                 {
                     "$": ["fast_gene"],
-                    "activation": [{"from": "elt-2", "at": 2.0}, {"from": "end-1", "at":2.0}, {"from": "elt-7", "at":2.0}, {"from": "end-3", "at":2.0}],
+                    "activation": [{"from": "elt-2", "at": 2.0}, {"from": "end-1", "at":3.0}, {"from": "elt-7", "at":2.0}, {"from": "end-3", "at":3.0}],
                     "color": "#4CAF50",
                     "name": "elt-2"
                 },
@@ -88,25 +101,16 @@
                 }
             ],
             "reactions": [
-                {"from": ["pop-1", "P2-signal-pathway"], "rates": [0.02, 0.02], "to": ["POP-1*", "P2-signal-pathway"]}
+                {"from": ["pop-1", "P2-signal-pathway"], "rates": [1e-4, 1e-7], "to": ["POP-1*", "P2-signal-pathway"]}
             ]
         }},
         "step": [
             {"{add}": {
                 "$": ["defaults", "bootstrap"],
-                "skn-1.proteins": 100
+                "skn-1.proteins": 5000,
+                "pop-1.proteins": 1000
             }},
             [
-                {
-                    "branch": true,
-                    "each": {"length": 1},
-                    "as": "i",
-                    "label": "E lineage",
-                    "step": [
-                        {"{seed}": "${seed}-E-${i}"},
-                        {"to": 5000.0, "step": 20}
-                    ]
-                },
                 {
                     "branch": true,
                     "each": {"length": 1},
@@ -114,8 +118,18 @@
                     "label": "MS lineage",
                     "step": [
                         {"{seed}": "${seed}-MS-${i}"},
-                        {"{add}": {"P2-signal-pathway.proteins": 1000}}, 
-                        {"to": 5000.0, "step": 20}
+                        {"to": 10000.0, "step": 10}
+                    ]
+                },
+                {
+                    "branch": true,
+                    "each": {"length": 1},
+                    "as": "i",
+                    "label": "E lineage",
+                    "step": [
+                        {"{seed}": "${seed}-E-${i}"},
+                        {"{add}": {"P2-signal-pathway.proteins": 200}}, 
+                        {"to": 10000.0, "step": 10}
                     ]
                 }
             ]

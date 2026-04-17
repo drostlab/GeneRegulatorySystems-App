@@ -27,6 +27,8 @@ simulation thread blocks on a `Condition` until resumed.
 - `subscribed_species::Set{Symbol}`: Species names to stream via WS
 - `result_path::String`: Path to result directory (for metadata updates)
 - `simulation_id::String`: ID for WS message tagging
+- `ws_ref::Ref{Union{HTTP.WebSocket, Nothing}}`: shared ref to current WS client (looked up lazily on each send)
+- `ws_lock::ReentrantLock`: lock protecting `ws_ref` access
 """
 mutable struct SimulationController
     paused::Bool
@@ -34,15 +36,24 @@ mutable struct SimulationController
     subscribed_species::Set{Symbol}
     result_path::String
     simulation_id::String
-    ws_client::Union{HTTP.WebSocket, Nothing}
+    ws_ref::Ref{Union{HTTP.WebSocket, Nothing}}
+    ws_lock::ReentrantLock
 
     function SimulationController(;
         result_path::String,
         simulation_id::String,
-        ws_client::Union{HTTP.WebSocket, Nothing} = nothing,
+        ws_ref::Ref{Union{HTTP.WebSocket, Nothing}} = Ref{Union{HTTP.WebSocket, Nothing}}(nothing),
+        ws_lock::ReentrantLock = ReentrantLock(),
         subscribed_species::Set{Symbol} = Set{Symbol}()
     )
-        new(false, Threads.Condition(), subscribed_species, result_path, simulation_id, ws_client)
+        new(false, Threads.Condition(), subscribed_species, result_path, simulation_id, ws_ref, ws_lock)
+    end
+end
+
+"""Look up the current WebSocket client from the shared ref."""
+function _get_ws(ctrl::SimulationController)::Union{HTTP.WebSocket, Nothing}
+    lock(ctrl.ws_lock) do
+        ctrl.ws_ref[]
     end
 end
 
@@ -104,7 +115,8 @@ end
 Send a progress message to the WebSocket client.
 """
 function send_progress(ctrl::SimulationController, current_time::Float64, frame_count::Int)
-    isnothing(ctrl.ws_client) && return
+    ws = _get_ws(ctrl)
+    isnothing(ws) && return
 
     msg = Dict(
         "type" => "progress",
@@ -114,7 +126,7 @@ function send_progress(ctrl::SimulationController, current_time::Float64, frame_
     )
 
     try
-        send(ctrl.ws_client, JSON.json(msg))
+        send(ws, JSON.json(msg))
     catch e
         @warn "[SimulationController] Failed to send progress" exception=string(e)
     end
@@ -128,8 +140,9 @@ Send incremental timeseries data for subscribed species via WebSocket.
 (species -> path -> [(t, count)]).
 """
 function send_timeseries(ctrl::SimulationController, timeseries_data::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}})
-    isnothing(ctrl.ws_client) && return
     isempty(timeseries_data) && return
+    ws = _get_ws(ctrl)
+    isnothing(ws) && return
 
     # Convert to JSON-friendly format: { species: { path: [[t, v], ...] } }
     data = Dict{String, Dict{String, Vector{Vector{Any}}}}()
@@ -148,7 +161,7 @@ function send_timeseries(ctrl::SimulationController, timeseries_data::Dict{Symbo
     )
 
     try
-        send(ctrl.ws_client, JSON.json(msg))
+        send(ws, JSON.json(msg))
     catch e
         @warn "[SimulationController] Failed to send timeseries" exception=string(e)
     end
@@ -160,7 +173,11 @@ end
 Send a status change message via WebSocket.
 """
 function send_status(ctrl::SimulationController, status::String; error::Union{String, Nothing} = nothing)
-    isnothing(ctrl.ws_client) && return
+    ws = _get_ws(ctrl)
+    if isnothing(ws)
+        @warn "[SimulationController] send_status: ws is nothing, cannot send" status=status id=ctrl.simulation_id
+        return
+    end
 
     msg = Dict{String, Any}(
         "type" => "status",
@@ -170,7 +187,7 @@ function send_status(ctrl::SimulationController, status::String; error::Union{St
     !isnothing(error) && (msg["error"] = error)
 
     try
-        send(ctrl.ws_client, JSON.json(msg))
+        send(ws, JSON.json(msg))
     catch e
         @warn "[SimulationController] Failed to send status" exception=string(e)
     end

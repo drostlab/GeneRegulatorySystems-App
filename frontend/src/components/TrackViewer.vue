@@ -36,6 +36,8 @@ const containerRef = ref<HTMLDivElement>()
 const results = ref<SimulationResult[]>([])
 const isFullscreen = ref<boolean>(false)
 const selectedTracks = ref<string[]>([])
+/** Stashed track selection preserved across simulation reload blips. */
+let previousTrackSelection: string[] | null = null
 const trackSettingsPanel = ref()
 const previousGeneSelection = ref<string[] | null>(null)
 const showPhaseSpace = ref(false)
@@ -171,15 +173,33 @@ watch(
             }
         }
 
-        // Set defaults when simulation transitions to loaded
+        // Simulation just became unloaded -- stash current tracks so we can restore them
+        const simulationJustUnloaded = !state.simulationLoaded && oldState?.simulationLoaded
+        if (simulationJustUnloaded) {
+            previousTrackSelection = [...selectedTracks.value]
+        }
+
+        // Set defaults when simulation transitions to loaded (only if no tracks already selected)
         const simulationJustLoaded = state.simulationLoaded && !oldState?.simulationLoaded
         if (simulationJustLoaded) {
-            const defaults: string[] = []
-            if (state.scheduleLoaded) {
-                defaults.push('schedule')
+            // Restore stashed selection if available (re-run preserves user choice)
+            if (previousTrackSelection !== null) {
+                const restored = previousTrackSelection.filter(t => validTracks.includes(t))
+                previousTrackSelection = null
+                if (restored.some(t => t !== 'schedule')) {
+                    selectedTracks.value = restored
+                    return
+                }
             }
-            defaults.push(...DEFAULT_VISIBLE_SPECIES_TYPES)
-            selectedTracks.value = defaults
+            const hasSimulationTracks = selectedTracks.value.some(t => t !== 'schedule')
+            if (!hasSimulationTracks) {
+                const defaults: string[] = []
+                if (state.scheduleLoaded) {
+                    defaults.push('schedule')
+                }
+                defaults.push(...DEFAULT_VISIBLE_SPECIES_TYPES)
+                selectedTracks.value = defaults
+            }
             return
         }
         
@@ -273,14 +293,21 @@ watch(
 
 watch(
     () => scheduleStore.allGenes,
-    (allGenes) => {
-        if (allGenes && allGenes.length > 0) {
-            if (simulationStore.isLoaded) {
-                viewerStore.selectedGenes = allGenes.slice(0, DEFAULT_SELECTED_GENES_COUNT)
-            } else {
-                // No simulation: select all genes so the network looks complete
-                viewerStore.selectedGenes = [...allGenes]
-            }
+    (allGenes, oldGenes) => {
+        if (!allGenes || allGenes.length === 0) return
+        // Preserve selection if the gene set hasn't changed
+        const genesChanged = !oldGenes || allGenes.length !== oldGenes.length || allGenes.some((g, i) => g !== oldGenes[i])
+        if (!genesChanged) return
+        // Keep existing selection if it's still valid for the new gene set
+        const newGeneSet = new Set(allGenes)
+        const stillValid = viewerStore.selectedGenes.filter(g => newGeneSet.has(g))
+        if (stillValid.length > 0) {
+            viewerStore.selectedGenes = stillValid
+        } else if (simulationStore.isLoaded) {
+            viewerStore.selectedGenes = allGenes.slice(0, DEFAULT_SELECTED_GENES_COUNT)
+        } else {
+            // No simulation: select all genes so the network looks complete
+            viewerStore.selectedGenes = [...allGenes]
         }
     }
 )
@@ -316,13 +343,7 @@ watch(
     }
 )
 
-// Auto-select all other species when union network loads
-watch(
-    () => scheduleStore.allOtherSpecies,
-    (otherSpecies) => {
-        viewerStore.selectedOtherSpecies = [...otherSpecies]
-    }
-)
+
 
 // Lazy-fetch timeseries when selected other species change
 watch(
@@ -724,6 +745,16 @@ function _scheduleStreamingFlush(): void {
         }
     })
 }
+
+// Final zoom extents when simulation completes so axes fit all data.
+watch(
+    () => simulationStore.isSimulationRunning,
+    (running, wasRunning) => {
+        if (!running && wasRunning) {
+            chart.zoomExtentsAll()
+        }
+    }
+)
 
 defineExpose({
     exportSVG: () => chart.exportImage(),

@@ -83,7 +83,6 @@ Direct Arrow sink with optional WebSocket streaming via SimulationController.
 - `index::Vector`: Execution segment metadata
 - `threshold::Int`: Event buffer size before flush (default 200k)
 - `channels::Dict{String, Channel}`: Buffered events by channel
-- `ws_client::Union{HTTP.WebSocket, Nothing}`: WebSocket for streaming
 - `controller`: SimulationController for pause/progress/timeseries (duck-typed)
 - `i_to_path::Dict{Int, String}`: Episode index to path mapping
 - `stream_interval_ns::UInt64`: Minimum nanoseconds between WS streaming updates (wall-clock)
@@ -102,7 +101,6 @@ Direct Arrow sink with optional WebSocket streaming via SimulationController.
     index::Vector = []
     threshold::Int = 200000
     channels::Dict{String, Channel} = Dict{String, Channel}()
-    ws_client::Union{HTTP.WebSocket, Nothing} = nothing
     controller::Any = nothing
     i_to_path::Dict{Int, String} = Dict{Int, String}()
     stream_interval_ns::UInt64 = UInt64(500_000_000)  # 500ms wall-clock
@@ -334,14 +332,15 @@ Send accumulated timeseries + progress to WS client, then clear the buffer.
 function _stream_update(sink::StreamingSimulationSink, current_time::Float64)
     isnothing(sink.controller) && return
     ctrl = sink.controller
-    isnothing(ctrl.ws_client) && return
+    ws = lock(ctrl.ws_lock) do; ctrl.ws_ref[]; end
+    isnothing(ws) && return
 
     sink.last_stream_ns = time_ns()
 
     # Send progress
     total_progress = _compute_total_progress(sink, current_time)
     @info "[StreamingSink] Streaming update" current_time=current_time frame_count=sink.frame_count total_progress=total_progress subscribed=length(ctrl.subscribed_species) pending=length(sink.pending_timeseries)
-    _ws_send(ctrl.ws_client, Dict(
+    _ws_send(ws, Dict(
         "type" => "progress",
         "simulation_id" => ctrl.simulation_id,
         "current_time" => current_time,
@@ -353,7 +352,7 @@ function _stream_update(sink::StreamingSimulationSink, current_time::Float64)
     if !isempty(sink.pending_timeseries)
         n_points = sum(sum(length(pts) for pts in values(pd)) for pd in values(sink.pending_timeseries))
         @info "[StreamingSink] Sending timeseries" species=length(sink.pending_timeseries) points=n_points
-        _ws_send_timeseries(ctrl.ws_client, ctrl.simulation_id, sink.pending_timeseries)
+        _ws_send_timeseries(ws, ctrl.simulation_id, sink.pending_timeseries)
         empty!(sink.pending_timeseries)
     end
 end
@@ -429,8 +428,9 @@ function flush!(sink::StreamingSimulationSink)
     # Final timeseries flush
     if !isempty(sink.pending_timeseries) && !isnothing(sink.controller)
         ctrl = sink.controller
-        if !isnothing(ctrl.ws_client)
-            _ws_send_timeseries(ctrl.ws_client, ctrl.simulation_id, sink.pending_timeseries)
+        ws = lock(ctrl.ws_lock) do; ctrl.ws_ref[]; end
+        if !isnothing(ws)
+            _ws_send_timeseries(ws, ctrl.simulation_id, sink.pending_timeseries)
         end
         empty!(sink.pending_timeseries)
     end

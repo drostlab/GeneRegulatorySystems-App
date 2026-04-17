@@ -303,6 +303,7 @@ export async function setupAppMenu(): Promise<void> {
     const { Submenu } = await import('@tauri-apps/api/menu/submenu')
     const { MenuItem } = await import('@tauri-apps/api/menu/menuItem')
     const { CheckMenuItem } = await import('@tauri-apps/api/menu/checkMenuItem')
+    const { PredefinedMenuItem } = await import('@tauri-apps/api/menu/predefinedMenuItem')
     const { invoke } = await import('@tauri-apps/api/core')
     const { openPath } = await import('@tauri-apps/plugin-opener')
 
@@ -346,6 +347,19 @@ export async function setupAppMenu(): Promise<void> {
         },
     })
 
+    const editMenu = await Submenu.new({
+        text: 'Edit',
+        items: [
+            await PredefinedMenuItem.new({ item: 'Undo' }),
+            await PredefinedMenuItem.new({ item: 'Redo' }),
+            await PredefinedMenuItem.new({ item: 'Separator' }),
+            await PredefinedMenuItem.new({ item: 'Cut' }),
+            await PredefinedMenuItem.new({ item: 'Copy' }),
+            await PredefinedMenuItem.new({ item: 'Paste' }),
+            await PredefinedMenuItem.new({ item: 'SelectAll' }),
+        ],
+    })
+
     const viewMenu = await Submenu.new({
         text: 'View',
         items: [
@@ -361,6 +375,7 @@ export async function setupAppMenu(): Promise<void> {
     const menu = await Menu.new({
         items: [
             fileMenu,
+            editMenu,
             viewMenu,
         ],
     })

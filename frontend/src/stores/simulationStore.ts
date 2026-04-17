@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useScheduleStore } from './scheduleStore'
+import { useViewerStore } from './viewerStore'
 import type { SimulationResult, TimeseriesData, PhaseSpaceResult } from '@/types/simulation'
 import { formatResultLabel, getProgress } from '@/types/simulation'
 import { getTimeExtent } from '@/types/schedule'
@@ -232,11 +233,14 @@ export const useSimulationStore = defineStore(
                 if (status === 'completed') {
                     clearTimeseriesCache()
                     const scheduleStore = useScheduleStore()
-                    const genes = scheduleStore.allGenes ?? []
+                    const viewerStore = useViewerStore()
+                    const genes = viewerStore.selectedGenes.length > 0
+                        ? viewerStore.selectedGenes
+                        : (scheduleStore.allGenes ?? []).slice(0, DEFAULT_STREAM_GENE_COUNT)
                     if (genes.length > 0) {
-                        fetchGeneTimeseries(genes.slice(0, DEFAULT_STREAM_GENE_COUNT))
+                        fetchGeneTimeseries(genes)
                     }
-                    const otherSpecies = scheduleStore.allOtherSpecies
+                    const otherSpecies = viewerStore.selectedOtherSpecies
                     if (otherSpecies.length > 0) {
                         fetchOtherSpeciesTimeseries(otherSpecies)
                     }
@@ -316,18 +320,20 @@ export const useSimulationStore = defineStore(
             isPreparingSimulation.value = true
             isPaused.value = false
 
-            // Connect WS before starting
+            // Connect WS before starting (await ensures backend has ws_client)
             const stream = getSimulationStream()
-            stream.connect()
+            await stream.connect()
 
             // Compute initial species to subscribe server-side so streaming starts
-            // with the first episode — avoids the late-subscribe race.
-            const allGenes = scheduleStore.allGenes ?? []
-            const initialGenes = allGenes.slice(0, DEFAULT_STREAM_GENE_COUNT)
-            const initialOtherSpecies = scheduleStore.allOtherSpecies
+            // with the first episode -- uses current selection to preserve user choices.
+            const viewerStore = useViewerStore()
+            const selectedGenes = viewerStore.selectedGenes.length > 0
+                ? viewerStore.selectedGenes.slice(0, DEFAULT_STREAM_GENE_COUNT)
+                : (scheduleStore.allGenes ?? []).slice(0, DEFAULT_STREAM_GENE_COUNT)
+            const selectedOther = viewerStore.selectedOtherSpecies
             const initialSpecies = [
-                ...initialGenes.flatMap(g => scheduleStore.getSpeciesForGeneId(g)),
-                ...initialOtherSpecies,
+                ...selectedGenes.flatMap(g => scheduleStore.getSpeciesForGeneId(g)),
+                ...selectedOther,
             ]
 
             const result = await simulationService.runSimulation(
@@ -346,10 +352,10 @@ export const useSimulationStore = defineStore(
                 onStatus: _onStatus,
             })
 
-            // Subscribe default genes for live streaming (WS subscription complements
+            // Subscribe selected genes for live streaming (WS subscription complements
             // the server-side initial subscription from the run request)
-            if (initialGenes.length > 0) {
-                updateStreamSubscription(initialGenes)
+            if (selectedGenes.length > 0) {
+                updateStreamSubscription(selectedGenes, selectedOther)
             }
 
             // Catch fast-simulation race: if the simulation completed before track() was
