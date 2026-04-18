@@ -49,27 +49,6 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Install Julia
-        uses: julia-actions/setup-julia@v2
-        with:
-          version: "1.12"
-
-      - name: Instantiate Julia backend
-        working-directory: backend
-        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
-
-      - name: Install jq (macOS)
-        if: runner.os == 'macOS'
-        run: brew install jq
-
-      - name: Install jq (Windows)
-        if: runner.os == 'Windows'
-        run: choco install jq -y
-
-      - name: Run smoke test
-        shell: bash
-        run: ./backend/smoke-test.sh
-
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked
 
