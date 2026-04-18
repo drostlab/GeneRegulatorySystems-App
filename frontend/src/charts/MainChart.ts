@@ -10,14 +10,14 @@ import type { BasePanel, BasePanelOptions } from "./panels/BasePanel"
 import type { TimeseriesPanel } from "./panels/TimeseriesPanel"
 import type { Ref } from "vue"
 import { getTheme } from "@/config/theme"
-import { TimelinePanel } from "./panels/TimelinePanel"
+import { TimelinePanel } from "./panels/TimelinePanelLines"
 import { PromoterPanel } from "./panels/PromoterPanel"
 import { CountsPanel } from "./panels/CountsPanel"
 import { PhaseSpacePanel, type HoverInfo } from "./panels/PhaseSpacePanel"
 import { SharedTimeCursorModifier } from "./modifiers/SharedTimeCursorModifier"
 import { PanelGroup } from "./layout/PanelGroup"
 import { ChartLayout, type GroupNode, type LayoutNode } from "./layout/ChartLayout"
-import { collectPathYRanges } from "./layout/rectangleLayout"
+import { collectPathYRanges } from "./layout/lineLayout"
 import { getPathTimeRanges, getSegmentBoundaryTimes } from "@/types/schedule"
 import type { StructureNode, TimelineSegment, TimeseriesData, TimeseriesMetadata } from "@/types"
 import type { PhaseSpaceResult } from "@/types/simulation"
@@ -120,9 +120,9 @@ export class MainChart {
         this.timeCursorModifier = new SharedTimeCursorModifier(this.timeseriesGroup, isDark, t => this.timepointChangeCallback?.(t))
         this.surface.chartModifiers.add(this.timeCursorModifier)
 
-        /** Groups timeseries by gene ID (prefix before ':'); excludes segment rectangles. */
+        /** Groups timeseries by gene ID (prefix before ':'); excludes timeline series. */
         const geneGroupFn: GroupingFn = (name) => {
-            if (name.startsWith('segment:')) return null
+            if (name.startsWith('segment:') || name.startsWith('line:') || name.startsWith('__')) return null
             const colonIndex = name.indexOf(':')
             return colonIndex >= 0 ? name.substring(0, colonIndex) : name
         }

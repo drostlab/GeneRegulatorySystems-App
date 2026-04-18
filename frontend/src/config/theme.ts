@@ -140,6 +140,17 @@ export interface ThemeMode {
             hover:    { stroke: string; text: string }
             selected: { fill: string; stroke: string; text: string }
         }
+        /** Line-based timeline (new). */
+        line: {
+            normal: string
+            hover: string
+            dim: string
+        }
+        /** Vertical branch connector. */
+        connector: {
+            normal: string
+            hover: string
+        }
         segmentBoundary: string
     }
     /** Network diagram. */
@@ -196,6 +207,15 @@ const light: ThemeMode = {
             hover:    { stroke: GREY[400], text: GREY[700] },
             selected: { fill: RED[200], stroke: GREY[300], text: GREY[900] },
         },
+        line: {
+            normal: GREY[500],
+            hover:  GREY[800],
+            dim:    GREY[200],
+        },
+        connector: {
+            normal: GREY[350],
+            hover:  GREY[600],
+        },
         segmentBoundary: GREY[400],
     },
     network: {
@@ -244,6 +264,15 @@ const dark: ThemeMode = {
             normal:   { stroke: GREY[600], text: GREY[400] },
             hover:    { stroke: GREY[400], text: GREY[200] },
             selected: { fill: RED[950], stroke: RED[900], text: GREY[50] },
+        },
+        line: {
+            normal: GREY[400],
+            hover:  GREY[200],
+            dim:    GREY[700],
+        },
+        connector: {
+            normal: GREY[500],
+            hover:  GREY[300],
         },
         segmentBoundary: GREY[700],
     },

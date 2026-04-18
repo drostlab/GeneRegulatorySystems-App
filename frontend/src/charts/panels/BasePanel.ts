@@ -101,7 +101,7 @@ export abstract class BasePanel {
      * Returns true if the series should be shown at full opacity.
      */
     protected _seriesMatchesFilters(name: string): boolean {
-        if (name.startsWith('__') || name.startsWith('segment:')) return true
+        if (name.startsWith('__') || name.startsWith('segment:') || name.startsWith('line:')) return true
         const colonIdx = name.indexOf(':')
         if (colonIdx < 0) return true
         if (this._highlightedPath !== null) {
@@ -128,7 +128,7 @@ export abstract class BasePanel {
     protected _applyHighlightFilters(): void {
         for (const rs of this.surface.renderableSeries.asArray()) {
             const name = rs.dataSeries?.dataSeriesName ?? ''
-            if (name.startsWith('__') || name.startsWith('segment:')) continue
+            if (name.startsWith('__') || name.startsWith('segment:') || name.startsWith('line:')) continue
             const colonIdx = name.indexOf(':')
             if (colonIdx < 0) continue
             rs.opacity = this._seriesMatchesFilters(name) ? 1 : PATH_DIM_OPACITY
