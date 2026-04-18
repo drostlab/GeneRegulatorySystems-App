@@ -42,23 +42,24 @@ function register_episode!(tracker::GapTracker, path::String, from::Float64, to:
 end
 
 """
-    check_gap(tracker, path, ep_from, prev_end) -> (insert::Bool, gap_t::Float64)
+    check_gap(tracker, path, ep_from, prev_end) -> (insert::Bool, gap_t_start::Float64, gap_t_end::Float64)
 
 Determine whether a gap marker should be inserted before this episode.
 
-Returns `(true, gap_t)` if there is a discontinuity, `(false, NaN)` otherwise.
-`gap_t` is placed at `prev_end + epsilon` so step-function rendering holds
-just past the last real endpoint.
+Returns `(true, gap_t_start, gap_t_end)` if there is a discontinuity, `(false, NaN, NaN)` otherwise.
+`gap_t_start` is placed at `prev_end + epsilon` (just past the last real data),
+`gap_t_end` at `segment_start - epsilon` (just before the new data begins).
+Two markers ensure the renderer does not interpolate across the empty gap region.
 """
-function check_gap(tracker::GapTracker, path::String, ep_from::Float64, prev_end::Float64)::Tuple{Bool, Float64}
-    isnan(prev_end) && return (false, NaN)
+function check_gap(tracker::GapTracker, path::String, ep_from::Float64, prev_end::Float64)::Tuple{Bool, Float64, Float64}
+    isnan(prev_end) && return (false, NaN, NaN)
     run_pred = get(tracker.run_predecessor, path, Dict{Float64, Float64}())
     predecessor_from = get(run_pred, ep_from, NaN)
     gap_start = isnan(predecessor_from) ? ep_from : predecessor_from
     if gap_start > prev_end + GAP_EPSILON
-        return (true, prev_end + GAP_EPSILON)
+        return (true, prev_end + GAP_EPSILON, gap_start - GAP_EPSILON)
     end
-    return (false, NaN)
+    return (false, NaN, NaN)
 end
 
 """

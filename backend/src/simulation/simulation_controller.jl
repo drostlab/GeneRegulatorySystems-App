@@ -12,6 +12,7 @@ import HTTP: send
 using Logging
 
 export SimulationController, check_pause!, subscribe_genes!, is_paused, pause!, resume!
+export send_progress, send_timeseries, send_status
 
 """
     SimulationController
@@ -110,20 +111,22 @@ function subscribe_genes!(ctrl::SimulationController, species::Vector{String})
 end
 
 """
-    send_progress(ctrl, current_time, frame_count)
+    send_progress(ctrl, current_time, frame_count; total_progress=nothing)
 
 Send a progress message to the WebSocket client.
 """
-function send_progress(ctrl::SimulationController, current_time::Float64, frame_count::Int)
+function send_progress(ctrl::SimulationController, current_time::Float64, frame_count::Int;
+                       total_progress::Union{Float64, Nothing} = nothing)
     ws = _get_ws(ctrl)
     isnothing(ws) && return
 
-    msg = Dict(
+    msg = Dict{String, Any}(
         "type" => "progress",
         "simulation_id" => ctrl.simulation_id,
         "current_time" => current_time,
         "frame_count" => frame_count
     )
+    !isnothing(total_progress) && (msg["total_progress"] = total_progress)
 
     try
         send(ws, JSON.json(msg))
@@ -137,20 +140,20 @@ end
 
 Send incremental timeseries data for subscribed species via WebSocket.
 `timeseries_data` is Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}
-(species -> path -> [(t, count)]).
+(species -> segment_id -> [(t, count)]).
 """
 function send_timeseries(ctrl::SimulationController, timeseries_data::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}})
     isempty(timeseries_data) && return
     ws = _get_ws(ctrl)
     isnothing(ws) && return
 
-    # Convert to JSON-friendly format: { species: { path: [[t, v], ...] } }
+    # Convert to JSON-friendly format: { species: { segmentId: [[t, v], ...] } }
     data = Dict{String, Dict{String, Vector{Vector{Any}}}}()
-    for (species, path_data) in timeseries_data
+    for (species, seg_data) in timeseries_data
         species_str = String(species)
         data[species_str] = Dict{String, Vector{Vector{Any}}}()
-        for (path, points) in path_data
-            data[species_str][path] = [[t, v] for (t, v) in points]
+        for (seg_key, points) in seg_data
+            data[species_str][seg_key] = [[t, v] for (t, v) in points]
         end
     end
 

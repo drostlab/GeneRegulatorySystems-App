@@ -18,6 +18,7 @@ import OverlayPanel from 'primevue/overlaypanel'
 import Checkbox from 'primevue/checkbox'
 import * as simulationService from '@/services/simulationService'
 import { MainChart } from '@/charts/MainChart'
+import { useStreamingController } from '@/composables/useStreamingController'
 import { useTheme } from '@/composables/useTheme'
 import { buildClientPhaseSpace, recolourPhaseSpace } from '@/charts/phaseSpaceBuilder'
 import { GREEN, RED } from '@/config/theme'
@@ -45,6 +46,7 @@ const pathSuggestions = ref<string[]>([])
 const channelSuggestions = ref<string[]>([])
 
 const chart = new MainChart()
+const streaming = useStreamingController(chart)
 
 const OTHER_SPECIES_COLOUR = '#9e9e9e'
 
@@ -59,6 +61,9 @@ const progressPercent = computed(() => Math.round(simulationStore.progress * 100
 const isFirstTimeseriesFetch = computed(() =>
     simulationStore.isFetchingTimeseries && simulationStore.fetchedGenes.size === 0
 )
+
+/** Error message shown as overlay when a result fails to load. */
+const resultError = ref<string | null>(null)
 
 /** Determine which loading overlay to show with priority (only one shown at a time). */
 const activeLoadingState = computed(() => {
@@ -532,6 +537,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+    streaming.dispose()
     chart.dispose()
     window.removeEventListener('keydown', handleEscapeKey)
 })
@@ -542,20 +548,29 @@ async function loadResult(event: SelectChangeEvent) {
     if (simulationStore.isSimulationRunning) {
         simulationStore.cancelSimulation()
     }
+    streaming.stop()
     simulationStore.clearResult()
     chart.clearSimulationData()
     showPhaseSpace.value = false
+    resultError.value = null
 
     await simulationStore.loadResult(selectedResultId)
 
     // If schedule was same spec, watchers won't fire -- explicitly fetch timeseries
-    const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
-    if (genes.length > 0 && simulationStore.isLoaded) {
-        await simulationStore.fetchGeneTimeseries(genes)
-    }
-    const otherSpecies = viewerStore.selectedOtherSpecies
-    if (otherSpecies.length > 0 && simulationStore.isLoaded) {
-        await simulationStore.fetchOtherSpeciesTimeseries(otherSpecies)
+    try {
+        const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
+        if (genes.length > 0 && simulationStore.isLoaded) {
+            await simulationStore.fetchGeneTimeseries(genes)
+        }
+        const otherSpecies = viewerStore.selectedOtherSpecies
+        if (otherSpecies.length > 0 && simulationStore.isLoaded) {
+            await simulationStore.fetchOtherSpeciesTimeseries(otherSpecies)
+        }
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        console.warn('[TrackViewer] Failed to load timeseries for result:', msg)
+        resultError.value = 'Corrupt or incompatible result — timeseries data could not be loaded'
+        return
     }
     if (simulationStore.isLoaded) {
         refreshSimulationData()
@@ -565,13 +580,8 @@ async function loadResult(event: SelectChangeEvent) {
 async function runSimulation() {
     chart.clearSimulationData()
     showPhaseSpace.value = false
-    // Reset streaming buffer
-    streamingBuffer = {}
-    lastStreamCurrentTime = 0
-    if (streamingRafId !== null) {
-        cancelAnimationFrame(streamingRafId)
-        streamingRafId = null
-    }
+    streaming.stop()
+    streaming.start()
     // runSimulation returns immediately (async server-side), then WS streams data
     simulationStore.runSimulation().then(() => loadResults())
 }
@@ -596,18 +606,12 @@ function clearSimulation() {
     if (simulationStore.isSimulationRunning) {
         simulationStore.cancelSimulation()
     }
+    streaming.stop()
     chart.clearSimulationData()
     chart.hidePhaseSpace()
     showPhaseSpace.value = false
     simulationStore.clearResult()
     selectedTracks.value = scheduleStore.isLoaded ? ['schedule'] : []
-    // Reset streaming buffer
-    streamingBuffer = {}
-    lastStreamCurrentTime = 0
-    if (streamingRafId !== null) {
-        cancelAnimationFrame(streamingRafId)
-        streamingRafId = null
-    }
 }
 
 function toggleFullscreen() {
@@ -672,30 +676,7 @@ watch(
     { deep: true }
 )
 
-// During a running simulation, push streaming data to the chart via RAF throttle.
-// Multiple WS deltas arriving between frames are merged into a single buffer
-// so the chart only renders once per animation frame.
-let streamingRafId: number | null = null
-let streamingBuffer: Record<string, Record<string, Array<[number, number]>>> = {}
-let lastStreamCurrentTime = 0
-
-/** Merge a timeseries delta into the accumulated buffer. */
-function _mergeIntoBuffer(delta: Record<string, Record<string, Array<[number, number]>>>): void {
-    for (const [species, pathData] of Object.entries(delta)) {
-        if (!streamingBuffer[species]) {
-            streamingBuffer[species] = {}
-        }
-        for (const [path, points] of Object.entries(pathData)) {
-            const existing = streamingBuffer[species]![path]
-            if (existing) {
-                existing.push(...points)
-            } else {
-                streamingBuffer[species]![path] = [...points]
-            }
-        }
-    }
-}
-
+// Sync time cursor with simulation progress (UI display only — not data streaming).
 watch(
     () => simulationStore.currentResult,
     (result) => {
@@ -707,53 +688,6 @@ watch(
         }
     },
     { deep: true }
-)
-
-// Watch streaming delta during simulation to push incremental data to chart.
-// Kept separate from the current-time watcher to avoid re-merging stale data
-// when ct changes (which would previously trigger this watcher with the old delta).
-watch(
-    () => simulationStore.streamingDelta,
-    (delta) => {
-        if (!delta) return
-        _mergeIntoBuffer(delta)
-        _scheduleStreamingFlush()
-    }
-)
-
-// Track simulation current time for x-axis range extension — no data merge.
-watch(
-    () => simulationStore.currentResult?.current_time,
-    (ct) => {
-        if (ct !== undefined && ct !== null) {
-            lastStreamCurrentTime = ct
-        }
-    }
-)
-
-function _scheduleStreamingFlush(): void {
-    if (streamingRafId !== null) return
-    streamingRafId = requestAnimationFrame(() => {
-        streamingRafId = null
-        // Always flush buffered data — it was received during the simulation even if
-        // status=completed arrived before this RAF fired (common with step-based schedules
-        // where many WS messages arrive within a single animation frame).
-        const hasData = Object.keys(streamingBuffer).length > 0
-        if (hasData && scheduleStore.timeseriesMetadata) {
-            chart.appendStreamingData(streamingBuffer, lastStreamCurrentTime)
-            streamingBuffer = {}
-        }
-    })
-}
-
-// Final zoom extents when simulation completes so axes fit all data.
-watch(
-    () => simulationStore.isSimulationRunning,
-    (running, wasRunning) => {
-        if (!running && wasRunning) {
-            chart.zoomExtentsAll()
-        }
-    }
 )
 
 defineExpose({
@@ -1036,6 +970,9 @@ defineExpose({
                 class="chart-overlay"
             >
                 <div class="overlay-text">No schedule is loaded</div>
+            </div>
+            <div v-if="resultError" class="chart-overlay">
+                <div class="overlay-text">Error loading result</div>
             </div>
         </div>
 

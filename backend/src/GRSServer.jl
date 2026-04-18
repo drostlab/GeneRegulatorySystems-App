@@ -164,8 +164,10 @@ end
 # get filtered timeseries for specific species
 @post "/simulations/{id}/timeseries" function(req, id::String, data::Json{TimeseriesRequest})
     result = Simulation.load_result(id)
-    isnothing(result) && throw("Result not found")
+    isnothing(result) && return HTTP.Response(404, "Result not found")
     species_filter = Set(Symbol.(data.payload.species))
+    index_file = joinpath(result.path, "index.arrow")
+    isfile(index_file) || return HTTP.Response(422, "Result is missing index data — it may be from an older format or still running")
     timeseries = Simulation.load_timeseries_for_species(result.path, species_filter)
     return Simulation.SimulationData(; timeseries)
 end

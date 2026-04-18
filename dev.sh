@@ -128,7 +128,7 @@ if [ "${1:-}" = "--tauri" ]; then
     STALE_PID=$(lsof -ti tcp:$VITE_PORT 2>/dev/null || true)
     if [ -n "$STALE_PID" ]; then
         echo "[dev.sh] Killing stale process on port $VITE_PORT (PID $STALE_PID)..."
-        kill "$STALE_PID" 2>/dev/null
+        kill $STALE_PID 2>/dev/null || true
         sleep 1
     fi
     cd "$TAURI_DIR"
@@ -155,7 +155,7 @@ for PORT in 1420 8000; do
     STALE_PID=$(lsof -ti tcp:$PORT 2>/dev/null || true)
     if [ -n "$STALE_PID" ]; then
         echo "[dev.sh] Killing stale process on port $PORT (PID $STALE_PID)..."
-        kill "$STALE_PID" 2>/dev/null
+        kill $STALE_PID 2>/dev/null || true
         sleep 1
     fi
 done

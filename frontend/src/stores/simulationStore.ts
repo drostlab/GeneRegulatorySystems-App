@@ -203,7 +203,9 @@ export const useSimulationStore = defineStore(
         }
 
         function _onTimeseries(data: TimeseriesData): void {
-            _mergeTimeseries(data)
+            // During streaming, skip merging into timeseriesCache — the cache is
+            // cleared on completion and re-fetched via HTTP. Only forward the
+            // delta so TrackViewer can push it to SciChart.
             streamingDelta.value = data
         }
 
@@ -294,7 +296,12 @@ export const useSimulationStore = defineStore(
                 // Trigger it unconditionally here; fetchGeneTimeseries deduplicates by fetchedGenes set.
                 const genes = scheduleStore.allGenes ?? []
                 if (genes.length > 0) {
-                    await fetchGeneTimeseries(genes.slice(0, DEFAULT_STREAM_GENE_COUNT))
+                    try {
+                        await fetchGeneTimeseries(genes.slice(0, DEFAULT_STREAM_GENE_COUNT))
+                    } catch (e) {
+                        console.warn('[SimulationStore] Failed to load timeseries for result:', e)
+                        throw e
+                    }
                 }
 
                 // Try to load a pre-computed phase-space embedding (best-effort).

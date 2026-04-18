@@ -1,11 +1,13 @@
-import { getGeneFromSpeciesName } from './schedule'
-
 export type TimeseriesData = Record<string, Record<string, Array<[number, number]>>>
+
+import { getGeneFromSpeciesName } from '@/types/schedule'
 
 export interface TimeseriesMetadata {
     genes: string[]
     gene_colours: Record<string, string>
     time_extent: { min: number; max: number }
+    /** Maps segment ID (as string) to execution_path. Built from schedule segments. */
+    segment_paths: Record<string, string>
 }
 
 export type SimulationStatus = 'running' | 'paused' | 'completed' | 'error'
@@ -46,37 +48,6 @@ export function getMaxTime(timeseries: TimeseriesData): number {
     return maxTime
 }
 
-export function restructureTimeseriesByPathAndGene(
-    timeseries: TimeseriesData,
-    metadata: TimeseriesMetadata
-): Record<string, Record<string, { colour: string; series: Array<[number, number]> }>> {
-    const dataByPath = new Map<string, Map<string, { colour: string; series: Array<[number, number]> }>>()
-
-    for (const [species, pathData] of Object.entries(timeseries)) {
-        const geneId = getGeneFromSpeciesName(species)
-        if (!geneId) continue
-
-        const colour = metadata.gene_colours[geneId] ?? 'gray'
-
-        for (const [path, series] of Object.entries(pathData)) {
-            if (!dataByPath.has(path)) {
-                dataByPath.set(path, new Map())
-            }
-            dataByPath.get(path)!.set(geneId, { colour, series })
-        }
-    }
-
-    const result: Record<string, Record<string, { colour: string; series: Array<[number, number]> }>> = {}
-    dataByPath.forEach((geneMap, path) => {
-        result[path] = {}
-        geneMap.forEach((data, geneId) => {
-            result[path]![geneId] = data
-        })
-    })
-
-    return result
-}
-
 export interface PhaseSpacePoint {
     x: number
     y: number
@@ -106,4 +77,36 @@ export function formatResultLabel(result: SimulationResult | undefined | null): 
     }
 
     return `${date.toLocaleString()} - ${result.schedule_name || 'Unknown'}`
+}
+
+/**
+ * Restructure timeseries from species-first to path-first-gene-second layout.
+ *
+ * Input:  Record<species, Record<path, [t,v][]>>
+ * Output: Record<path, Record<gene, { colour: string, series: [t,v][] }>>
+ */
+export function restructureTimeseriesByPathAndGene(
+    timeseries: TimeseriesData,
+    metadata: TimeseriesMetadata
+): Record<string, Record<string, { colour: string; series: Array<[number, number]> }>> {
+    const result: Record<string, Record<string, { colour: string; series: Array<[number, number]> }>> = {}
+    for (const [species, pathData] of Object.entries(timeseries)) {
+        const gene = getGeneFromSpeciesName(species)
+        if (!gene) continue
+        const colour = metadata.gene_colours[gene] ?? '#888888'
+        for (const [path, series] of Object.entries(pathData)) {
+            let pathMap = result[path]
+            if (!pathMap) {
+                pathMap = {}
+                result[path] = pathMap
+            }
+            const existing = pathMap[gene]
+            if (existing) {
+                existing.series.push(...series)
+            } else {
+                pathMap[gene] = { colour, series: [...series] }
+            }
+        }
+    }
+    return result
 }

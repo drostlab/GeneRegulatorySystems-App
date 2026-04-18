@@ -1,4 +1,4 @@
-import { EXyDirection, MouseWheelZoomModifier, SciChartSurface, ZoomExtentsModifier, ZoomPanModifier, SeriesSelectionModifier, type TSciChart } from "scichart"
+import { EXyDirection, MouseWheelZoomModifier, NumberRange, SciChartSurface, ZoomExtentsModifier, ZoomPanModifier, SeriesSelectionModifier, type TSciChart } from "scichart"
 import { toBlob } from 'html-to-image'
 import { saveFile } from '@/utils/saveFile'
 import { compositCanvasesToBlob } from '@/utils/canvasExport'
@@ -318,7 +318,17 @@ export class MainChart {
                 Object.entries(timeseries)
                     .filter(([species]) => speciesIds.has(species))
             ) as TimeseriesData
+            let pointCount = 0
+            for (const pathData of Object.values(filteredTimeseries)) {
+                for (const points of Object.values(pathData)) pointCount += points.length
+            }
+            performance.mark('set-data-start')
             panel.setData(filteredTimeseries)
+            const totalSeries = panel.surface.renderableSeries.size()
+            performance.measure(`grs:set-data:${id}`, {
+                start: 'set-data-start',
+                detail: { pointCount, totalSeries },
+            })
             // Only zoom if the panel has data to avoid NaN range errors
             if (panel.surface.renderableSeries.asArray().length > 0) {
                 panel.surface.zoomExtentsY()
@@ -359,15 +369,13 @@ export class MainChart {
     }
 
     /**
-     * Append incremental streaming data to the appropriate timeseries panels.
-     * Routes each species to its panel by species type.
-     *
-     * @param timeseries - Incremental timeseries from the current WS batch
-     * @param currentTime - Current simulation time for x-axis range
+     * Append incremental streaming data to panels (data only, no axis updates).
+     * Returns per-panel y data ranges so the StreamingAnimator can lerp axes smoothly.
      */
-    appendStreamingData(timeseries: TimeseriesData, currentTime: number): void {
+    appendStreamingDataOnly(timeseries: TimeseriesData): Map<string, { min: number; max: number }> {
         const scheduleStore = useScheduleStore()
         const timeseriesPanels = this.getTimeseriesPanels()
+        const yRanges = new Map<string, { min: number; max: number }>()
 
         timeseriesPanels.forEach(({ id, panel }) => {
             const speciesIds = new Set(scheduleStore.getSpeciesForSpeciesType(id as SpeciesType))
@@ -377,21 +385,57 @@ export class MainChart {
             ) as TimeseriesData
 
             if (Object.keys(filteredTimeseries).length > 0) {
+                let pointCount = 0
+                let seriesCount = 0
+                for (const pathData of Object.values(filteredTimeseries)) {
+                    for (const points of Object.values(pathData)) {
+                        seriesCount++
+                        pointCount += points.length
+                    }
+                }
+
+                performance.mark('panel-append-start')
                 panel.appendStreamingData(filteredTimeseries)
-                // Only zoom if the panel has data to avoid NaN range errors
+                const totalSeries = panel.surface.renderableSeries.size()
+                performance.measure(`grs:panel-append:${id}`, {
+                    start: 'panel-append-start',
+                    detail: { pointCount, seriesCount, totalSeries },
+                })
+
+                // Extract current y data range for the animator
                 if (panel.surface.renderableSeries.asArray().length > 0) {
-                    panel.surface.zoomExtentsY()
+                    const yAxis = panel.surface.yAxes.get(0)
+                    if (yAxis) {
+                        const range = yAxis.getMaximumRange()
+                        yRanges.set(id, { min: range.min, max: range.max })
+                    }
                 }
             }
         })
 
-        // Update x-axis visible range to current time
-        if (currentTime > 0) {
-            this.tracks.forEach(({ panel }) => {
-                panel.setVisibleTimeRange(0, currentTime)
-            })
-            // Move the time cursor line to current simulation time
-            this.timeCursorModifier?.setCursorTime(currentTime)
+        return yRanges
+    }
+
+    /**
+     * Set visible axis ranges during streaming (called by StreamingAnimator each frame).
+     * Separate from data append to allow smooth interpolated axis updates.
+     */
+    setStreamingRanges(xMin: number, xMax: number, yRanges: Map<string, { min: number; max: number }>): void {
+        // Update x-axis visible range on all tracks (including timeline)
+        this.tracks.forEach(({ panel }) => {
+            panel.setVisibleTimeRange(xMin, xMax)
+        })
+        this.timeCursorModifier?.setCursorTime(xMax)
+
+        // Update y-axis visible range on timeseries panels
+        for (const [panelId, range] of yRanges) {
+            const track = this.tracks.find(({ id }) => id === panelId)
+            if (track) {
+                const yAxis = track.panel.surface.yAxes.get(0)
+                if (yAxis) {
+                    yAxis.visibleRange = new NumberRange(range.min, range.max)
+                }
+            }
         }
     }
 

@@ -130,13 +130,16 @@ export function useSimulationStream() {
     }
 
     function _handleMessage(raw: string): void {
+        performance.mark('ws-parse-start')
         const msg: WsMessage = JSON.parse(raw)
+        performance.measure('grs:ws-json-parse', 'ws-parse-start')
 
         // Ignore messages for other simulations
         if (simulationId.value && msg.simulation_id !== simulationId.value) {
             return
         }
 
+        performance.mark('ws-callback-start')
         switch (msg.type) {
             case 'progress':
                 onProgress?.(msg.current_time, msg.frame_count, msg.total_progress ?? null)
@@ -156,6 +159,7 @@ export function useSimulationStream() {
             default:
                 console.warn('[SimStream] Unknown message type', (msg as Record<string, unknown>).type)
         }
+        performance.measure('grs:ws-callback', 'ws-callback-start')
     }
 
     function _send(data: Record<string, unknown>): void {

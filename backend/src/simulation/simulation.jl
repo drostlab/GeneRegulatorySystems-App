@@ -455,6 +455,9 @@ function load_timeseries_for_species(
         return Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}()
     end
     (i_to_path, i_to_from, i_to_max_time) = _load_index_mapping(result_path)
+    if isempty(i_to_path)
+        error("Result is missing index data (index.arrow) — it may be from an older format or corrupt")
+    end
     ts = _load_events_as_timeseries(result_path, i_to_path, i_to_max_time; i_to_from, species_filter)
     @debug "Loaded filtered timeseries" result_path species_count=length(species_filter) series_count=length(ts)
     return ts
@@ -487,7 +490,8 @@ function _load_events_as_timeseries(
         events_table = Arrow.Table(joinpath(result_path, file))
         for (ep_i, t, name, value) in zip(events_table.i, events_table.t, events_table.name, events_table.value)
             !isnothing(species_filter) && !(name in species_filter) && continue
-            path = get(i_to_path, ep_i, string(ep_i))
+            haskey(i_to_path, ep_i) || error("Episode index $ep_i not found in index.arrow — result may be from an older format without index data")
+            path = i_to_path[ep_i]
             episode_map = get!(temp, name) do
                 Dict{Tuple{String, Int}, Vector{Tuple{Float64, Int}}}()
             end
@@ -528,9 +532,10 @@ function _load_events_as_timeseries(
                 sort!(points; by = first)
 
                 # Gap detection via shared tracker
-                (insert_gap, gap_t) = check_gap(tracker, path, ep_from, prev_end)
+                (insert_gap, gap_t_start, gap_t_end) = check_gap(tracker, path, ep_from, prev_end)
                 if insert_gap
-                    push!(path_series, (gap_t, Int64(-1)))
+                    push!(path_series, (gap_t_start, Int64(-1)))
+                    push!(path_series, (gap_t_end, Int64(-1)))
                 end
 
                 # Synthetic start-point via shared tracker

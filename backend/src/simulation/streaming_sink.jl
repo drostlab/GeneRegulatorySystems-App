@@ -112,6 +112,8 @@ Direct Arrow sink with optional WebSocket streaming via SimulationController.
     total_duration::Float64 = 0.0
     completed_duration::Float64 = 0.0
     current_segment_key::Union{Tuple{String,Float64}, Nothing} = nothing
+    """Per-(species, path) prev_end tracker for species-level gap detection, matching the HTTP path."""
+    species_path_prev_end::Dict{Tuple{Symbol, String}, Float64} = Dict{Tuple{Symbol, String}, Float64}()
 end
 
 """
@@ -217,19 +219,24 @@ function (sink::StreamingSimulationSink)(into, state; path, primitive!, from, se
     # Accumulate events from this state
     channel = get!(Channel, sink.channels, into)
     count = 0
+    episode_species = Set{Symbol}()  # species that produced events in this episode
 
-    # Eagerly insert gap markers for every subscribed species when a discontinuity is detected.
+    # Per-species gap detection + synthetic start + endpoint injection.
+    # Mirrors _load_events_as_timeseries which iterates per (species, path) with its own prev_end.
     if !isnothing(sink.controller)
-        prev_end = get(sink.gap_tracker.last_to, path, NaN)
-        (insert_gap, gap_t) = check_gap(sink.gap_tracker, path, from, prev_end)
-        if insert_gap
-            for sp in sink.controller.subscribed_species
+        for sp in sink.controller.subscribed_species
+            sp_prev_end = get(sink.species_path_prev_end, (sp, path), NaN)
+
+            # Gap detection
+            (insert_gap, gap_t_start, gap_t_end) = check_gap(sink.gap_tracker, path, from, sp_prev_end)
+            if insert_gap
                 species_dict = get!(sink.pending_timeseries, sp) do
                     Dict{String, Vector{Tuple{Float64, Int}}}()
                 end
                 series = get!(species_dict, path) do; Tuple{Float64, Int}[] end
                 if isempty(series) || series[end][2] != Int64(-1)
-                    push!(series, (gap_t, Int64(-1)))
+                    push!(series, (gap_t_start, Int64(-1)))
+                    push!(series, (gap_t_end, Int64(-1)))
                 end
             end
         end
@@ -249,7 +256,7 @@ function (sink::StreamingSimulationSink)(into, state; path, primitive!, from, se
         push!(channel.values, value)
         count += 1
 
-        _accumulate_subscribed(sink, name, path, t, value)
+        _accumulate_subscribed(sink, name, path, t, value, episode_species)
 
         # Stream inside the event loop on wall-clock interval
         if time_ns() - sink.last_stream_ns >= sink.stream_interval_ns
@@ -263,18 +270,39 @@ function (sink::StreamingSimulationSink)(into, state; path, primitive!, from, se
     # Synthetic start-point: for the first episode on a path, duplicate the first
     # real data point back to the bridging run start.
     if !isnothing(sink.controller)
-        prev_end = get(sink.gap_tracker.last_to, path, NaN)
-        (insert_start, start_t) = check_synthetic_start(sink.gap_tracker, path, from, prev_end)
-        if insert_start
-            for sp in sink.controller.subscribed_species
+        for sp in sink.controller.subscribed_species
+            sp_prev_end = get(sink.species_path_prev_end, (sp, path), NaN)
+            (insert_start, start_t) = check_synthetic_start(sink.gap_tracker, path, from, sp_prev_end)
+            if insert_start
                 sd = get(sink.pending_timeseries, sp, nothing)
                 isnothing(sd) && continue
                 series = get(sd, path, nothing)
                 (isnothing(series) || isempty(series)) && continue
-                # Skip if the only point is a gap marker
                 series[1][2] == Int64(-1) && continue
                 pushfirst!(series, (start_t, series[1][2]))
             end
+        end
+    end
+
+    # Endpoint injection: hold each subscribed species' last value to the episode end time.
+    # Only for species that actually produced events in THIS episode.
+    if !isnothing(sink.controller) && to > from
+        for sp in episode_species
+            sd = get(sink.pending_timeseries, sp, nothing)
+            isnothing(sd) && continue
+            series = get(sd, path, nothing)
+            (isnothing(series) || isempty(series)) && continue
+            last_t, last_v = series[end]
+            if last_v != Int64(-1) && last_t < to
+                push!(series, (to, last_v))
+            end
+        end
+    end
+
+    # Update per-(species, path) prev_end only for species that had events in this episode.
+    if !isnothing(sink.controller)
+        for sp in episode_species
+            sink.species_path_prev_end[(sp, path)] = to > 0.0 ? to : from
         end
     end
 
@@ -300,6 +328,12 @@ function _check_pause_if_needed(sink::StreamingSimulationSink)
     ctrl = sink.controller
     ctrl.paused || return
 
+    # Flush buffered events to disk before blocking so paused results are loadable
+    @info "[StreamingSink] Flushing before pause"
+    for into in collect(keys(sink.channels))
+        _flush_channel!(sink, into)
+    end
+
     lock(ctrl.pause_condition) do
         while ctrl.paused
             @info "[StreamingSink] Simulation paused, blocking..."
@@ -315,7 +349,7 @@ end
 """
 Accumulate a data point for subscribed species into the pending buffer.
 """
-function _accumulate_subscribed(sink::StreamingSimulationSink, name::Symbol, path::String, t::Float64, value::Int64)
+function _accumulate_subscribed(sink::StreamingSimulationSink, name::Symbol, path::String, t::Float64, value::Int64, episode_species::Set{Symbol})
     isnothing(sink.controller) && return
     name in sink.controller.subscribed_species || return
 
@@ -324,6 +358,7 @@ function _accumulate_subscribed(sink::StreamingSimulationSink, name::Symbol, pat
     end
     series = get!(species_dict, path) do; Tuple{Float64, Int}[] end
     push!(series, (t, value))
+    push!(episode_species, name)
 end
 
 """
@@ -407,23 +442,7 @@ function flush!(sink::StreamingSimulationSink)
         _flush_channel!(sink, into)
     end
 
-    # Write index metadata
-    if !isempty(sink.index)
-        index = Tables.columntable(sink.index)
-        index_file = joinpath(sink.location, "index.arrow")
-        Arrow.write(index_file, (;
-            index.i,
-            index.path,
-            index.from,
-            index.to,
-            model = Arrow.DictEncode(index.model),
-            label = Arrow.DictEncode(index.label),
-            index.count,
-            into = Arrow.DictEncode(index.into),
-            index.seed,
-        ))
-        @debug "[StreamingSink] Wrote index file" index_file
-    end
+    _write_index!(sink)
 
     # Final timeseries flush
     if !isempty(sink.pending_timeseries) && !isnothing(sink.controller)
@@ -434,6 +453,28 @@ function flush!(sink::StreamingSimulationSink)
         end
         empty!(sink.pending_timeseries)
     end
+end
+
+"""
+Write the current index metadata to `index.arrow`, overwriting any previous version.
+Called incrementally on every channel flush and at final flush.
+"""
+function _write_index!(sink::StreamingSimulationSink)
+    isempty(sink.index) && return
+    index = Tables.columntable(sink.index)
+    index_file = joinpath(sink.location, "index.arrow")
+    Arrow.write(index_file, (;
+        index.i,
+        index.path,
+        index.from,
+        index.to,
+        model = Arrow.DictEncode(index.model),
+        label = Arrow.DictEncode(index.label),
+        index.count,
+        into = Arrow.DictEncode(index.into),
+        index.seed,
+    ))
+    @debug "[StreamingSink] Wrote index file" index_file episodes=length(sink.index)
 end
 
 """
@@ -457,6 +498,8 @@ function _flush_channel!(sink::StreamingSimulationSink, into::String)
     else
         Arrow.write(filename, events, file = false)
     end
+
+    _write_index!(sink)
 end
 
 end # module

@@ -126,6 +126,7 @@ export class PromoterPanel extends TimeseriesPanel {
 
         // Add or update series
         let created = 0
+        this.surface.suspendUpdates()
         for (const [path, geneData] of Object.entries(dataByPath)) {
             const yRange = this.pathYRanges.get(path)
             if (!yRange) continue
@@ -164,7 +165,7 @@ export class PromoterPanel extends TimeseriesPanel {
                         fillY1: colour,
                         strokeY1: colour,
                         drawNaNAs: ELineDrawMode.DiscontinuousLine,
-                        resamplingMode: EResamplingMode.None,
+                        resamplingMode: EResamplingMode.Auto,
                         animation: new SweepAnimation({ duration: SWEEP_DURATION_MS })
                     })
                     this.surface.renderableSeries.add(bandSeries)
@@ -172,6 +173,8 @@ export class PromoterPanel extends TimeseriesPanel {
                 }
             })
         }
+        this.surface.resumeUpdates()
+        console.debug(`[PromoterPanel] setData: created=${created} reused=${incomingKeys.size - created} total=${this.surface.renderableSeries.size()}`)
     }
 
     appendStreamingData(timeseries: TimeseriesData): void {
@@ -188,17 +191,27 @@ export class PromoterPanel extends TimeseriesPanel {
                     continue
                 }
 
-                const isNew = !this.seriesMap.has(key)
                 let xyyData = this.seriesMap.get(key)
                 if (!xyyData) {
                     xyyData = this._createStreamingSeries(key, label)
                 }
 
                 const { yCenter, bandHeight } = params
-                const { xData, yTop, yBottom } = this._buildBandArrays(points, yCenter, bandHeight)
-                const tFirst = xData[0]?.toFixed(1) ?? '-'
-                const tLast = xData[xData.length - 1]?.toFixed(1) ?? '-'
-                console.debug(`[PromoterPanel] ${isNew ? 'CREATE' : 'APPEND'} key=${key} rawPts=${points.length} bandPts=${xData.length} t=${tFirst}..${tLast}`)
+
+                // Cross-batch step fix: prepend the last state from the existing series
+                // so _buildBandArrays can generate the step-duplicate at the boundary.
+                let batchPoints: Array<[number, number]> = points
+                const n = xyyData.count()
+                if (n > 0 && points.length > 0 && points[0]![1] !== -1) {
+                    const lastY = xyyData.getNativeYValues().get(n - 1)
+                    // NaN means the last point was a gap marker -- skip step-dup
+                    if (!isNaN(lastY)) {
+                        const lastState = Math.abs(lastY - yCenter) > 0.01 ? 1 : 0
+                        batchPoints = [[points[0]![0], lastState], ...points]
+                    }
+                }
+
+                const { xData, yTop, yBottom } = this._buildBandArrays(batchPoints, yCenter, bandHeight)
                 if (xData.length > 0) {
                     xyyData.appendRange(xData, yTop, yBottom)
                 }
@@ -287,7 +300,8 @@ export class PromoterPanel extends TimeseriesPanel {
             strokeThickness: 0.0,
             fillY1: colour,
             strokeY1: colour,
-            drawNaNAs: ELineDrawMode.DiscontinuousLine
+            drawNaNAs: ELineDrawMode.DiscontinuousLine,
+            resamplingMode: EResamplingMode.Auto
         })
         this.surface.renderableSeries.add(bandSeries)
         return xyyData
