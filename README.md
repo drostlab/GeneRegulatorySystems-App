@@ -18,7 +18,16 @@ Graphical user interface (GUI) for [GeneRegulatorySystems.jl](https://github.com
 
 ## Installation
 
-Download the latest app release from the [Releases page](https://github.com/drostlab/GeneRegulatorySystems-App/releases). This will automatically install all the required dependencies and start up the app in a desktop window.
+Download the latest app binaries from the [Releases page](https://github.com/drostlab/GeneRegulatorySystems-App/releases) for your platform. Once you open it, the app automatically installs all required dependencies (including Julia if needed) and launches. This may take a few minutes on the first launch.
+
+> [!NOTE]
+> **macOS users:** The first time you open the app, macOS might show "app is damaged" due to Gatekeeper checks on unsigned apps. To fix this, run this command in the terminal:
+>
+> ```bash
+> xattr -cr "/Applications/Gene Regulatory Systems.app"
+> ```
+>
+> Then you can open the app normally.
 
 ## Developer mode
 
