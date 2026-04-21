@@ -90,8 +90,11 @@ function initTerminalToggle(): void {
 interface JuliaPrompt {
     situation: string        // "compatible", "outdated", "not_found"
     system_version: string
+    system_path: string
     min_version: string
     download_version: string
+    depot_path: string
+    has_matching_manifest: boolean
 }
 
 /** Show the Julia choice UI and return the user's decision. */
@@ -111,24 +114,34 @@ async function handleJuliaPrompt(prompt: JuliaPrompt): Promise<void> {
     container.style.display = 'block'
     buttonsEl.innerHTML = ''
 
+    const depotNote =
+        `\n\nPackages will be installed into an app-specific depot ` +
+        `(${prompt.depot_path}).`
+
+    const manifestNote = prompt.has_matching_manifest
+        ? ``
+        : ` No matching manifest ships for this Julia version — the first launch ` +
+          `will resolve dependencies from scratch (this can take 5-10 minutes).`
+
     if (prompt.situation === 'compatible') {
         textEl.textContent =
-            `Julia ${prompt.system_version} detected on your system. ` +
-            `You can use it or download a dedicated copy (v${prompt.download_version}).`
+            `Julia ${prompt.system_version} detected at ${prompt.system_path}. ` +
+            `You can use it or download a dedicated copy (v${prompt.download_version}).` +
+            manifestNote + depotNote
 
         addChoiceButton(buttonsEl, `Use system Julia (v${prompt.system_version})`, 'system', true, invoke)
         addChoiceButton(buttonsEl, `Download v${prompt.download_version}`, 'dedicated', false, invoke)
     } else if (prompt.situation === 'outdated') {
-        textEl.innerHTML =
-            `Julia ${prompt.system_version} found, but version ${prompt.min_version}+ is required. ` +
-            `Please update Julia or let the app download v${prompt.download_version}.`
+        textEl.textContent =
+            `Julia ${prompt.system_version} found at ${prompt.system_path}, but version ${prompt.min_version}+ is required. ` +
+            `Please update Julia or let the app download v${prompt.download_version}.` + depotNote
 
         addChoiceButton(buttonsEl, `Download v${prompt.download_version}`, 'dedicated', true, invoke)
     } else if (prompt.situation === 'not_found') {
         textEl.textContent =
             `Julia was not found on this system. ` +
             `You can provide the path to an existing Julia binary, ` +
-            `or download v${prompt.download_version} automatically.`
+            `or download v${prompt.download_version} automatically.` + depotNote
 
         addPathInput(buttonsEl, invoke)
         addChoiceButton(buttonsEl, `Download v${prompt.download_version}`, 'dedicated', false, invoke)
@@ -372,11 +385,22 @@ export async function setupAppMenu(): Promise<void> {
         ],
     })
 
+    const advancedMenu = await Submenu.new({
+        text: 'Advanced',
+        items: [
+            await MenuItem.new({
+                text: 'Reset Julia Environment…',
+                action: () => { void invoke('reset_julia_environment_interactive') },
+            }),
+        ],
+    })
+
     const menu = await Menu.new({
         items: [
             fileMenu,
             editMenu,
             viewMenu,
+            advancedMenu,
         ],
     })
 

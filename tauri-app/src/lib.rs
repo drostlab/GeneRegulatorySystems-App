@@ -4,10 +4,15 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
-use tauri::menu::MenuBuilder;
+use tauri::menu::{MenuBuilder, MenuItem, Submenu};
+
+/// Menu item ID for the Julia environment reset action.
+const MENU_RESET_JULIA: &str = "reset-julia-env";
 
 // ===========================================================================
 // Types
@@ -88,6 +93,70 @@ fn resolve_julia_choice(choice: String, state: tauri::State<JuliaChoiceChannel>)
             let _ = tx.send(choice);
         }
     }
+}
+
+/// Show confirm → reset → result dialogs for the Julia environment reset.
+/// Must be called from a non-main thread (uses the blocking dialog API).
+fn run_reset_julia_dialogs(app: &tauri::AppHandle, data_dir: &Path) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let confirmed = app.dialog()
+        .message(
+            "This will stop the Julia backend, delete the isolated package depot \
+             and your saved runtime choice. You will be re-prompted on next launch \
+             and packages will re-precompile (5-10 minutes on first run). Continue?"
+        )
+        .title("Reset Julia Environment")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancel)
+        .blocking_show();
+
+    if !confirmed {
+        return;
+    }
+
+    // Kill the backend before touching the depot — Julia holds open file
+    // handles on compiled artefacts, which causes remove_dir_all to fail
+    // with ENOTEMPTY on macOS.
+    let backend: tauri::State<BackendState> = app.state();
+    if let Ok(mut guard) = backend.process.lock() {
+        if let Some(mut child) = guard.take() {
+            log::info!("Stopping Julia backend before depot reset...");
+            let _ = child.kill();
+            let _ = child.wait();
+            log::info!("Julia backend stopped");
+        }
+    }
+
+    match julia::reset_environment(data_dir, false) {
+        Ok(summary) => {
+            app.dialog()
+                .message(format!(
+                    "{}\n\nRelaunch the app to re-provision Julia.",
+                    summary
+                ))
+                .title("Julia Environment Reset")
+                .kind(MessageDialogKind::Info)
+                .blocking_show();
+        }
+        Err(e) => {
+            log::error!("Failed to reset Julia environment: {}", e);
+            app.dialog()
+                .message(format!("Failed to reset: {}", e))
+                .title("Reset Failed")
+                .kind(MessageDialogKind::Error)
+                .blocking_show();
+        }
+    }
+}
+
+/// IPC command: spawn the Julia reset flow (confirm + reset + result dialogs)
+/// entirely in Rust. Returns immediately — dialogs appear natively on their
+/// own thread. The frontend action is a single fire-and-forget invoke.
+#[tauri::command]
+fn reset_julia_environment_interactive(app: tauri::AppHandle, state: tauri::State<DataDirState>) {
+    let data_dir = state.path.clone();
+    std::thread::spawn(move || run_reset_julia_dialogs(&app, &data_dir));
 }
 
 /// IPC command: frontend has registered all event listeners.
@@ -262,6 +331,31 @@ fn seed_example_schedules(data_dir: &Path, app_handle: &tauri::AppHandle) {
 }
 
 // ===========================================================================
+// Manifest floor lookup
+// ===========================================================================
+
+/// Return the `(major, minor)` declared in whichever bundled Manifest Julia
+/// would actually use for this version. Prefers `Manifest-v{X.Y}.toml`, then
+/// `Manifest.toml`. Returns `None` if no matching Manifest ships.
+fn manifest_floor_for(
+    server_dir: &Path,
+    version: &julia::JuliaVersion,
+) -> Option<(u32, u32)> {
+    let versioned = server_dir.join(format!(
+        "Manifest-v{}.{}.toml",
+        version.major, version.minor
+    ));
+    if versioned.is_file() {
+        return julia::parse_manifest_julia_version(&versioned);
+    }
+    let fallback = server_dir.join("Manifest.toml");
+    if fallback.is_file() {
+        return julia::parse_manifest_julia_version(&fallback);
+    }
+    None
+}
+
+// ===========================================================================
 // Julia runtime resolution (interactive)
 // ===========================================================================
 
@@ -300,7 +394,23 @@ fn resolve_julia_binary(
     // Probe for system Julia
     emit_progress(handle, "julia", "Detecting Julia installation...", false);
     let system = julia::detect_system_julia();
-    let prompt = julia::build_prompt(&system);
+    let server_dir = find_server_dir(Some(handle));
+    let prompt = julia::build_prompt(&system, data_dir, &server_dir);
+
+    // If we found a system Julia, enforce the Manifest's own floor on top of
+    // the hard-coded JULIA_MIN_MINOR. Required when a shipped Manifest-vX.Y
+    // declares a floor stricter than our constant (e.g. Manifest was
+    // resolved on 1.13 using APIs introduced in 1.13).
+    if let julia::SystemJulia::Found { version, .. } = &system {
+        if let Some(min) = manifest_floor_for(&server_dir, version) {
+            if (version.major, version.minor) < min {
+                log::warn!(
+                    "System Julia {} is below Manifest floor {}.{}",
+                    version, min.0, min.1
+                );
+            }
+        }
+    }
 
     let download = |handle: &tauri::AppHandle, data_dir: &Path| -> Result<PathBuf, String> {
         julia::download_and_extract(data_dir, &|msg| {
@@ -366,8 +476,16 @@ fn resolve_julia_binary(
                 );
                 download(handle, data_dir)
             } else if choice.starts_with("path:") {
-                // User provided a custom path
+                // User provided a custom path. Require absolute so we don't
+                // silently resolve via $PATH or cwd later — the saved choice
+                // must remain stable across launches and working directories.
                 let custom_path = PathBuf::from(choice.trim_start_matches("path:"));
+                if !custom_path.is_absolute() {
+                    return Err(format!(
+                        "Julia path must be absolute: {}",
+                        custom_path.display()
+                    ));
+                }
                 match julia::try_julia_at(&custom_path) {
                     Some(julia::SystemJulia::Found { path, version }) => {
                         if version.is_compatible() {
@@ -441,14 +559,23 @@ fn spawn_julia_backend(
 }
 
 /// Spawn reader threads that forward the child's stdout/stderr as
-/// `backend-log` events to the loading screen.
-fn stream_backend_output(child: &mut Child, handle: &tauri::AppHandle) {
+/// `backend-log` events to the loading screen. Each received line bumps
+/// `last_activity` (monotonic millis) so `wait_for_backend` can distinguish
+/// a genuinely stuck process from one that's still precompiling.
+fn stream_backend_output(
+    child: &mut Child,
+    handle: &tauri::AppHandle,
+    last_activity: Arc<AtomicU64>,
+    started: Instant,
+) {
     if let Some(stdout) = child.stdout.take() {
         let h = handle.clone();
+        let activity = last_activity.clone();
         std::thread::spawn(move || {
             let reader = std::io::BufReader::new(stdout);
             for line in reader.lines() {
                 if let Ok(text) = line {
+                    activity.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
                     log::debug!("[julia:stdout] {}", text);
                     let _ = h.emit("backend-log", BackendLogLine {
                         stream: "stdout".to_string(),
@@ -461,10 +588,12 @@ fn stream_backend_output(child: &mut Child, handle: &tauri::AppHandle) {
 
     if let Some(stderr) = child.stderr.take() {
         let h = handle.clone();
+        let activity = last_activity.clone();
         std::thread::spawn(move || {
             let reader = std::io::BufReader::new(stderr);
             for line in reader.lines() {
                 if let Ok(text) = line {
+                    activity.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
                     log::debug!("[julia:stderr] {}", text);
                     let _ = h.emit("backend-log", BackendLogLine {
                         stream: "stderr".to_string(),
@@ -487,18 +616,28 @@ enum BackendStatus {
     ProcessExited(Option<i32>),
 }
 
-/// Poll the backend until it accepts HTTP connections, or time out.
-/// Also watches the child process for early exit.
+/// Poll the backend until it accepts HTTP connections. Uses an
+/// inactivity-based timeout: as long as the Julia child is printing
+/// anything (progress, precompile lines, warnings) we keep waiting.
+/// Only if the child stays silent for `idle_timeout` *and* we've waited
+/// at least `min_wait` total do we give up. This lets first-run
+/// precompile take as long as it needs while still catching truly hung
+/// processes.
 fn wait_for_backend(
     port: u16,
-    timeout: Duration,
+    min_wait: Duration,
+    idle_timeout: Duration,
     process: &Mutex<Option<Child>>,
+    last_activity: Arc<AtomicU64>,
+    started: Instant,
 ) -> BackendStatus {
-    let start = std::time::Instant::now();
     let poll_interval = Duration::from_millis(500);
     let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
-    log::info!("Waiting for Julia backend on port {}...", port);
+    log::info!(
+        "Waiting for Julia backend on port {} (min {}s, idle timeout {}s)...",
+        port, min_wait.as_secs(), idle_timeout.as_secs()
+    );
 
     loop {
         // Check if the process has exited
@@ -518,8 +657,17 @@ fn wait_for_backend(
             }
         }
 
-        if start.elapsed() > timeout {
-            log::warn!("Julia backend did not respond within {} s", timeout.as_secs());
+        // Inactivity timeout: only fire if we've been running at least
+        // `min_wait` AND the child has been silent for `idle_timeout`.
+        let now_ms = started.elapsed().as_millis() as u64;
+        let last_ms = last_activity.load(Ordering::Relaxed);
+        let idle_ms = now_ms.saturating_sub(last_ms);
+        if started.elapsed() > min_wait && idle_ms > idle_timeout.as_millis() as u64 {
+            log::warn!(
+                "Julia backend idle for {}s after {}s — treating as timeout",
+                idle_ms / 1000,
+                now_ms / 1000
+            );
             return BackendStatus::Timeout;
         }
 
@@ -576,6 +724,7 @@ pub fn run() {
             get_backend_port,
             get_data_dir,
             resolve_julia_choice,
+            reset_julia_environment_interactive,
             frontend_ready,
         ])
         .setup(move |app| {
@@ -597,9 +746,28 @@ pub fn run() {
             // Opener plugin (reveal folders in native file manager)
             app.handle().plugin(tauri_plugin_opener::init())?;
 
-            // Start with an empty menu (frontend replaces it once loaded)
-            let empty_menu = MenuBuilder::new(app.handle()).build()?;
-            app.set_menu(empty_menu)?;
+            // Startup menu: Advanced > Reset Julia Environment…
+            // Available on the loading screen before the frontend loads.
+            // The frontend's setupAppMenu() will replace the full bar later,
+            // but re-adds the Advanced submenu so the item stays reachable.
+            let reset_item = MenuItem::with_id(
+                app.handle(), MENU_RESET_JULIA, "Reset Julia Environment…", true, None::<&str>,
+            )?;
+            let advanced_submenu = Submenu::with_items(
+                app.handle(), "Advanced", true, &[&reset_item],
+            )?;
+            let startup_menu = MenuBuilder::new(app.handle())
+                .item(&advanced_submenu)
+                .build()?;
+            app.set_menu(startup_menu)?;
+
+            app.on_menu_event(|app, event| {
+                if event.id() == MENU_RESET_JULIA {
+                    let app = app.clone();
+                    let data_dir = app.state::<DataDirState>().path.clone();
+                    std::thread::spawn(move || run_reset_julia_dialogs(&app, &data_dir));
+                }
+            });
 
             let handle = app.handle().clone();
             let data_dir = resolve_data_dir(app);
@@ -644,7 +812,10 @@ pub fn run() {
                         return;
                     }
                 };
-                stream_backend_output(&mut child, &handle);
+
+                let started = Instant::now();
+                let last_activity = Arc::new(AtomicU64::new(0));
+                stream_backend_output(&mut child, &handle, last_activity.clone(), started);
 
                 let backend_state: tauri::State<BackendState> = app_handle.state();
                 *backend_state.process.lock().unwrap() = Some(child);
@@ -662,7 +833,20 @@ pub fn run() {
                     false,
                 );
 
-                match wait_for_backend(port, Duration::from_secs(600), &backend_state.process) {
+                // min_wait: stay patient for at least 30s even if Julia is
+                // quiet at startup. idle_timeout: if no log line for 120s
+                // after that, declare the backend stuck. This handles
+                // multi-minute precompiles (which stream progress) while
+                // still catching genuine hangs.
+                let result = wait_for_backend(
+                    port,
+                    Duration::from_secs(30),
+                    Duration::from_secs(120),
+                    &backend_state.process,
+                    last_activity,
+                    started,
+                );
+                match result {
                     BackendStatus::Ready => {
                         emit_progress(&handle, "ready", "Backend is ready", true);
                         let _ = handle.emit("backend-ready", port);
