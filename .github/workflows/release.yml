@@ -64,7 +64,6 @@ jobs:
           name: binaries-${{ matrix.target }}
           path: |
             tauri-app/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            tauri-app/target/${{ matrix.target }}/release/bundle/**/*.app
             tauri-app/target/${{ matrix.target }}/release/bundle/**/*.deb
             tauri-app/target/${{ matrix.target }}/release/bundle/**/*.msi
             tauri-app/target/${{ matrix.target }}/release/bundle/**/*.exe
