@@ -50,6 +50,7 @@ export class SharedTimeCursorModifier extends ChartModifierBase2D {
         super.modifierMouseMove(args)
         const time = this._timeFromMouse()
         if (time !== undefined) {
+            this._userDriven = true
             this._showCursorAt(time)
             this.onTimeChanged?.(time)
         }
@@ -61,6 +62,7 @@ export class SharedTimeCursorModifier extends ChartModifierBase2D {
 
     /** Programmatically move the cursor to a given time value. */
     setCursorTime(time: number): void {
+        this._userDriven = false
         this._showCursorAt(time)
     }
 
@@ -79,11 +81,14 @@ export class SharedTimeCursorModifier extends ChartModifierBase2D {
 
     /** Called when subchart visibility changes, to move the label to the new bottom chart. */
     onSubChartVisibilityChanged(): void {
-        this._showCursorAt(this._lastTime)
+        if (this._userDriven) {
+            this._showCursorAt(this._lastTime)
+        }
     }
 
     /** Hide all cursor lines and labels. */
     hideCursor(): void {
+        this._userDriven = false
         for (const line of this.xLines.values()) line.isHidden = true
         this._deleteLabel()
     }
@@ -105,12 +110,14 @@ export class SharedTimeCursorModifier extends ChartModifierBase2D {
     // ---- internals ----
 
     private _lastTime = 0
+    /** True once the user has moved the mouse over the chart, driving the cursor position. */
+    private _userDriven = false
 
     /** Resolve the data-space time from the current mouse position. */
     private _timeFromMouse(): number | undefined {
         if (!this.mousePoint) return undefined
 
-        for (const sc of this.group.allSurfaces) {
+        for (const sc of this.group.visibleSurfaces) {
             const pt = translateFromCanvasToSeriesViewRect(this.mousePoint, sc.seriesViewRect)
             if (pt) {
                 const calc = sc.xAxes.get(0).getCurrentCoordinateCalculator()
