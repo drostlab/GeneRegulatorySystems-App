@@ -1,6 +1,6 @@
 [package]
 name = "GRS-App"
-version = "0.1.1"
+version = "0.1.2"
 description = "Gene Regulatory Systems"
 authors = ["nifets", "lmshk"]
 license = ""

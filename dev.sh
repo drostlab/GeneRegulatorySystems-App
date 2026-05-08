@@ -4,9 +4,10 @@ set -euo pipefail
 # Development launcher for the GRS app.
 #
 # Usage:
-#   ./dev.sh              Start Vite frontend + Julia backend (browser mode)
-#   ./dev.sh --tauri      Start via Tauri (desktop window, Julia spawned by Rust)
-#   ./dev.sh --sync-version   Update all package files from VERSION
+#   ./dev.sh                    Start Vite frontend + Julia backend (browser mode)
+#   ./dev.sh --tauri            Start via Tauri (desktop window, Julia spawned by Rust)
+#   ./dev.sh --sync-version     Update all package files from VERSION
+#   ./dev.sh --update-manifests Regenerate Manifest-v1.11.toml and Manifest-v1.12.toml
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FRONTEND_DIR="$SCRIPT_DIR/frontend"
@@ -61,6 +62,26 @@ if [ "${1:-}" = "--sync-version" ]; then
     exit 0
 fi
 
+if [ "${1:-}" = "--update-manifests" ]; then
+    CHANNELS=$(juliaup status 2>/dev/null | awk 'NR>2 && $0 !~ /^-/ { for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+\.[0-9]+$/ || $i == "release" || $i == "lts") { print $i; break } }')
+    if [ -z "$CHANNELS" ]; then
+        echo "[dev.sh] Could not detect juliaup channels. Is juliaup installed?"
+        exit 1
+    fi
+    for CHANNEL in $CHANNELS; do
+        MINOR=$(julia +${CHANNEL} --version 2>/dev/null | sed 's/julia version \([0-9]*\.[0-9]*\).*/\1/')
+        if [ -z "$MINOR" ]; then
+            echo "[dev.sh] Could not determine version for channel ${CHANNEL}, skipping."
+            continue
+        fi
+        echo "[dev.sh] Updating Manifest-v${MINOR}.toml (channel: ${CHANNEL})..."
+        rm -f "$BACKEND_DIR/Manifest-v${MINOR}.toml"
+        touch "$BACKEND_DIR/Manifest-v${MINOR}.toml"
+        (cd "$BACKEND_DIR" && julia +${CHANNEL} --project=. -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()')
+    done
+    exit 0
+fi
+
 # ============================================================================
 # Prerequisite checks
 # ============================================================================
@@ -102,11 +123,16 @@ if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
     (cd "$FRONTEND_DIR" && npm install)
 fi
 
-# --- Backend: Julia Pkg.instantiate ---
+# --- Backend: Julia Pkg setup ---
 
-if [ ! -f "$BACKEND_DIR/Manifest.toml" ]; then
-    echo "[dev.sh] Instantiating Julia backend dependencies..."
-    (cd "$BACKEND_DIR" && julia --project=. -e 'using Pkg; Pkg.instantiate()')
+JULIA_MINOR=$(echo "$JULIA_VERSION" | sed 's/\([0-9]*\.[0-9]*\).*/\1/')
+VERSIONED_MANIFEST="$BACKEND_DIR/Manifest-v${JULIA_MINOR}.toml"
+
+if [ ! -f "$VERSIONED_MANIFEST" ] || [ "$BACKEND_DIR/Project.toml" -nt "$VERSIONED_MANIFEST" ]; then
+    echo "[dev.sh] Resolving Julia backend dependencies for v${JULIA_MINOR}..."
+    rm -f "$VERSIONED_MANIFEST"
+    touch "$VERSIONED_MANIFEST"
+    (cd "$BACKEND_DIR" && julia --project=. -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()')
 fi
 
 # ============================================================================

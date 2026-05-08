@@ -1,7 +1,6 @@
 module NetworkRepresentation
 
 using Catalyst
-using ModelingToolkit
 
 using GeneRegulatorySystems.Models
 using GeneRegulatorySystems.Models: Wrapped, Instant
@@ -58,7 +57,7 @@ struct SpeciesId
 end
 
 function SpeciesId(s::SymbolicUtils.BasicSymbolic)
-    SpeciesId(normalize_name(strip_time(Symbol(s))))
+    SpeciesId(strip_time(normalize_name(s)))
 end
 
 function species_components(name::Symbol)
