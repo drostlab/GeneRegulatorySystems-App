@@ -799,7 +799,7 @@ version = "0.2.0"
 deps = ["Arrow", "Catalyst", "Colors", "Dates", "GeneRegulatorySystems", "HTTP", "JSON", "Logging", "LoggingExtras", "MultivariateStats", "Oxygen", "Setfield", "Statistics", "Tables", "UMAP", "UUIDs"]
 path = "."
 uuid = "86ab0978-0466-42e7-a2ae-38e617ed6ea3"
-version = "0.1.1"
+version = "0.1.2"
 
 [[deps.GeneRegulatorySystems]]
 deps = ["Catalyst", "DataStructures", "Distributions", "JSON", "JumpProcesses", "Kronecker", "Logging", "ModelingToolkit", "PrecompileTools", "Random", "Roots", "SHA", "SparseArrays", "StatsBase"]

@@ -16,7 +16,7 @@ jobs:
             julia_arch: x64
 
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v4
@@ -31,12 +31,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.julia
-          key: julia-depot-${{ runner.os }}-${{ matrix.julia_arch }}-${{ hashFiles('backend/Project.toml', 'backend/Manifest.toml') }}
+          key: julia-depot-${{ runner.os }}-${{ matrix.julia_arch }}-${{ hashFiles('backend/Project.toml', 'backend/Manifest-v1.12.toml') }}
           restore-keys: julia-depot-${{ runner.os }}-${{ matrix.julia_arch }}-
 
       - name: Instantiate Julia backend
         working-directory: backend
-        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 
       - name: Install jq (Linux)
         if: runner.os == 'Linux'
