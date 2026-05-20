@@ -528,7 +528,7 @@ fn spawn_julia_backend(
         .map_err(|e| format!("Cannot create Julia depot directory: {}", e))?;
 
     log::info!(
-        "Starting Julia backend: {} --project={} {} 127.0.0.1 {} --data-dir={} --examples-dir={} (depot={})",
+        "Starting Julia backend: {} --threads=auto --project={} {} 127.0.0.1 {} --data-dir={} --examples-dir={} (depot={})",
         julia_bin.display(),
         server_dir.display(),
         run_script.display(),
@@ -539,7 +539,8 @@ fn spawn_julia_backend(
     );
 
     let mut cmd = Command::new(julia_bin);
-    cmd.arg(format!("--project={}", server_dir.display()))
+    cmd.arg("--threads=auto")
+        .arg(format!("--project={}", server_dir.display()))
         .arg(&run_script)
         .arg("127.0.0.1")
         .arg(port.to_string())

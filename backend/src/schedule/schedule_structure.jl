@@ -96,7 +96,10 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
         end
     end
 
-    grs_schedule(Models.FlatState(); dryrun = dryrun_collector)
+    # `parallel = false` keeps branched dryruns single-threaded — the shared
+    # `segments` / `genes` / `gene_colours` are not thread-safe, and dryrun
+    # does no real compute so there's nothing to gain from parallelism.
+    grs_schedule(Models.FlatState(); dryrun = dryrun_collector, parallel = false)
     return (segments, genes, gene_colours)
 end
 

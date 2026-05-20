@@ -2,7 +2,7 @@
     SimulationController
 
 Manages the lifecycle of a running simulation: pause/resume, gene subscriptions,
-and progress reporting via WebSocket.
+and a single thread-safe WebSocket send entry point.
 """
 module SimulationControl
 
@@ -12,24 +12,22 @@ import HTTP: send
 using Logging
 
 export SimulationController, check_pause!, subscribe_genes!, is_paused, pause!, resume!
-export send_progress, send_timeseries, send_status
+export send!, send_status
 
 """
     SimulationController
 
-Controls a running simulation's pause/resume state and gene subscriptions.
-
-The sink checks `check_pause!()` at each trace callback. If paused, the
-simulation thread blocks on a `Condition` until resumed.
+Controls a running simulation's pause/resume state, gene subscriptions, and is
+the sole entry point for WebSocket sends from the simulation thread(s).
 
 # Fields
-- `paused::Bool`: Whether the simulation is currently paused
-- `pause_condition::Threads.Condition`: Condition variable for blocking on pause
-- `subscribed_species::Set{Symbol}`: Species names to stream via WS
-- `result_path::String`: Path to result directory (for metadata updates)
-- `simulation_id::String`: ID for WS message tagging
-- `ws_ref::Ref{Union{HTTP.WebSocket, Nothing}}`: shared ref to current WS client (looked up lazily on each send)
-- `ws_lock::ReentrantLock`: lock protecting `ws_ref` access
+- `paused::Bool`
+- `pause_condition::Threads.Condition` -- producers block here when paused
+- `subscribed_species::Set{Symbol}` -- species to stream (read by sink; replaced atomically by `subscribe_genes!`)
+- `result_path::String`
+- `simulation_id::String` -- tagged into every outbound WS message
+- `ws_ref::Ref{Union{HTTP.WebSocket, Nothing}}` -- shared current WS client
+- `ws_lock::ReentrantLock` -- serialises both ws_ref reads and `send` calls
 """
 mutable struct SimulationController
     paused::Bool
@@ -51,18 +49,16 @@ mutable struct SimulationController
     end
 end
 
-"""Look up the current WebSocket client from the shared ref."""
-function _get_ws(ctrl::SimulationController)::Union{HTTP.WebSocket, Nothing}
-    lock(ctrl.ws_lock) do
-        ctrl.ws_ref[]
-    end
-end
+# ============================================================================
+# Pause / resume
+# ============================================================================
 
 """
-    check_pause!(ctrl) -> nothing
+    check_pause!(ctrl)
 
-Called by the streaming sink at each trace callback.
-Blocks if the simulation is paused until `resume!()` is called.
+Blocks until `resume!()` is called if the simulation is currently paused.
+Must be called *outside* any sink-internal lock, so paused producers don't
+hold the sink lock while waiting.
 """
 function check_pause!(ctrl::SimulationController)
     lock(ctrl.pause_condition) do
@@ -73,11 +69,6 @@ function check_pause!(ctrl::SimulationController)
     end
 end
 
-"""
-    pause!(ctrl)
-
-Pause the simulation. The next `check_pause!()` call will block.
-"""
 function pause!(ctrl::SimulationController)
     lock(ctrl.pause_condition) do
         ctrl.paused = true
@@ -85,11 +76,6 @@ function pause!(ctrl::SimulationController)
     @info "[SimulationController] Paused" id=ctrl.simulation_id
 end
 
-"""
-    resume!(ctrl)
-
-Resume a paused simulation. Unblocks the thread waiting in `check_pause!()`.
-"""
 function resume!(ctrl::SimulationController)
     lock(ctrl.pause_condition) do
         ctrl.paused = false
@@ -100,100 +86,58 @@ end
 
 is_paused(ctrl::SimulationController) = ctrl.paused
 
+# ============================================================================
+# Subscriptions
+# ============================================================================
+
 """
     subscribe_genes!(ctrl, species)
 
-Update the set of species to stream via WebSocket.
+Replace the set of subscribed species. The sink reads `subscribed_species`
+directly; replacement is a single pointer write, so readers see either the old
+or the new set, never a torn one.
 """
 function subscribe_genes!(ctrl::SimulationController, species::Vector{String})
     ctrl.subscribed_species = Set(Symbol.(species))
     @debug "[SimulationController] Updated subscriptions" species=species count=length(species)
 end
 
-"""
-    send_progress(ctrl, current_time, frame_count; total_progress=nothing)
-
-Send a progress message to the WebSocket client.
-"""
-function send_progress(ctrl::SimulationController, current_time::Float64, frame_count::Int;
-                       total_progress::Union{Float64, Nothing} = nothing)
-    ws = _get_ws(ctrl)
-    isnothing(ws) && return
-
-    msg = Dict{String, Any}(
-        "type" => "progress",
-        "simulation_id" => ctrl.simulation_id,
-        "current_time" => current_time,
-        "frame_count" => frame_count
-    )
-    !isnothing(total_progress) && (msg["total_progress"] = total_progress)
-
-    try
-        send(ws, JSON.json(msg))
-    catch e
-        @warn "[SimulationController] Failed to send progress" exception=string(e)
-    end
-end
+# ============================================================================
+# WebSocket send (sole entry point)
+# ============================================================================
 
 """
-    send_timeseries(ctrl, timeseries_data)
+    send!(ctrl, msg::AbstractDict)
 
-Send incremental timeseries data for subscribed species via WebSocket.
-`timeseries_data` is Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}
-(species -> segment_id -> [(t, count)]).
+Send a JSON message to the current WebSocket client. Thread-safe: the lock
+serialises concurrent senders so frames never interleave on the wire.
+No-op if no client is connected. Send failures are logged, not raised.
 """
-function send_timeseries(ctrl::SimulationController, timeseries_data::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}})
-    isempty(timeseries_data) && return
-    ws = _get_ws(ctrl)
-    isnothing(ws) && return
-
-    # Convert to JSON-friendly format: { species: { segmentId: [[t, v], ...] } }
-    data = Dict{String, Dict{String, Vector{Vector{Any}}}}()
-    for (species, seg_data) in timeseries_data
-        species_str = String(species)
-        data[species_str] = Dict{String, Vector{Vector{Any}}}()
-        for (seg_key, points) in seg_data
-            data[species_str][seg_key] = [[t, v] for (t, v) in points]
+function send!(ctrl::SimulationController, msg::AbstractDict)
+    lock(ctrl.ws_lock) do
+        ws = ctrl.ws_ref[]
+        isnothing(ws) && return
+        try
+            send(ws, JSON.json(msg))
+        catch e
+            @warn "[SimulationController] WS send failed" exception=string(e)
         end
-    end
-
-    msg = Dict(
-        "type" => "timeseries",
-        "simulation_id" => ctrl.simulation_id,
-        "data" => data
-    )
-
-    try
-        send(ws, JSON.json(msg))
-    catch e
-        @warn "[SimulationController] Failed to send timeseries" exception=string(e)
     end
 end
 
 """
     send_status(ctrl, status; error=nothing)
 
-Send a status change message via WebSocket.
+Convenience wrapper for status messages.
 """
 function send_status(ctrl::SimulationController, status::String; error::Union{String, Nothing} = nothing)
-    ws = _get_ws(ctrl)
-    if isnothing(ws)
-        @warn "[SimulationController] send_status: ws is nothing, cannot send" status=status id=ctrl.simulation_id
-        return
-    end
-
     msg = Dict{String, Any}(
         "type" => "status",
         "simulation_id" => ctrl.simulation_id,
-        "status" => status
+        "status" => status,
     )
     !isnothing(error) && (msg["error"] = error)
-
-    try
-        send(ws, JSON.json(msg))
-    catch e
-        @warn "[SimulationController] Failed to send status" exception=string(e)
-    end
+    send!(ctrl, msg)
 end
 
 end # module

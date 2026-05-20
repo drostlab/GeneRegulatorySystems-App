@@ -15,7 +15,7 @@ import Tables
 
 import ..StreamingSink
 import ..ScheduleStorage
-import ..SimulationControl: SimulationController, check_pause!, send_progress, send_timeseries, send_status
+import ..SimulationControl: SimulationController, check_pause!, send_status
 import ..ScheduleBindings: spec_bindings
 import ..GapTracking: GapTracker, register_episode!, check_gap, check_synthetic_start
 import GeneRegulatorySystems.Models
@@ -241,9 +241,7 @@ function run_simulation(result::SimulationResult, schedule::Models.Model;
     @info "[Simulation] Flushing events" id=result.id
     StreamingSink.flush!(sink)
 
-    # Count frames from Arrow files
-    @info "[Simulation] Counting frames" id=result.id
-    frame_count = _count_frames_in_result(result.path)
+    frame_count = StreamingSink.frame_count(sink)
     @info "[Simulation] Frame count" id=result.id frames=frame_count
 
     # Update metadata with final status
@@ -260,36 +258,6 @@ function run_simulation(result::SimulationResult, schedule::Models.Model;
         send_status(controller, "completed")
     end
     @info "[Simulation] Completed successfully" id=result.id
-end
-
-"""
-    _count_frames_in_result(result_path::String)::Int
-
-Internal: count frames by reading Arrow event files.
-
-Each unique (episode_i, time) pair represents one frame.
-"""
-function _count_frames_in_result(result_path::String)::Int
-    frame_count = 0
-    all_files = readdir(result_path)
-    @debug "[Simulation] Reading result directory" path=result_path files=all_files
-
-    for file in all_files
-        if startswith(file, "events") && endswith(file, ".stream.arrow")
-            events_file = joinpath(result_path, file)
-            @debug "[Simulation] Counting frames in Arrow file" file=file
-            events_table = Arrow.Table(events_file)
-            unique_states = Set()
-            for (i_val, t_val) in zip(events_table.i, events_table.t)
-                push!(unique_states, (i_val, t_val))
-            end
-            file_frames = length(unique_states)
-            frame_count += file_frames
-            @debug "[Simulation] Frames in file" file=file count=file_frames total=frame_count
-        end
-    end
-    @info "[Simulation] Total frames counted" total=frame_count
-    return frame_count
 end
 
 # ============================================================================
