@@ -2,11 +2,27 @@
  * Network types matching Julia backend NetworkRepresentation module
  */
 
+/**
+ * An editable kinetic parameter exposed by a network element.
+ *
+ * - `name`: human-readable label (e.g. "at", "k", "rate")
+ * - `symbol`: canonical backend symbol used by Models.parameters / Models.remake
+ *   (e.g. "gene_1.repression.gene_3.at", "gene_1.transcription")
+ *
+ * Values are NOT carried on the element — they vary per model and live in
+ * `UnionNetwork.parameters_by_model_path`, keyed by `symbol`.
+ */
+export interface Parameter {
+    name: string
+    symbol: string
+}
+
 export interface Node {
     kind: string
     name: string
     parent: string | null
     properties: Record<string, any>
+    parameters?: Parameter[]
 }
 
 /**
@@ -23,6 +39,7 @@ export interface Link {
     from: string
     to: string
     properties: Record<string, any>
+    parameters?: Parameter[]
     scope: LinkScope
 }
 
@@ -37,11 +54,18 @@ export interface ModelExclusions {
     links: string[]
 }
 
-/** Union of all model networks with per-model exclusion lists. */
+/**
+ * Union of all model networks with per-model exclusion lists.
+ *
+ * `parameters_by_model_path` maps `model_path -> (parameter_symbol -> value)`.
+ * Resolve a parameter's current value by looking up the active model's map
+ * with the parameter's `symbol`.
+ */
 export interface UnionNetwork {
     nodes: Node[]
     links: Link[]
     model_exclusions: Record<string, ModelExclusions>
+    parameters_by_model_path: Record<string, Record<string, number>>
 }
 
 /** Generate a stable edge ID matching the backend convention. */

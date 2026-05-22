@@ -47,6 +47,10 @@ Serialised link used by `UnionNetwork`.
 
 Includes a stable, backend-generated `id` so frontend code can match
 `model_exclusions.links` without re-implementing Julia-side ID logic.
+
+`parameters` lists the editable parameter slots this link exposes (e.g. Hill
+`at`/`k`). The structural shape is identical across models — concrete values
+are looked up per active model via `UnionNetwork.parameters_by_model_path`.
 """
 @kwdef struct UnionLink
     id::String
@@ -54,6 +58,7 @@ Includes a stable, backend-generated `id` so frontend code can match
     from::Symbol
     to::Symbol
     properties::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    parameters::Vector{NetworkRepresentation.Parameter} = NetworkRepresentation.Parameter[]
     scope::Symbol = :all
 end
 
@@ -72,11 +77,17 @@ end
 
 Union of all model networks. `model_exclusions` maps each model_path to the
 nodes/links that are NOT present in that model.
+
+`parameters_by_model_path` maps `model_path -> (parameter_symbol -> value)`,
+allowing the frontend to render the active model's parameter values without
+storing them per-link (which historically caused value-divergent models to
+fork the union into duplicate links).
 """
 @kwdef struct UnionNetwork
     nodes::Vector{NetworkRepresentation.Node}
     links::Vector{UnionLink}
     model_exclusions::Dict{String, ModelExclusions}
+    parameters_by_model_path::Dict{String, Dict{String, Float64}} = Dict{String, Dict{String, Float64}}()
 end
 
 """
@@ -252,25 +263,46 @@ function extract_network_for_model_path(spec_string::String, model_path::String)
 end
 
 """
+    _extract_model_parameters(grs_schedule, model_path) -> Dict{String, Float64}
+
+Reify the model at `model_path` and return its flat parameter map, with
+canonical symbol names as strings (frontend-friendly).
+"""
+function _extract_model_parameters(grs_schedule::GRSSchedule, model_path::String)::Dict{String, Float64}
+    reified = Scheduling.reify(grs_schedule, model_path)
+    return Dict(string(k) => Float64(v) for (k, v) in Models.parameters(reified))
+end
+
+"""
     extract_union_network(spec_string, segments) -> UnionNetwork
 
 Build the union network across all model paths in the schedule segments.
 Each model's exclusions (nodes/links absent from that model) are recorded.
+Per-model parameter values are returned in `parameters_by_model_path`.
 """
 function extract_union_network(spec_string::String, segments::Vector{TimelineSegment}; include_reactions::Bool=true)::UnionNetwork
     grs_schedule = _parse_schedule(spec_string)
 
     model_paths = _unique_model_paths(segments)
     per_model = Dict{String, Network}()
+    parameters_by_model_path = Dict{String, Dict{String, Float64}}()
     for mp in model_paths
         try
             per_model[mp] = extract_network_for_model_path(grs_schedule, mp; include_reactions)
         catch e
             @warn "Could not extract network for model_path" model_path=mp exception=e
         end
+        try
+            parameters_by_model_path[mp] = _extract_model_parameters(grs_schedule, mp)
+        catch e
+            @warn "Could not extract parameters for model_path" model_path=mp exception=e
+            parameters_by_model_path[mp] = Dict{String, Float64}()
+        end
     end
 
-    # Build union
+    # Build union. Link identity is topological (see `_link_id`); the
+    # `parameters` slot list is structural and identical across models, so we
+    # take it from whichever model contributed each link.
     all_nodes = Dict{String, NetworkRepresentation.Node}()
     all_links = Dict{String, UnionLink}()
     for (_, net) in per_model
@@ -279,12 +311,14 @@ function extract_union_network(spec_string::String, segments::Vector{TimelineSeg
         end
         for l in net.links
             id = _link_id(l)
+            haskey(all_links, id) && continue
             all_links[id] = UnionLink(
                 id = id,
                 kind = l.kind,
                 from = l.from,
                 to = l.to,
                 properties = l.properties,
+                parameters = l.parameters,
                 scope = l.scope,
             )
         end
@@ -308,6 +342,7 @@ function extract_union_network(spec_string::String, segments::Vector{TimelineSeg
         nodes = collect(values(all_nodes)),
         links = collect(values(all_links)),
         model_exclusions = model_exclusions,
+        parameters_by_model_path = parameters_by_model_path,
     )
 end
 

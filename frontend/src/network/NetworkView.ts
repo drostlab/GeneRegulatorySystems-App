@@ -19,6 +19,9 @@ import cytoscape from 'cytoscape'
 import fcose from 'cytoscape-fcose'
 // @ts-ignore
 import svgExporter from 'cytoscape-svg'
+// @ts-ignore
+import cytoscapePopper from 'cytoscape-popper'
+import { createPopper } from '@popperjs/core'
 
 import { getGeneViewElements } from './networkElements'
 import { buildStylesheet } from './networkStyles'
@@ -29,10 +32,16 @@ import { SelectionSync } from './SelectionSync'
 import { HoverSync } from './HoverSync'
 import { DynamicsSync } from './DynamicsSync'
 import { createEdgeTooltip, createNodeTooltip, type Tooltip } from './Tooltip'
+import {
+    InlineParameters,
+    type ParameterChangeHandler,
+    type ParameterValueLookup,
+} from './InlineParameters'
 import { saveFile } from '@/utils/saveFile'
 
 cytoscape.use(fcose)
 cytoscape.use(svgExporter)
+cytoscape.use(cytoscapePopper(createPopper))
 
 export class NetworkView {
     private cy: Core | null = null
@@ -44,8 +53,17 @@ export class NetworkView {
     private selectionSync = new SelectionSync()
     private hoverSync = new HoverSync()
     private dynamicsSync = new DynamicsSync()
-    private edgeTooltip: Tooltip = createEdgeTooltip()
-    private nodeTooltip: Tooltip = createNodeTooltip()
+    private inlineParameters = new InlineParameters()
+
+    /**
+     * Looks up a parameter's current value for the active model.
+     * Replaced via `setParameterLookup`; defaults to "unknown" so tooltips
+     * and inline chips gracefully degrade until wired up.
+     */
+    private parameterLookup: ParameterValueLookup = () => undefined
+
+    private edgeTooltip: Tooltip = createEdgeTooltip(s => this.parameterLookup(s))
+    private nodeTooltip: Tooltip = createNodeTooltip(s => this.parameterLookup(s))
 
     /** External callback for detail visibility changes (zoom or manual toggle). */
     private _onDetailChange: ((visible: boolean) => void) | null = null
@@ -53,6 +71,31 @@ export class NetworkView {
     /** Register a callback for detail visibility changes. */
     set onDetailChange(cb: ((visible: boolean) => void) | null) {
         this._onDetailChange = cb
+    }
+
+    /**
+     * Provide a callback that resolves a parameter symbol to its current
+     * value for the active model. Called fresh on each render/edit, so
+     * passing a function that reads from a reactive store keeps tooltips
+     * and inline chips in sync with `viewerStore.activeModelPath`.
+     */
+    setParameterLookup(lookup: ParameterValueLookup): void {
+        this.parameterLookup = lookup
+        this.inlineParameters.setParameterLookup(lookup)
+    }
+
+    /** Refresh inline chip values (call when the active model changes). */
+    refreshParameterValues(): void {
+        this.inlineParameters.refreshValues()
+    }
+
+    /**
+     * Register a handler invoked when a user commits a new value via an
+     * inline parameter chip. The handler receives the canonical parameter
+     * symbol and the parsed numeric value.
+     */
+    set onParameterChange(handler: ParameterChangeHandler | null) {
+        this.inlineParameters.onParameterChange = handler
     }
 
     /**
@@ -104,6 +147,7 @@ export class NetworkView {
         this.isDark = isDark
         this.applyContainerBackground()
         this.adaptiveZoom.applyTheme(isDark)
+        this.inlineParameters.applyTheme(isDark)
         if (this.cy) {
             this.cy.style(buildStylesheet(isDark))
         }
@@ -185,6 +229,18 @@ export class NetworkView {
             this.dynamicsSync.attach(this.cy)
             this.edgeTooltip.attach(this.cy)
             this.nodeTooltip.attach(this.cy)
+            this.inlineParameters.attach(this.cy, this.isDark)
+
+            // Hovering a parameter chip should surface the same tooltip the
+            // underlying element would show on direct hover.
+            this.inlineParameters.onChipHover = (ele, x, y) => {
+                const tooltip = ele.isEdge?.() ? this.edgeTooltip : this.nodeTooltip
+                tooltip.showFor(ele, x, y)
+            }
+            this.inlineParameters.onChipLeave = () => {
+                this.edgeTooltip.hide()
+                this.nodeTooltip.hide()
+            }
 
             // Double-click on background resets zoom and pan
             this.cy.on('dbltap', (evt) => {
@@ -196,6 +252,7 @@ export class NetworkView {
                 this.modelFilter.refresh()
                 this.selectionSync.refresh()
                 this.dynamicsSync.notifyDetailChanged(visible)
+                this.inlineParameters.notifyDetailChanged()
                 this._onDetailChange?.(visible)
             }
         })
@@ -211,6 +268,7 @@ export class NetworkView {
         this.dynamicsSync.destroy()
         this.edgeTooltip.destroy()
         this.nodeTooltip.destroy()
+        this.inlineParameters.destroy()
     }
 
     private destroyCytoscape(): void {

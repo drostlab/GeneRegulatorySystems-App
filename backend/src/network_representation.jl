@@ -15,6 +15,24 @@ using GeneRegulatorySystems.Specifications
 # TODO: move each method to the model module it belongs to
 
 
+"""
+    Parameter
+
+An editable kinetic parameter associated with a network element.
+
+- `name`: human-readable label shown in the UI (e.g. `"at"`, `"k"`, `"rate"`).
+- `symbol`: canonical model-parameter symbol used by `Models.parameters` /
+  `Models.remake` (e.g. `"gene_1.repression.gene_3.at"`,
+  `"gene_1.transcription"`).
+
+Values are not stored here — they are looked up per active model via the
+`parameters_by_model_path` map on the union network.
+"""
+@kwdef struct Parameter
+    name::String
+    symbol::String
+end
+
 # TODO: maybe we can represent reaction nodes as hyperlinks instead of nodes? think that would make more sense?
 """
     Link
@@ -24,12 +42,15 @@ Directed edge in the network graph.
 - `scope`: `:all` (visible at both zoom levels), `:gene` (zoomed-out only),
   `:species` (zoomed-in only). The frontend resolves endpoints to gene parents
   when zoomed out for `:all`-scoped edges.
+- `parameters`: editable kinetic parameters this link exposes (e.g. Hill `at`
+  and `k` for regulatory links). Values resolved per active model.
 """
 @kwdef struct Link
     kind::Symbol
     from::Symbol
     to::Symbol
     properties::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    parameters::Vector{Parameter} = Parameter[]
     scope::Symbol = :all
 end
 #kinds: substrate, product, activation, repression, proteolysis, produces, next, alternative
@@ -39,6 +60,7 @@ end
     kind::Symbol
     name::Symbol
     properties::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    parameters::Vector{Parameter} = Parameter[]
     nodes::Vector{Entity} = Entity[]
     links::Vector{Link} = Link[]
 end
@@ -86,7 +108,8 @@ entity(species::SpeciesId) = let comps = species_components(species.name)
     )
 end
 
-function entity(rs::ReactionSystem, filter_ids::Set{Symbol}; species_genes::Union{Nothing, Set{Symbol}}=nothing)
+function entity(rs::ReactionSystem, filter_ids::Set{Symbol};
+                species_genes::Union{Nothing, Set{Symbol}}=nothing)
     # Build species nodes, filtering by parent gene when species_genes given.
     # Parentless species (machinery: polymerases, ribosomes, proteasomes) are
     # always included so reactions that reference them aren't excluded.
@@ -129,7 +152,17 @@ function entity(rs::ReactionSystem, filter_ids::Set{Symbol}; species_genes::Unio
         rxn_name = _reaction_id(rxn)
         rxn_name in filter_ids && continue
 
-        push!(nodes, Entity(kind=:reaction, name=rxn_name, properties=Dict(:rate => Symbol(rxn.rate))))
+        # For cascade and auxiliary reactions, `rxn.rate` is a single MTK
+        # parameter whose canonical name (e.g. `gene_1.transcription`,
+        # `reaction.0.k⁺`) is exactly what `Models.parameters` keys by.
+        # Regulatory reactions (deactivation/activation/proteolysis) carry a
+        # composite rate expression and are filtered out above by `filter_ids`.
+        rate_sym = string(normalize_name(rxn.rate))
+        push!(nodes, Entity(
+            kind=:reaction, name=rxn_name,
+            properties=Dict(:rate => Symbol(rate_sym)),
+            parameters=[Parameter(name="rate", symbol=rate_sym)],
+        ))
 
         append!(links,
             [Link(kind=:substrate, from=SpeciesId(s).name, to=rxn_name, properties=Dict(:stoichiometry => rxn.substoich[i]))
@@ -353,6 +386,21 @@ function _resolve_reg_endpoint(name::Symbol, gene_names::Set{Symbol}, suffix::St
     name in gene_names ? Symbol("$(name).$(suffix)") : name
 end
 
+"""
+    _regulatory_link_parameters(l) -> Vector{Parameter}
+
+Build the parameter list for a regulatory link from `Models.describe`. The
+property keys (`:at`, `:k`) are exactly the V1 parameter fields exposed by the
+link kind; the canonical symbol is `V1.parameter_name(to, kind, from, field)`.
+"""
+function _regulatory_link_parameters(l)::Vector{Parameter}
+    [
+        Parameter(name=string(key),
+                  symbol=string(V1.parameter_name(l.to, l.kind, l.from, key)))
+        for key in keys(l.properties)
+    ]
+end
+
 function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union{Bool, Set{Symbol}}=true)
     gene_names = Set{Symbol}(g.name for g in definition.genes)
 
@@ -367,7 +415,9 @@ function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union
             to_suffix = l.kind == :proteolysis ? "proteins" : "active"
             to_resolved = _resolve_reg_endpoint(l.to, gene_names, to_suffix)
             Link(; kind=l.kind, from=from_resolved, to=to_resolved,
-                  properties=l.properties, scope=:all)
+                  properties=l.properties,
+                  parameters=_regulatory_link_parameters(l),
+                  scope=:all)
         end
 
         gene_lookup = Dict{Symbol, V1.Gene}(g.name => g for g in definition.genes)
@@ -375,21 +425,17 @@ function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union
         rs = f!.model.definition
         rs_network = entity(rs, filter_ids)
         gene_nodes, aux_nodes, aux_links, summary_links = _genes_from_reaction_network(rs_network)
-        gene_nodes = map(gene_nodes) do n
-            g = get(gene_lookup, n.name, nothing)
-            g === nothing && return n
-            Entity(kind=n.kind, name=n.name,
-                   properties=merge(n.properties, Dict(:base_rates => V1.representation(g.base_rates))),
-                   nodes=n.nodes, links=n.links)
-        end
         nodes = vcat(gene_nodes, aux_nodes)
         links = vcat(reg_links, aux_links, summary_links)
     elseif include_reactions === false
         # Kronecker/random-diff: no species, keep gene-level regulatory links
-        reg_links = [Link(; l..., scope=:all) for l in raw_links]
-        nodes = [Entity(kind=:gene, name=g.name,
-                        properties=Dict(:base_rates => V1.representation(g.base_rates)))
-                 for g in definition.genes]
+        reg_links = map(raw_links) do l
+            Link(; kind=l.kind, from=l.from, to=l.to,
+                  properties=l.properties,
+                  parameters=_regulatory_link_parameters(l),
+                  scope=:all)
+        end
+        nodes = [Entity(kind=:gene, name=g.name) for g in definition.genes]
         links = reg_links
     else
         # Partial: species detail only for genes in include_reactions::Set{Symbol}
@@ -419,14 +465,16 @@ function _entity_partial_species(
 )
     # Regulatory links: resolve endpoints to species only when both genes are included
     reg_links = map(raw_links) do l
+        params = _regulatory_link_parameters(l)
         if l.from ∈ species_gene_set && l.to ∈ species_gene_set
             from_resolved = _resolve_reg_endpoint(l.from, gene_names, "proteins")
             to_suffix = l.kind == :proteolysis ? "proteins" : "active"
             to_resolved = _resolve_reg_endpoint(l.to, gene_names, to_suffix)
             Link(; kind=l.kind, from=from_resolved, to=to_resolved,
-                  properties=l.properties, scope=:all)
+                  properties=l.properties, parameters=params, scope=:all)
         else
-            Link(; l..., scope=:all)
+            Link(; kind=l.kind, from=l.from, to=l.to,
+                  properties=l.properties, parameters=params, scope=:all)
         end
     end
 
@@ -437,19 +485,9 @@ function _entity_partial_species(
     rs_network = entity(rs, filter_ids; species_genes=species_gene_set)
     species_gene_nodes, aux_nodes, aux_links, summary_links = _genes_from_reaction_network(rs_network)
 
-    # Enrich included gene nodes with base_rates
-    species_gene_nodes = map(species_gene_nodes) do n
-        g = get(gene_lookup, n.name, nothing)
-        g === nothing && return n
-        Entity(kind=n.kind, name=n.name,
-               properties=merge(n.properties, Dict(:base_rates => V1.representation(g.base_rates))),
-               nodes=n.nodes, links=n.links)
-    end
-
     # Flat nodes for excluded genes
     flat_gene_nodes = [
-        Entity(kind=:gene, name=g.name,
-               properties=Dict(:base_rates => V1.representation(g.base_rates)))
+        Entity(kind=:gene, name=g.name)
         for g in definition.genes if g.name ∉ species_gene_set
     ]
 
@@ -638,10 +676,12 @@ entity(definition, f!::Wrapped; kw...) = entity(f!.model; kw...)
     name::Symbol
     parent::Union{Symbol, Nothing} = nothing
     properties::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    parameters::Vector{Parameter} = Parameter[]
 end
 
 Node(entity::Entity, parent::Union{Symbol, Nothing}=nothing) =
-    Node(kind=entity.kind, name=entity.name, parent=parent, properties=entity.properties)
+    Node(kind=entity.kind, name=entity.name, parent=parent,
+         properties=entity.properties, parameters=entity.parameters)
 
 function flatten(entity::Entity, parent::Union{Symbol, Nothing}=nothing)::Tuple{Vector{Node}, Vector{Link}}
     nodes = Node[Node(entity, parent)]

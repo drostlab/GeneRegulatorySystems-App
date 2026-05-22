@@ -28,30 +28,47 @@ function getTooltip(): HTMLDivElement {
     return tooltipEl
 }
 
-function place(e: MouseEvent): void {
+function placeAt(clientX: number, clientY: number): void {
     const el = getTooltip()
     const margin = 16
     const tooltipWidth = el.offsetWidth || 120
-    const nearRight = e.clientX + tooltipWidth + margin > window.innerWidth
+    const nearRight = clientX + tooltipWidth + margin > window.innerWidth
     el.style.left = nearRight
-        ? `${e.clientX - tooltipWidth - 8}px`
-        : `${e.clientX + 12}px`
-    el.style.top = `${e.clientY - 20}px`
+        ? `${clientX - tooltipWidth - 8}px`
+        : `${clientX + 12}px`
+    el.style.top = `${clientY - 20}px`
 }
 
 function showTooltip(e: MouseEvent, text: string): void {
-    const el = getTooltip()
-    el.textContent = text
-    el.style.display = 'block'
-    place(e)
+    showGrsTooltip(text, e.clientX, e.clientY)
 }
 
 function moveTooltip(e: MouseEvent): void {
-    place(e)
+    placeAt(e.clientX, e.clientY)
 }
 
 function hideTooltip(): void {
     getTooltip().style.display = 'none'
+}
+
+/**
+ * Imperative API for showing the shared GRS tooltip from non-directive
+ * call sites (e.g. Cytoscape event handlers, which operate on cytoscape
+ * elements rather than DOM nodes).
+ */
+export function showGrsTooltip(text: string, clientX: number, clientY: number): void {
+    const el = getTooltip()
+    el.textContent = text
+    el.style.display = 'block'
+    placeAt(clientX, clientY)
+}
+
+export function moveGrsTooltip(clientX: number, clientY: number): void {
+    placeAt(clientX, clientY)
+}
+
+export function hideGrsTooltip(): void {
+    hideTooltip()
 }
 
 function attachHandlers(el: HTMLElement, text: string): void {

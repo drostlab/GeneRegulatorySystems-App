@@ -42,11 +42,38 @@ onMounted(() => {
     networkView.init(containerRef, isDark.value)
     onThemeChange((dark) => networkView.applyTheme(dark))
 
+    // Resolve parameter values against the active model. Read fresh on each
+    // call so tooltips and inline chips reflect whichever model is active.
+    //
+    // Fallback: if the active model path has no entry (e.g. it points at an
+    // instant model that wasn't reified, or there's only one model in the
+    // schedule and the user hasn't hovered yet), pick the first available
+    // model so chips still show meaningful values instead of `?`.
+    networkView.setParameterLookup((symbol: string) => {
+        const byPath = scheduleStore.unionNetwork?.parameters_by_model_path
+        if (!byPath) return undefined
+        const mp = viewerStore.activeModelPath
+        if (mp && byPath[mp]) return byPath[mp]?.[symbol]
+        const firstKey = Object.keys(byPath)[0]
+        return firstKey ? byPath[firstKey]?.[symbol] : undefined
+    })
+
+    // TODO: persist to spec / fire `/schedules/edit`.
+    networkView.onParameterChange = (symbol, value) => {
+        console.debug('[NetworkDiagram] parameter change', symbol, '=', value)
+    }
+
     // Render when union network arrives
     if (scheduleStore.unionNetwork) {
         networkView.setNetwork(scheduleStore.unionNetwork, scheduleStore.geneColours ?? {})
         isDetailVisible.value = networkView.isDetailVisible
     }
+})
+
+// Refresh inline chip values whenever the user hovers a different model
+// (timeline rectangles, branch switches, etc.).
+watch(() => viewerStore.activeModelPath, () => {
+    networkView.refreshParameterValues()
 })
 
 onBeforeUnmount(() => {

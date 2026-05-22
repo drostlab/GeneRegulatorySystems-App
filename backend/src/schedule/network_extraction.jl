@@ -102,5 +102,8 @@ function _value_signature(x)::String
 end
 
 function _link_id(l::NetworkRepresentation.Link)::String
-    return "$(l.from)-$(l.kind)-$(l.to)-$(l.scope)|$(_property_signature(l.properties))"
+    # Link identity is topological (kind/from/to/scope) only. Parameter values
+    # differ per model and are surfaced via `parameters_by_model_path`, so they
+    # must not fork the union link.
+    return "$(l.from)-$(l.kind)-$(l.to)-$(l.scope)"
 end

@@ -258,6 +258,14 @@ function buildNodeElement(
 
     const textColour = node.kind === 'gene' ? contrastTextColour(colour) : undefined
 
+    // For reaction nodes the backend's `rate` is the full canonical
+    // parameter symbol. The canvas label wants a short readable form:
+    //   cascade:    `gene_1.processing`     -> `processing`
+    //   aux fwd:    `reaction.0.k⁺`         -> `rxn 0`
+    //   aux rev:    `reaction.0.k⁻`         -> `rxn 0 ←`
+    const rate = node.properties?.rate
+    const rateName = typeof rate === 'string' ? shortReactionLabel(rate) : rate
+
     return {
         data: {
             id: node.name,
@@ -268,7 +276,9 @@ function buildNodeElement(
             colour,
             textColour,
             parentColour,
+            parameters: node.parameters ?? [],
             ...node.properties,
+            rateName,
         },
         classes: cssClass,
     }
@@ -290,7 +300,14 @@ function buildEdgeElement(
     originalLinkIds?: string[],
 ): cytoscape.ElementDefinition {
     const edgeColour = getEdgeColour(link.kind)
-    const label = shouldShowEdgeLabel(link.kind) ? formatLinkLabel(link) : ''
+    // Suppress the canvas label when InlineParameters will render chips for
+    // this edge's parameters; otherwise the chips and the static label
+    // double up. Non-parameterised edges (substrate/product/produces/etc.)
+    // keep their canvas label.
+    const hasInlineParams = (link.parameters ?? []).length > 0
+    const label = !hasInlineParams && shouldShowEdgeLabel(link.kind)
+        ? formatLinkLabel(link)
+        : ''
     const isSelfLoop = source === target
 
     const at = (link.properties.at as number) ?? 1
@@ -309,6 +326,7 @@ function buildEdgeElement(
             at,
             weight,
             originalLinkIds: originalLinkIds ?? [linkId(link)],
+            parameters: link.parameters ?? [],
             ...link.properties,
         },
         classes: `${link.kind}${isSelfLoop ? ' loop' : ''}${isPeripheral ? ' peripheral' : ''}`,
@@ -351,6 +369,25 @@ function formatLinkLabel(link: Link): string {
         parts.push(`${key}=${formatted}`)
     }
     return parts.join(' ')
+}
+
+/**
+ * Compact reaction-node label derived from the rate parameter symbol.
+ *
+ *   cascade:        `gene_1.processing`     -> `processing`
+ *   aux forward:    `reaction.0.k⁺`         -> `rxn 0`
+ *   aux reverse:    `reaction.0.k⁻`         -> `rxn 0 ←`
+ *
+ * Forward/reverse aux reactions share an index but produce two distinct
+ * Catalyst reactions, so the reverse one gets an arrow to disambiguate.
+ */
+function shortReactionLabel(symbol: string): string {
+    const aux = symbol.match(/^reaction\.(\d+)\.(.+)$/)
+    if (aux) {
+        const reverse = aux[2] === 'k⁻' || aux[2] === 'k_minus' || aux[2] === 'k-'
+        return reverse ? `rxn ${aux[1]} ←` : `rxn ${aux[1]}`
+    }
+    return symbol.split('.').pop() ?? symbol
 }
 
 /**
