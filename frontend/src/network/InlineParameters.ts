@@ -266,8 +266,39 @@ export class InlineParameters {
     }
 
     private updateAll(): void {
+        // For regulatory edge chips: hide whenever the edge's midpoint sits
+        // inside a gene compound that *isn't* the edge's own source/target
+        // compound. Naturally:
+        //   - Gene view A→B with midpoint inside unrelated gene C → hide.
+        //   - Species view edge gene_A.proteins → gene_B.active passing
+        //     across gene_C → hide.
+        //   - Species view self-regulation (both endpoints in gene_A) →
+        //     gene_A is excluded → chip shows even though midpoint is inside.
+        const geneBoxes = this.cy
+            ? this.cy.nodes('.gene')
+                .filter((g: any) => typeof g.visible !== 'function' || g.visible())
+                .map((g: any) => ({ id: String(g.id()), bb: g.renderedBoundingBox() }))
+            : []
+
         for (const a of this.anchors.values()) {
-            const visible = typeof a.ele.visible === 'function' ? a.ele.visible() : true
+            let visible = typeof a.ele.visible === 'function' ? a.ele.visible() : true
+
+            if (
+                visible
+                && a.ele.isEdge?.()
+                && typeof a.ele.renderedMidpoint === 'function'
+            ) {
+                const exclude = endpointCompoundIds(a.ele)
+                const mid = a.ele.renderedMidpoint()
+                for (const { id, bb } of geneBoxes) {
+                    if (exclude.has(id)) continue
+                    if (mid.x >= bb.x1 && mid.x <= bb.x2 && mid.y >= bb.y1 && mid.y <= bb.y2) {
+                        visible = false
+                        break
+                    }
+                }
+            }
+
             a.container.style.display = visible ? 'flex' : 'none'
             if (visible) {
                 try { a.popper?.update?.() } catch { /* noop */ }
@@ -516,4 +547,28 @@ function formatValue(v: number): string {
         return v.toFixed(4).replace(/\.?0+$/, '')
     }
     return v.toExponential(2)
+}
+
+/**
+ * IDs of the gene compounds at each end of an edge — i.e. compounds whose
+ * bbox naturally contains an endpoint and shouldn't be used as an
+ * "occluding" compound in the chip hit-test.
+ *
+ *   Gene view:    endpoints ARE gene nodes -> their own ids.
+ *   Species view: endpoints are species nodes inside compound parents ->
+ *                 their parent ids.
+ */
+function endpointCompoundIds(edge: any): Set<string> {
+    const result = new Set<string>()
+    for (const end of [edge.source?.(), edge.target?.()]) {
+        if (!end) continue
+        const compound = end.isParent?.() ? end : end.parent?.()
+        // Either the endpoint is itself a gene (gene view), or its parent
+        // compound is the gene; record whichever has data.kind === 'gene'.
+        if (end.data?.('kind') === 'gene') result.add(String(end.id()))
+        if (compound && compound.nonempty?.() && compound.data?.('kind') === 'gene') {
+            result.add(String(compound.id()))
+        }
+    }
+    return result
 }

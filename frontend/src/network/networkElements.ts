@@ -256,6 +256,13 @@ function buildNodeElement(
         ? (isDark ? darken(geneColours[node.parent]!, 0.3) : lighten(geneColours[node.parent]!, 0.7))
         : colour
 
+    // Compound-parent (gene in species view) bg colour: same lighten/darken
+    // function as `parentColour`, but applied to the gene's own colour. Used
+    // as the fully-opaque compound bg so it reads as a clear container.
+    const compoundColour = node.kind === 'gene'
+        ? (isDark ? darken(colour, 0.3) : lighten(colour, 0.7))
+        : colour
+
     const textColour = node.kind === 'gene' ? contrastTextColour(colour) : undefined
 
     // For reaction nodes the backend's `rate` is the full canonical
@@ -276,6 +283,7 @@ function buildNodeElement(
             colour,
             textColour,
             parentColour,
+            compoundColour,
             parameters: node.parameters ?? [],
             ...node.properties,
             rateName,
@@ -309,6 +317,9 @@ function buildEdgeElement(
         ? formatLinkLabel(link)
         : ''
     const isSelfLoop = source === target
+    // Self-regulation: same gene at both endpoints, whether the edge connects
+    // the gene to itself (gene view) or two species inside it (species view).
+    const isSelfReg = geneOf(source) === geneOf(target)
 
     const at = (link.properties.at as number) ?? 1
     const isPeripheral = link.properties.peripheral === true
@@ -329,8 +340,14 @@ function buildEdgeElement(
             parameters: link.parameters ?? [],
             ...link.properties,
         },
-        classes: `${link.kind}${isSelfLoop ? ' loop' : ''}${isPeripheral ? ' peripheral' : ''}`,
+        classes: `${link.kind}${isSelfLoop ? ' loop' : ''}${isSelfReg ? ' self-reg' : ''}${isPeripheral ? ' peripheral' : ''}`,
     }
+}
+
+/** Strip the species suffix (`.proteins`, `.active`, …) leaving the gene name. */
+function geneOf(id: string): string {
+    const i = id.indexOf('.')
+    return i === -1 ? id : id.slice(0, i)
 }
 
 /**

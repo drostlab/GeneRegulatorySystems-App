@@ -99,12 +99,16 @@ export function buildStylesheet(isDark = false): any[] {
             } as any,
         },
         // -- compound gene (label above box): mode-aware colour, no ellipsis --
+        // Fully opaque bg using a lightened (light mode) / darkened (dark mode)
+        // version of the gene colour, so edges at z=-1 visibly pass behind
+        // compounds instead of bleeding through a 25%-transparent box.
         {
             selector: 'node.compound-parent',
             style: {
                 'text-valign': 'top' as any,
                 'text-margin-y': -8,
-                'background-opacity': 0.25,
+                'background-color': 'data(compoundColour)',
+                'background-opacity': 1,
                 'text-wrap': 'none' as any,
                 'text-max-width': '9999px',
                 'color': t.network.geneLabelText,
@@ -256,6 +260,10 @@ export function buildStylesheet(isDark = false): any[] {
             } as any,
         },
         // -- species-view regulatory edges: width scaled by binding site (opacity handled below) --
+        // z-index -1 puts these below the gene compounds (default z=0), so
+        // edges visibly pass *behind* compounds they cross rather than over
+        // their labels. Edges within their own source/target compounds get
+        // slightly muted by the 0.25-opaque compound bg, which reads fine.
         {
             selector: 'edge.species-view',
             style: {
@@ -263,6 +271,7 @@ export function buildStylesheet(isDark = false): any[] {
                 'font-size': 3,
                 'arrow-scale': 0.8,
                 'text-opacity': 1,
+                'z-index': -1,
             } as any,
         },
         {
@@ -352,7 +361,7 @@ export function buildStylesheet(isDark = false): any[] {
         {
             selector: 'edge.species-view:not(.dimmed):not(.peripheral)',
             style: {
-                'opacity': 'mapData(at, 0.1, 10, 1, 0.5)',
+                'opacity': 'mapData(at, 0.1, 10, 0.35, 0.15)',
             } as any,
         },
         {
@@ -365,6 +374,16 @@ export function buildStylesheet(isDark = false): any[] {
             selector: 'edge.dimmed',
             style: {
                 'opacity': DIM_OPACITY,
+            } as any,
+        },
+        // -- self-regulatory edges in species view: pull above compounds and
+        //    boost opacity so they aren't lost inside their own gene's box.
+        //    Overrides the `.species-view` z-index: -1 and opacity matrix.
+        {
+            selector: 'edge.species-view.self-reg:not(.dimmed):not(.peripheral)',
+            style: {
+                'z-index': 200,
+                'opacity': 1,
             } as any,
         },
     ]

@@ -18,6 +18,7 @@
 import type { Core, EventHandler } from 'cytoscape'
 import type { UnionNetwork } from '@/types/network'
 import { getGeneViewElements, getSpeciesViewElements } from './networkElements'
+import { darken, lighten } from '@/utils/colorUtils'
 import logging from '@/utils/logging'
 
 const log = logging.getLogger('AdaptiveZoom')
@@ -88,20 +89,35 @@ export class AdaptiveZoom {
     }
 
     /**
-     * Rebuild cached elements with updated theme and update live reaction nodes.
+     * Rebuild cached elements with updated theme and update theme-derived
+     * data fields on live nodes that won't be re-added: reactions'
+     * `parentColour` (in `speciesViewElements`) and genes' `compoundColour`
+     * (genes are live cytoscape nodes from the initial setNetwork, not in
+     * `speciesViewElements`).
      */
     applyTheme(isDark: boolean): void {
         this.isDark = isDark
         this.precomputeElements()
-        // Update parentColour on live reaction nodes
-        if (this.cy) {
-            for (const el of this.speciesViewElements) {
-                if (el.data.kind === 'reaction' && el.data.id && el.data.parentColour) {
-                    const node = this.cy.getElementById(el.data.id as string)
-                    if (node.nonempty()) {
-                        node.data('parentColour', el.data.parentColour)
-                    }
-                }
+        if (!this.cy) return
+
+        // Genes: recompute compoundColour from their persistent `colour` data,
+        // since they're long-lived cytoscape nodes not tracked in any cached
+        // element array.
+        this.cy.nodes('.gene').forEach((node: any) => {
+            const colour = node.data('colour')
+            if (typeof colour !== 'string') return
+            const compoundColour = isDark ? darken(colour, 0.3) : lighten(colour, 0.7)
+            node.data('compoundColour', compoundColour)
+        })
+
+        // Reactions (and any other species-view-only nodes): pull updated
+        // theme-derived fields from the freshly-precomputed elements array.
+        for (const el of this.speciesViewElements) {
+            if (!el.data?.id) continue
+            const node = this.cy.getElementById(el.data.id as string)
+            if (!node.nonempty()) continue
+            if (el.data.kind === 'reaction' && el.data.parentColour) {
+                node.data('parentColour', el.data.parentColour)
             }
         }
     }

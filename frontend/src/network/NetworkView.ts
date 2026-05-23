@@ -253,6 +253,11 @@ export class NetworkView {
                 this.selectionSync.refresh()
                 this.dynamicsSync.notifyDetailChanged(visible)
                 this.inlineParameters.notifyDetailChanged()
+                // Force cytoscape to re-evaluate styles for elements whose
+                // classes just changed (e.g. `.species-view` adds/removes).
+                // Without this, z-index changes can lag until the next
+                // position/drag event triggers a redraw.
+                this.cy?.style().update()
                 this._onDetailChange?.(visible)
             }
         })
