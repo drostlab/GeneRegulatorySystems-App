@@ -19,9 +19,6 @@ import cytoscape from 'cytoscape'
 import fcose from 'cytoscape-fcose'
 // @ts-ignore
 import svgExporter from 'cytoscape-svg'
-// @ts-ignore
-import cytoscapePopper from 'cytoscape-popper'
-import { createPopper } from '@popperjs/core'
 
 import { getGeneViewElements } from './networkElements'
 import { buildStylesheet } from './networkStyles'
@@ -41,7 +38,6 @@ import { saveFile } from '@/utils/saveFile'
 
 cytoscape.use(fcose)
 cytoscape.use(svgExporter)
-cytoscape.use(cytoscapePopper(createPopper))
 
 export class NetworkView {
     private cy: Core | null = null
@@ -71,6 +67,18 @@ export class NetworkView {
     /** Register a callback for detail visibility changes. */
     set onDetailChange(cb: ((visible: boolean) => void) | null) {
         this._onDetailChange = cb
+    }
+
+    /** External callback for right-click on the network background. */
+    private _onContextMenu: ((evt: MouseEvent) => void) | null = null
+
+    /**
+     * Register a handler invoked on right-click of the cytoscape background
+     * (not on an element). The handler receives the original `MouseEvent`
+     * with `clientX/Y`; useful for surfacing a PrimeVue `ContextMenu`.
+     */
+    set onContextMenu(cb: ((evt: MouseEvent) => void) | null) {
+        this._onContextMenu = cb
     }
 
     /**
@@ -245,6 +253,16 @@ export class NetworkView {
             // Double-click on background resets zoom and pan
             this.cy.on('dbltap', (evt) => {
                 if (evt.target === this.cy) this.cy!.fit(undefined, 50)
+            })
+
+            // Right-click on background -> external context menu (e.g. for
+            // "Select all genes / species / Clear selection" actions).
+            this.cy.on('cxttap', (evt: any) => {
+                if (evt.target !== this.cy) return
+                const oe = evt.originalEvent as MouseEvent | undefined
+                if (!oe || !this._onContextMenu) return
+                oe.preventDefault?.()
+                this._onContextMenu(oe)
             })
 
             // When detail visibility changes (zoom or toggle), sync externally

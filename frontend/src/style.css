@@ -156,8 +156,10 @@ html, body, #app {
   font-size: var(--font-size-md);
 }
 
-/* Menu/MenuItem styling */
-.p-menu {
+/* Menu/MenuItem styling — applies to Menu, ContextMenu, and any other
+ * menu-family component that uses the shared `.p-menuitem` skeleton. */
+.p-menu,
+.p-contextmenu {
   font-size: var(--font-size-sm) !important;
 }
 
@@ -165,7 +167,8 @@ html, body, #app {
   font-size: var(--font-size-sm) !important;
 }
 
-.p-menu .p-menuitem {
+.p-menu .p-menuitem,
+.p-contextmenu .p-menuitem {
   padding: 0.5rem 1rem !important;
 }
 

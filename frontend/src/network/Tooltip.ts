@@ -17,14 +17,15 @@ export class Tooltip {
     private onMouseOut: EventHandler | null = null
 
     private readonly selector: string
-    private readonly contentFn: (el: any) => string
+    private readonly contentFn: (el: any) => string | null
 
     /**
      * @param selector - Cytoscape selector (e.g. 'edge', 'node')
-     * @param contentFn - returns tooltip text for a given element
+     * @param contentFn - returns tooltip text for a given element, or
+     *   `null`/empty string to suppress the tooltip for that element
      * @param _tooltipId - retained for backward compat; no longer used
      */
-    constructor(selector: string, contentFn: (el: any) => string, _tooltipId?: string) {
+    constructor(selector: string, contentFn: (el: any) => string | null, _tooltipId?: string) {
         this.selector = selector
         this.contentFn = contentFn
     }
@@ -38,7 +39,9 @@ export class Tooltip {
         this.onMouseOver = (evt: any) => {
             const oe = evt.originalEvent as MouseEvent | undefined
             if (!oe) return
-            showGrsTooltip(this.contentFn(evt.target), oe.clientX, oe.clientY)
+            const content = this.contentFn(evt.target)
+            if (!content) { hideGrsTooltip(); return }
+            showGrsTooltip(content, oe.clientX, oe.clientY)
         }
         this.onMouseMove = (evt: any) => {
             const oe = evt.originalEvent as MouseEvent | undefined
@@ -58,7 +61,9 @@ export class Tooltip {
      * inline-parameter chip hovers).
      */
     showFor(ele: any, clientX: number, clientY: number): void {
-        showGrsTooltip(this.contentFn(ele), clientX, clientY)
+        const content = this.contentFn(ele)
+        if (!content) { hideGrsTooltip(); return }
+        showGrsTooltip(content, clientX, clientY)
     }
 
     /** Hide the tooltip if visible. */
@@ -130,6 +135,8 @@ export function createEdgeTooltip(lookup: ParameterValueLookup): Tooltip {
         'edge',
         (edge: any) => {
             const kind: string = edge.data('kind') ?? 'unknown'
+            // Stoichiometry-only edges are self-explanatory; no tooltip.
+            if (kind === 'substrate' || kind === 'product') return null
             const source = String(edge.data('source') ?? '')
             const target = String(edge.data('target') ?? '')
             const header = source && target

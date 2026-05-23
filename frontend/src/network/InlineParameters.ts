@@ -2,15 +2,22 @@
  * InlineParameters - per-parameter DOM chips anchored to network elements.
  *
  * For each editable element (regulatory edge or reaction node) that exposes
- * a non-empty `data.parameters` array, this attaches a popper-anchored
- * container of small chips, one per parameter. Each chip displays
- * `name=value` (value resolved against the currently active model via the
- * supplied `parameterLookup`) and can be clicked to swap in a text input
- * for inline editing.
+ * a non-empty `data.parameters` array, this creates a container of small
+ * chips, one per parameter. Each chip displays `name=value` (resolved
+ * against the active model via the supplied `parameterLookup`) and can be
+ * clicked to swap in a text input for inline editing.
  *
- * Visual style mirrors Cytoscape's edge-label rendering: same theme colours
+ * Positioning is done manually via `transform: translate3d` (GPU-composited)
+ * driven by cytoscape's `renderedMidpoint()` / `renderedPosition()`. Earlier
+ * versions used `cytoscape-popper` + `@popperjs/core`, but popper's modifier
+ * pipeline became the dominant cost (43–75% of frame time during zoom in
+ * large networks) with no real benefit — we don't use flip or
+ * preventOverflow, just placement + a small offset, which are trivial.
+ *
+ * Visual style mirrors Cytoscape's canvas labels: same theme colours
  * (`edgeLabelText` / `edgeLabelBg`), Montserrat font, and scales with the
- * cytoscape zoom level so chips don't look fixed-size when the user zooms.
+ * cytoscape zoom so chips track world space (font-size em-based; container
+ * font-size = baseFontSize * zoom).
  *
  * Lifecycle:
  *   const inline = new InlineParameters()
@@ -46,10 +53,6 @@ const EDITABLE_NODE_KINDS = new Set(['reaction'])
  * Per-target base font size at cytoscape zoom=1.0, matched to the canvas
  * label `font-size` in `buildStylesheet` so chips and canvas labels look
  * the same size at every zoom level.
- *
- *   regulatory edges  → 7   (matches `selector: edge` font-size)
- *   ...in species view → 3   (matches `selector: edge.species-view`)
- *   reaction nodes    → 1.4 (matches `selector: node.reaction`)
  */
 const BASE_FONT_SIZE_PX: Record<string, number> = {
     activation: 7,
@@ -60,11 +63,16 @@ const BASE_FONT_SIZE_PX: Record<string, number> = {
 const SPECIES_VIEW_EDGE_FONT_SIZE = 2
 const DEFAULT_BASE_FONT_SIZE_PX = 7
 
+/** Screen-pixel gap between chip and its anchor (matches old popper offset). */
+const ANCHOR_OFFSET_PX = 2
+
+type Placement = 'top' | 'bottom'
+
 interface Anchor {
-    popper: any
     container: HTMLDivElement
     ele: any
     baseFontSize: number
+    placement: Placement
 }
 
 export class InlineParameters {
@@ -78,17 +86,14 @@ export class InlineParameters {
     private onAdd: ((evt: any) => void) | null = null
     private onRemove: ((evt: any) => void) | null = null
     private onViewportChange: (() => void) | null = null
-    private onZoom: (() => void) | null = null
 
     /** rAF id for the pending update, so multiple events coalesce to one frame. */
     private pendingFrame: number | null = null
 
     /**
      * Notified when the cursor enters or moves over a parameter chip.
-     * `ele` is the underlying cytoscape element (edge or node) the chip
-     * belongs to; `(clientX, clientY)` are viewport coords. NetworkView
-     * uses these to surface the same tooltip the underlying element would
-     * have shown on a direct hover, via the shared GRS tooltip singleton.
+     * `ele` is the underlying cytoscape element; `(clientX, clientY)` are
+     * viewport coords for the shared GRS tooltip.
      */
     onChipHover: ((ele: any, clientX: number, clientY: number) => void) | null = null
 
@@ -108,52 +113,51 @@ export class InlineParameters {
         this.cy = cy
         this.isDark = isDark
 
-        // Initial pass: create chips for elements present at attach time.
         cy.elements().forEach(el => this.maybeCreateAnchor(el))
 
-        // Dynamic add/remove: AdaptiveZoom swaps in species/reaction nodes
-        // when crossing the zoom threshold, so chips for those appear lazily.
         this.onAdd = (evt: any) => this.maybeCreateAnchor(evt.target)
         this.onRemove = (evt: any) => this.removeAnchor(String(evt.target.id()))
 
-        // Reposition all chips on pan / zoom / resize / element move.
-        // All triggers coalesce into one rAF-batched update per frame so
-        // popper measurements happen after layout settles -> smooth zoom.
+        // All position-affecting events coalesce into one rAF-batched update
+        // per frame. `position` fires on every animated layout step too.
         this.onViewportChange = () => this.scheduleUpdate()
-        this.onZoom = () => {
-            this.applyZoomScale()
-            this.scheduleUpdate()
-        }
 
         cy.on('add', 'edge, node', this.onAdd)
         cy.on('remove', 'edge, node', this.onRemove)
-        cy.on('pan resize', this.onViewportChange)
+        cy.on('pan zoom resize', this.onViewportChange)
         cy.on('position', 'node', this.onViewportChange)
-        cy.on('zoom', this.onZoom)
+        // `style` fires when classes are added/removed (e.g. SelectionSync
+        // toggling `.dimmed`). Coalesced via rAF so a flurry of class
+        // changes still costs one updateAll per frame.
+        cy.on('style', this.onViewportChange)
 
-        this.applyZoomScale()
+        this.scheduleUpdate()
     }
 
-    /** Re-read all chip values from the lookup (after active model change). */
     refreshValues(): void {
         for (const anchor of this.anchors.values()) {
             this.refreshAnchorValues(anchor)
         }
-        // Active model may also have flipped visibility via .excluded.
         this.scheduleUpdate()
     }
 
-    /** Reapply theme colours (call when dark mode toggles). */
     applyTheme(isDark: boolean): void {
         this.isDark = isDark
-        const styles = this.chipStyles()
         for (const anchor of this.anchors.values()) {
             const chips = anchor.container.querySelectorAll<HTMLElement>('.param-chip')
             chips.forEach(chip => {
                 if (chip.dataset.editing === 'true') return
-                Object.assign(chip.style, styles.chipIdle)
+                Object.assign(chip.style, this.chipStyles().chipIdle)
             })
         }
+    }
+
+    /**
+     * Called by NetworkView when AdaptiveZoom toggles species view, so chip
+     * font-sizes pick up the smaller `.species-view` regulatory size.
+     */
+    notifyDetailChanged(): void {
+        this.scheduleUpdate()
     }
 
     destroy(): void {
@@ -165,21 +169,17 @@ export class InlineParameters {
             if (this.onAdd) this.cy.off('add', 'edge, node', this.onAdd)
             if (this.onRemove) this.cy.off('remove', 'edge, node', this.onRemove)
             if (this.onViewportChange) {
-                this.cy.off('pan resize', this.onViewportChange)
+                this.cy.off('pan zoom resize', this.onViewportChange)
                 this.cy.off('position', 'node', this.onViewportChange)
+                this.cy.off('style', this.onViewportChange)
             }
-            if (this.onZoom) this.cy.off('zoom', this.onZoom)
         }
-        for (const a of this.anchors.values()) {
-            try { a.popper?.destroy?.() } catch { /* noop */ }
-            a.container.remove()
-        }
+        for (const a of this.anchors.values()) a.container.remove()
         this.anchors.clear()
         this.cy = null
         this.onAdd = null
         this.onRemove = null
         this.onViewportChange = null
-        this.onZoom = null
     }
 
     // ========================================================================
@@ -205,58 +205,30 @@ export class InlineParameters {
             container.appendChild(this.createChip(p, ele))
         }
 
-        // Reactions sit BELOW their canvas label (which is the reaction name);
-        // edges sit ABOVE the edge so they don't overlap nodes.
-        const placement = ele.isNode() && kind === 'reaction' ? 'bottom' : 'top'
-
-        const popper = ele.popper({
-            content: () => {
-                const host = this.cy?.container() ?? document.body
-                if (host) {
-                    if (getComputedStyle(host).position === 'static') {
-                        host.style.position = 'relative'
-                    }
-                    host.appendChild(container)
-                }
-                return container
-            },
-            popper: {
-                placement,
-                modifiers: [
-                    { name: 'offset', options: { offset: [0, 2] } },
-                    // Keep chips locked to the edge midpoint regardless of
-                    // viewport — no shifting to stay on screen.
-                    { name: 'flip', enabled: false },
-                    { name: 'preventOverflow', enabled: false },
-                ],
-            },
-        })
-
-        const baseFontSize = BASE_FONT_SIZE_PX[kind] ?? DEFAULT_BASE_FONT_SIZE_PX
-        const anchor: Anchor = { popper, container, ele, baseFontSize }
-        // Apply the current zoom so newly-created chips don't briefly render
-        // at the unscaled baseline.
-        if (this.cy) {
-            container.style.fontSize = `${this.effectiveBaseFontSize(anchor) * this.cy.zoom()}px`
+        const host = this.cy?.container() ?? document.body
+        if (host) {
+            if (getComputedStyle(host).position === 'static') {
+                host.style.position = 'relative'
+            }
+            host.appendChild(container)
         }
+
+        const placement: Placement =
+            ele.isNode() && kind === 'reaction' ? 'bottom' : 'top'
+        const baseFontSize = BASE_FONT_SIZE_PX[kind] ?? DEFAULT_BASE_FONT_SIZE_PX
+        const anchor: Anchor = { container, ele, baseFontSize, placement }
         this.anchors.set(id, anchor)
+        this.positionAnchor(anchor)
     }
 
     private removeAnchor(id: string): void {
         const a = this.anchors.get(id)
         if (!a) return
-        try { a.popper?.destroy?.() } catch { /* noop */ }
         a.container.remove()
         this.anchors.delete(id)
     }
 
-    /**
-     * Schedule one popper.update() per anchor on the next frame, coalescing
-     * multiple events (zoom + pan + position) that arrive within the same
-     * frame into a single update. Running synchronously in the event handler
-     * caused stuttering because layout hadn't yet settled from the font-size
-     * change.
-     */
+    /** Coalesce position updates to one per animation frame. */
     private scheduleUpdate(): void {
         if (this.pendingFrame !== null) return
         this.pendingFrame = requestAnimationFrame(() => {
@@ -266,19 +238,14 @@ export class InlineParameters {
     }
 
     private updateAll(): void {
-        // For regulatory edge chips: hide whenever the edge's midpoint sits
-        // inside a gene compound that *isn't* the edge's own source/target
-        // compound. Naturally:
-        //   - Gene view A→B with midpoint inside unrelated gene C → hide.
-        //   - Species view edge gene_A.proteins → gene_B.active passing
-        //     across gene_C → hide.
-        //   - Species view self-regulation (both endpoints in gene_A) →
-        //     gene_A is excluded → chip shows even though midpoint is inside.
-        const geneBoxes = this.cy
-            ? this.cy.nodes('.gene')
-                .filter((g: any) => typeof g.visible !== 'function' || g.visible())
-                .map((g: any) => ({ id: String(g.id()), bb: g.renderedBoundingBox() }))
-            : []
+        if (!this.cy) return
+
+        // See `endpointCompoundIds` below — we exclude an edge's own endpoint
+        // gene compounds from the occlusion test so legitimate endpoints
+        // (and self-regulation midpoints) don't hide their chips.
+        const geneBoxes = this.cy.nodes('.gene')
+            .filter((g: any) => typeof g.visible !== 'function' || g.visible())
+            .map((g: any) => ({ id: String(g.id()), bb: g.renderedBoundingBox() }))
 
         for (const a of this.anchors.values()) {
             let visible = typeof a.ele.visible === 'function' ? a.ele.visible() : true
@@ -299,41 +266,51 @@ export class InlineParameters {
                 }
             }
 
-            a.container.style.display = visible ? 'flex' : 'none'
-            if (visible) {
-                try { a.popper?.update?.() } catch { /* noop */ }
+            if (!visible) {
+                a.container.style.display = 'none'
+                continue
             }
+            a.container.style.display = 'flex'
+            // Mirror the underlying element's `.dimmed` state on the chip
+            // container — cytoscape selection dimming only touches the
+            // canvas elements; the DOM chips need to follow manually.
+            a.container.style.opacity = a.ele.hasClass?.('dimmed') ? '0.3' : '1'
+            this.positionAnchor(a)
         }
     }
 
     /**
-     * Called by NetworkView when AdaptiveZoom toggles species view, so chips
-     * pick up the smaller `.species-view` regulatory font-size (matches the
-     * canvas style) without waiting for the next zoom event.
+     * Position a single chip container. Cheap: one renderedMidpoint/Position
+     * read and a transform write. `transform: translate3d` is GPU-composited
+     * and doesn't trigger layout; only the font-size update triggers a
+     * cheap text reflow inside the chip itself.
      */
-    notifyDetailChanged(): void {
-        this.applyZoomScale()
-        this.scheduleUpdate()
+    private positionAnchor(a: Anchor): void {
+        if (!this.cy) return
+        const ele = a.ele
+        const pos = ele.isEdge?.()
+            ? ele.renderedMidpoint?.()
+            : ele.renderedPosition?.()
+        if (!pos) return
+
+        const zoom = this.cy.zoom()
+        a.container.style.fontSize = `${this.effectiveBaseFontSize(a) * zoom}px`
+
+        // Compose translate to anchor position + translate -50% horizontal
+        // and -100%/0% vertical to align the chip's bottom/top edge with
+        // the anchor (matches old popper placement: 'top'/'bottom').
+        const verticalNudge = a.placement === 'top' ? -ANCHOR_OFFSET_PX : ANCHOR_OFFSET_PX
+        const verticalAlign = a.placement === 'top' ? '-100%' : '+80%'
+        a.container.style.transform =
+            `translate3d(${pos.x.toFixed(1)}px, ${(pos.y + verticalNudge).toFixed(1)}px, 0) ` +
+            `translate(-50%, ${verticalAlign})`
     }
 
     private effectiveBaseFontSize(anchor: Anchor): number {
-        // Regulatory edges shrink in species view to match
-        // `selector: edge.species-view { font-size: 3 }`.
         if (anchor.ele.isEdge?.() && anchor.ele.hasClass?.('species-view')) {
             return SPECIES_VIEW_EDGE_FONT_SIZE
         }
         return anchor.baseFontSize
-    }
-
-    private applyZoomScale(): void {
-        if (!this.cy) return
-        const zoom = this.cy.zoom()
-        // Per-anchor base size matches the canvas-label font-size for that
-        // element kind (and view mode), so chips and labels look the same
-        // size at any zoom.
-        for (const a of this.anchors.values()) {
-            a.container.style.fontSize = `${this.effectiveBaseFontSize(a) * zoom}px`
-        }
     }
 
     private refreshAnchorValues(anchor: Anchor): void {
@@ -352,15 +329,12 @@ export class InlineParameters {
         chip.dataset.editing = 'false'
         Object.assign(chip.style, this.chipStyles().chipIdle)
 
-        // Read styles fresh inside the handlers so a theme toggle while a
-        // chip is alive doesn't leave hover/leave returning to the old theme.
         chip.addEventListener('mouseenter', e => {
             if (chip.dataset.editing === 'true') return
             Object.assign(chip.style, this.chipStyles().chipHover)
             this.fireChipHover(ele, e)
         })
         chip.addEventListener('mousemove', e => {
-            // Keep the tooltip tracking the cursor while the chip is hovered.
             if (chip.dataset.editing === 'true') return
             this.fireChipHover(ele, e)
         })
@@ -369,7 +343,6 @@ export class InlineParameters {
             Object.assign(chip.style, this.chipStyles().chipIdle)
             this.onChipLeave?.()
         })
-        // Don't initiate a pan when interacting with the chip.
         chip.addEventListener('mousedown', e => e.stopPropagation())
         chip.addEventListener('click', e => {
             e.stopPropagation()
@@ -463,14 +436,17 @@ export class InlineParameters {
     private containerStyles(): Partial<CSSStyleDeclaration> {
         return {
             position: 'absolute',
+            left: '0',
+            top: '0',
             display: 'flex',
             gap: '0.3em',
             alignItems: 'center',
             pointerEvents: 'auto',
             zIndex: '50',
             fontFamily: 'Montserrat, sans-serif',
-            fontSize: `${BASE_FONT_SIZE_PX}px`, // overwritten by applyZoomScale
+            fontSize: `${DEFAULT_BASE_FONT_SIZE_PX}px`,
             lineHeight: '1.2',
+            willChange: 'transform',
         }
     }
 
@@ -480,8 +456,6 @@ export class InlineParameters {
         chipEditing: Partial<CSSStyleDeclaration>
     } {
         const t = getTheme(this.isDark)
-        // Match canvas edge-label rendering: text-background-color + 0.7 opacity,
-        // edgeLabelText for foreground.
         const bg = withAlpha(t.network.edgeLabelBg, 0.7)
         const bgHover = withAlpha(t.network.edgeLabelBg, 1.0)
         return {
@@ -525,10 +499,6 @@ export class InlineParameters {
     }
 }
 
-/**
- * Apply an alpha multiplier to a hex colour, returning rgba(...).
- * Falls back to the original string if parsing fails.
- */
 function withAlpha(hex: string, alpha: number): string {
     const m = hex.match(/^#?([0-9a-fA-F]{6})$/)
     if (!m) return hex
@@ -553,18 +523,12 @@ function formatValue(v: number): string {
  * IDs of the gene compounds at each end of an edge — i.e. compounds whose
  * bbox naturally contains an endpoint and shouldn't be used as an
  * "occluding" compound in the chip hit-test.
- *
- *   Gene view:    endpoints ARE gene nodes -> their own ids.
- *   Species view: endpoints are species nodes inside compound parents ->
- *                 their parent ids.
  */
 function endpointCompoundIds(edge: any): Set<string> {
     const result = new Set<string>()
     for (const end of [edge.source?.(), edge.target?.()]) {
         if (!end) continue
         const compound = end.isParent?.() ? end : end.parent?.()
-        // Either the endpoint is itself a gene (gene view), or its parent
-        // compound is the gene; record whichever has data.kind === 'gene'.
         if (end.data?.('kind') === 'gene') result.add(String(end.id()))
         if (compound && compound.nonempty?.() && compound.data?.('kind') === 'gene') {
             result.add(String(compound.id()))

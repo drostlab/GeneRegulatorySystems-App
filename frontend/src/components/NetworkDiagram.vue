@@ -6,13 +6,57 @@ import { NetworkView } from '@/network/NetworkView'
 import { useTheme } from '@/composables/useTheme'
 import ProgressSpinner from 'primevue/progressspinner'
 import Button from 'primevue/button'
+import ContextMenu from 'primevue/contextmenu'
 
 const containerRef = ref<HTMLDivElement>()
+const contextMenuRef = ref<InstanceType<typeof ContextMenu>>()
 const scheduleStore = useScheduleStore()
 const viewerStore = useViewerStore()
 const networkView = new NetworkView()
 const { isDark, onThemeChange } = useTheme()
 const isDetailVisible = ref(false)
+
+const contextMenuItems = computed(() => {
+    const net = scheduleStore.unionNetwork
+    const allGenes = scheduleStore.allGenes ?? []
+    const allSpecies: string[] = net
+        ? net.nodes.filter(n => n.kind === 'species').map(n => String(n.name))
+        : []
+    const hasSelection =
+        viewerStore.selectedGenes.length > 0
+        || viewerStore.selectedSpeciesNodes.length > 0
+        || viewerStore.selectedOtherSpecies.length > 0
+    return [
+        {
+            label: 'Select all genes',
+            icon: 'pi pi-asterisk',
+            disabled: allGenes.length === 0,
+            command: () => {
+                viewerStore.selectedGenes = [...allGenes]
+            },
+        },
+        {
+            label: 'Select all species',
+            icon: 'pi pi-circle',
+            disabled: allSpecies.length === 0,
+            command: () => {
+                viewerStore.selectedSpeciesNodes = allSpecies
+                viewerStore.selectedOtherSpecies = scheduleStore.allOtherSpecies ?? []
+            },
+        },
+        { separator: true },
+        {
+            label: 'Clear selection',
+            icon: 'pi pi-times',
+            disabled: !hasSelection,
+            command: () => {
+                viewerStore.selectedGenes = []
+                viewerStore.selectedSpeciesNodes = []
+                viewerStore.selectedOtherSpecies = []
+            },
+        },
+    ]
+})
 
 // Sync isDetailVisible when zoom or toggle changes detail visibility
 networkView.onDetailChange = (visible: boolean) => {
@@ -63,6 +107,10 @@ onMounted(() => {
         console.debug('[NetworkDiagram] parameter change', symbol, '=', value)
     }
 
+    // Right-click on the network background surfaces a context menu with
+    // selection bulk-actions (select all genes/species, clear).
+    networkView.onContextMenu = (evt) => contextMenuRef.value?.show(evt)
+
     // Render when union network arrives
     if (scheduleStore.unionNetwork) {
         networkView.setNetwork(scheduleStore.unionNetwork, scheduleStore.geneColours ?? {})
@@ -102,6 +150,9 @@ defineExpose({ exportSVG })
 <template>
     <div class="network-diagram-container">
         <div ref="containerRef" class="cytoscape-container" />
+
+        <!-- Right-click context menu (selection bulk-actions) -->
+        <ContextMenu ref="contextMenuRef" :model="contextMenuItems" />
 
         <!-- Bottom-right controls -->
         <div class="controls">
