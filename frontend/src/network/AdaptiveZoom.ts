@@ -73,6 +73,14 @@ export class AdaptiveZoom {
      */
     private cachedChildPositions = new Map<string, { x: number; y: number }>()
 
+    /**
+     * Genes that have already been laid out by per-gene fcose at least once.
+     * Cached positions are only honoured for these — genes that were merely
+     * offset-seeded (because they were off-viewport during a previous
+     * showDetail) still need a real fcose pass next time they come into view.
+     */
+    private fcosedGenes = new Set<string>()
+
     /** Callback fired when detail visibility changes. */
     onDetailChange: ((visible: boolean) => void) | null = null
 
@@ -156,6 +164,7 @@ export class AdaptiveZoom {
         this.geneViewEdges = []
         this.speciesViewElements = []
         this.cachedChildPositions.clear()
+        this.fcosedGenes.clear()
         this.manualOverride = false
     }
 
@@ -296,22 +305,12 @@ export class AdaptiveZoom {
         })
 
         cy.endBatch()
-
-        // Did seedChildPositions hit the cache for every gene? If so, the
-        // children are at their previously laid-out positions and we can
-        // skip both the recentre and the per-gene fcose pass.
-        const usedCache = this.cachedChildPositions.size > 0
         this.cachedChildPositions.clear()
-
-        if (usedCache) {
-            this.detailVisible = true
-            this.onDetailChange?.(true)
-            return
-        }
 
         // Snap each gene back to its pre-transition centre. Must run AFTER
         // endBatch — cytoscape only resolves compound positions after the
-        // batch ends, so `gene.position()` is reliable here.
+        // batch ends, so `gene.position()` is reliable here. For cache-
+        // restored genes the drift is zero, so this is a no-op.
         cy.nodes('.gene').forEach((gene: any) => {
             const centre = genePositions.get(gene.id())
             if (centre) this.recentreCompound(gene, centre)
@@ -443,10 +442,12 @@ export class AdaptiveZoom {
     private runSpeciesLayout(onDone: () => void): void {
         const cy = this.cy!
 
-        // Only lay out genes in/near the viewport
+        // Only lay out genes in/near the viewport that haven't already been
+        // fcose'd in a previous session — those keep their cached positions.
         const ext = cy.extent()
         const pad = 200
         const visibleGenes = cy.nodes('.gene').filter((gene: any) => {
+            if (this.fcosedGenes.has(gene.id())) return false
             const pos = gene.position()
             return pos.x >= ext.x1 - pad && pos.x <= ext.x2 + pad
                 && pos.y >= ext.y1 - pad && pos.y <= ext.y2 + pad
@@ -517,6 +518,7 @@ export class AdaptiveZoom {
                 // fcose moved children — translate the whole subtree back so
                 // the compound parent returns to its pre-layout position.
                 this.recentreCompound(gene, targetCentre)
+                this.fcosedGenes.add(gene.id())
                 done()
             })
             layout.run()
@@ -601,10 +603,11 @@ export class AdaptiveZoom {
             const center = savedPositions.get(gene.id())
             if (!center) return
 
-            // Fast path: if every child has a cached position from the
-            // previous species-view session, restore those directly and skip
-            // both offset seeding and the per-gene fcose pass downstream.
-            const allCached = children.every((c: any) => this.cachedChildPositions.has(c.id()))
+            // Fast path: gene was already laid out by fcose in a previous
+            // session AND every child has a cached position. Restore exactly
+            // and let runSpeciesLayout skip this gene.
+            const allCached = this.fcosedGenes.has(gene.id())
+                && children.every((c: any) => this.cachedChildPositions.has(c.id()))
             if (allCached) {
                 children.forEach((c: any) => {
                     const p = this.cachedChildPositions.get(c.id())!
