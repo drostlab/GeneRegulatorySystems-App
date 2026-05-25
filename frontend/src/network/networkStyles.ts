@@ -49,7 +49,7 @@ export const SPECIES_SIZE = 8
 export const ORPHAN_SPECIES_SIZE = 30
 
 /** Reaction node size. */
-export const REACTION_SIZE = 2
+export const REACTION_SIZE = 7
 
 /** Opacity for dimmed (unselected / excluded) elements. */
 export const DIM_OPACITY = THEME_DIM_OPACITY

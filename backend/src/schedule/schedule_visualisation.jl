@@ -270,7 +270,11 @@ canonical symbol names as strings (frontend-friendly).
 """
 function _extract_model_parameters(grs_schedule::GRSSchedule, model_path::String)::Dict{String, Float64}
     reified = Scheduling.reify(grs_schedule, model_path)
-    return Dict(string(k) => Float64(v) for (k, v) in Models.parameters(reified))
+    # `reify` returns a `Primitive` for the bottom-of-the-tree leaf; the
+    # actual model lives in `.f!`. `Models.parameters` doesn't have a method
+    # for `Primitive`, so unwrap before passing through.
+    target = reified isa Primitive ? reified.f! : reified
+    return Dict(string(k) => Float64(v) for (k, v) in Models.parameters(target))
 end
 
 """

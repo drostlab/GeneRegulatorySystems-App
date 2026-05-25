@@ -37,12 +37,17 @@ const CASCADE_SPECIES = new Set([
     'active', 'inactive', 'elongations', 'premrnas', 'mrnas', 'proteins',
 ])
 
-/** Hardcoded zigzag offsets for known cascade species (relative to gene centre). */
+/**
+ * Hardcoded zigzag offsets for known cascade species (relative to a virtual
+ * gene-interior origin). Values are tuned for visual layout, not centroid
+ * balance — `seedChildPositions` re-centres the actual subset present so the
+ * compound parent stays put regardless of which species exist.
+ */
 const SPECIES_OFFSETS: Record<string, { x: number; y: number }> = {
     inactive:    { x: -45, y:  -5 },
     active:      { x: -30, y: -15 },
-    elongations: { x: -20, y:  5 },
-    premrnas:    { x:   0, y:   15 },
+    elongations: { x: -20, y:   5 },
+    premrnas:    { x:   0, y:  15 },
     mrnas:       { x:  25, y:  10 },
     proteins:    { x:  30, y: -15 },
 }
@@ -60,6 +65,13 @@ export class AdaptiveZoom {
     /** Precomputed element sets for fast toggling. */
     private geneViewEdges: cytoscape.ElementDefinition[] = []
     private speciesViewElements: cytoscape.ElementDefinition[] = []
+
+    /**
+     * Positions of species/reaction nodes from the previous species-view
+     * session. Populated on hideDetail, consumed on the next showDetail to
+     * skip seeding + per-gene fcose, so toggling preserves user-visible layout.
+     */
+    private cachedChildPositions = new Map<string, { x: number; y: number }>()
 
     /** Callback fired when detail visibility changes. */
     onDetailChange: ((visible: boolean) => void) | null = null
@@ -86,6 +98,14 @@ export class AdaptiveZoom {
 
         this.handler = () => this.scheduleCheck()
         cy.on('zoom', this.handler)
+
+        // Initial check: if the post-layout fit already zoomed past the
+        // threshold (small networks tend to), switch to species view now —
+        // no zoom event will fire on its own to trigger it. Defer past the
+        // layout's fit animation so the zoom value has settled.
+        setTimeout(() => {
+            if (this.cy === cy) this.checkZoom()
+        }, 500)
     }
 
     /**
@@ -135,6 +155,7 @@ export class AdaptiveZoom {
         this.network = null
         this.geneViewEdges = []
         this.speciesViewElements = []
+        this.cachedChildPositions.clear()
         this.manualOverride = false
     }
 
@@ -276,6 +297,26 @@ export class AdaptiveZoom {
 
         cy.endBatch()
 
+        // Did seedChildPositions hit the cache for every gene? If so, the
+        // children are at their previously laid-out positions and we can
+        // skip both the recentre and the per-gene fcose pass.
+        const usedCache = this.cachedChildPositions.size > 0
+        this.cachedChildPositions.clear()
+
+        if (usedCache) {
+            this.detailVisible = true
+            this.onDetailChange?.(true)
+            return
+        }
+
+        // Snap each gene back to its pre-transition centre. Must run AFTER
+        // endBatch — cytoscape only resolves compound positions after the
+        // batch ends, so `gene.position()` is reliable here.
+        cy.nodes('.gene').forEach((gene: any) => {
+            const centre = genePositions.get(gene.id())
+            if (centre) this.recentreCompound(gene, centre)
+        })
+
         // Run per-gene physics refinement for non-cascade nodes
         this.runSpeciesLayout(() => {
             this.detailVisible = true
@@ -296,6 +337,14 @@ export class AdaptiveZoom {
         const cy = this.cy!
 
         const genePositions = this.saveGenePositions()
+
+        // Snapshot species/reaction positions so the next showDetail can
+        // skip seeding + fcose and restore the exact same layout.
+        this.cachedChildPositions.clear()
+        cy.nodes('.species, .reaction').forEach((n: any) => {
+            const p = n.position()
+            this.cachedChildPositions.set(n.id(), { x: p.x, y: p.y })
+        })
 
         cy.startBatch()
 
@@ -336,6 +385,29 @@ export class AdaptiveZoom {
     // ========================================================================
     // Position helpers
     // ========================================================================
+
+    /**
+     * Translate every child of `gene` by `target - gene.position()`. Because
+     * the compound parent's position is a linear function of its children's
+     * positions (cytoscape uses the children's bbox centre), uniformly
+     * shifting every child by Δ shifts the compound by Δ exactly — formula-
+     * independent. Used to snap the gene back to its pre-transition / pre-
+     * layout position after children have been added or moved.
+     *
+     * IMPORTANT: must be called OUTSIDE any active cy.startBatch/endBatch.
+     * Inside a batch, cytoscape defers compound-position recomputation, so
+     * `gene.position()` is stale and the measured drift is wrong.
+     */
+    private recentreCompound(gene: any, target: { x: number; y: number }): void {
+        const cur = gene.position()
+        const dx = target.x - cur.x
+        const dy = target.y - cur.y
+        if (dx === 0 && dy === 0) return
+        gene.children().forEach((c: any) => {
+            const p = c.position()
+            c.position({ x: p.x + dx, y: p.y + dy })
+        })
+    }
 
     /** Save positions of all gene and orphan-species nodes. */
     private saveGenePositions(): Map<string, { x: number; y: number }> {
@@ -402,6 +474,9 @@ export class AdaptiveZoom {
                 return
             }
 
+            // Snapshot the position we want to preserve across the fcose pass.
+            const targetCentre = { x: gene.position().x, y: gene.position().y }
+
             // Collect intra-gene edges (both endpoints are children of this gene)
             const childIds = new Set<string>()
             children.forEach((c: any) => childIds.add(c.id()))
@@ -430,15 +505,20 @@ export class AdaptiveZoom {
                 fixedNodeConstraint: fixedConstraints.length > 0 ? fixedConstraints : undefined,
                 nodeRepulsion: 1000,
                 idealEdgeLength: 0.5,
-                edgeElasticity: 1.0,
+                edgeElasticity: 0.9,
                 numIter: 100,
-                gravity: 1.5,
+                gravity: 1.2,
                 gravityRange: 1.0,
                 tile: false,
                 packComponents: false,
             } as any)
 
-            layout.one('layoutstop', done)
+            layout.one('layoutstop', () => {
+                // fcose moved children — translate the whole subtree back so
+                // the compound parent returns to its pre-layout position.
+                this.recentreCompound(gene, targetCentre)
+                done()
+            })
             layout.run()
         })
     }
@@ -521,9 +601,21 @@ export class AdaptiveZoom {
             const center = savedPositions.get(gene.id())
             if (!center) return
 
+            // Fast path: if every child has a cached position from the
+            // previous species-view session, restore those directly and skip
+            // both offset seeding and the per-gene fcose pass downstream.
+            const allCached = children.every((c: any) => this.cachedChildPositions.has(c.id()))
+            if (allCached) {
+                children.forEach((c: any) => {
+                    const p = this.cachedChildPositions.get(c.id())!
+                    c.position({ x: p.x, y: p.y })
+                })
+                return
+            }
+
             let unknownIndex = 0
 
-            // First pass: position species nodes
+            // Pass 1: place species at their offsets relative to `center`.
             children.forEach((child: any) => {
                 if (child.data('kind') !== 'species') return
                 const speciesType = child.data('species_type') as string | undefined
@@ -531,14 +623,12 @@ export class AdaptiveZoom {
                 if (offset) {
                     child.position({ x: center.x + offset.x, y: center.y + offset.y })
                 } else {
-                    // Unknown species: arrange in a row below the cascade
-                    const xOff = -20 + unknownIndex * 15
-                    child.position({ x: center.x + xOff, y: center.y + 25 })
+                    child.position({ x: center.x - 20 + unknownIndex * 15, y: center.y + 25 })
                     unknownIndex++
                 }
             })
 
-            // Second pass: position reactions at centroid of connected species
+            // Pass 2: reactions at the centroid of their connected species.
             children.forEach((child: any) => {
                 if (child.data('kind') !== 'reaction') return
                 const neighbours = child.neighborhood('node')
@@ -546,38 +636,37 @@ export class AdaptiveZoom {
                     child.position({ x: center.x, y: center.y + 15 })
                     return
                 }
-
-                let sumX = 0, sumY = 0, count = 0
-                neighbours.forEach((n: any) => {
-                    const pos = n.position()
-                    sumX += pos.x
-                    sumY += pos.y
-                    count++
+                let sx = 0, sy = 0, n = 0
+                neighbours.forEach((nb: any) => {
+                    const p = nb.position()
+                    sx += p.x; sy += p.y; n++
                 })
-
-                if (count === 1) {
-                    // Single neighbour: offset perpendicular to avoid overlap
-                    const nPos = neighbours.first().position()
-                    const dx = nPos.x - center.x
-                    const dy = nPos.y - center.y
-                    const dist = Math.sqrt(dx * dx + dy * dy)
+                if (n === 1) {
+                    const np = neighbours.first().position()
+                    const dx = np.x - center.x, dy = np.y - center.y
+                    const dist = Math.hypot(dx, dy)
                     if (dist > 0.1) {
-                        child.position({
-                            x: nPos.x - (dy / dist) * 8,
-                            y: nPos.y + (dx / dist) * 8,
-                        })
+                        child.position({ x: np.x - (dy / dist) * 8, y: np.y + (dx / dist) * 8 })
                     } else {
-                        child.position({ x: nPos.x + 5, y: nPos.y })
+                        child.position({ x: np.x + 5, y: np.y })
                     }
                 } else {
-                    child.position({ x: sumX / count, y: sumY / count })
+                    child.position({ x: sx / n, y: sy / n })
                 }
             })
+
+            // NOTE: don't recentre here — caller does it after endBatch.
         })
 
-        // Orphan reactions: place near first connected neighbour
+        // Orphan reactions: restore cached position if any, otherwise place
+        // near first connected neighbour.
         cy.nodes('.reaction').forEach((node: any) => {
             if (node.data('parent')) return
+            const cached = this.cachedChildPositions.get(node.id())
+            if (cached) {
+                node.position({ x: cached.x, y: cached.y })
+                return
+            }
             const neighbours = node.neighborhood('node')
             if (neighbours.empty()) return
             const nPos = neighbours.first().position()

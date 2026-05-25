@@ -152,16 +152,26 @@ function entity(rs::ReactionSystem, filter_ids::Set{Symbol};
         rxn_name = _reaction_id(rxn)
         rxn_name in filter_ids && continue
 
-        # For cascade and auxiliary reactions, `rxn.rate` is a single MTK
+        # For cascade and auxiliary reactions `rxn.rate` is a single MTK
         # parameter whose canonical name (e.g. `gene_1.transcription`,
         # `reaction.0.k⁺`) is exactly what `Models.parameters` keys by.
-        # Regulatory reactions (deactivation/activation/proteolysis) carry a
-        # composite rate expression and are filtered out above by `filter_ids`.
-        rate_sym = string(normalize_name(rxn.rate))
+        # Regulatory reactions (e.g. V1's `active<->inactive` for non-unique
+        # genes) carry a composite rate expression where `normalize_name`
+        # would fail — keep the reaction node and its substrate/product edges
+        # but omit the editable rate parameter in that case.
+        props = Dict{Symbol, Any}()
+        params = Parameter[]
+        try
+            rate_sym = string(normalize_name(rxn.rate))
+            props[:rate] = Symbol(rate_sym)
+            push!(params, Parameter(name="rate", symbol=rate_sym))
+        catch
+            # Composite rate; no single parameter to expose.
+        end
         push!(nodes, Entity(
             kind=:reaction, name=rxn_name,
-            properties=Dict(:rate => Symbol(rate_sym)),
-            parameters=[Parameter(name="rate", symbol=rate_sym)],
+            properties=props,
+            parameters=params,
         ))
 
         append!(links,
@@ -181,48 +191,80 @@ function entity(rs::ReactionSystem, filter_ids::Set{Symbol};
 end
 
 """
-    _regulatory_reaction_ids(raw_links, gene_lookup) -> Set{Symbol}
+    _regulatory_reaction_ids(definition, raw_links) -> Set{Symbol}
 
 Derive the exact Catalyst reaction IDs that are implementation artifacts of
-explicit V1 regulatory links, so they can be excluded from the network graph.
+V1's regulation pipeline, so they can be excluded from the network graph
+(their rates are composite expressions, not single parameters, and don't
+correspond to "real" reaction nodes).
 
-Per link type:
-- activation/repression(to=B): basal deactivation + activation pair for B.
-  If B is `unique`, these are `[1]B.active->` / `->[1]B.active`.
-  If not, `[1]B.active->[1]B.inactive` / `[1]B.inactive->[1]B.active`.
-  Deduplicated by target (activation and repression share the same reactions).
-- proteolysis(from=A, to=B): `[1]A.proteins;[1]B.proteins->[1]A.proteins`.
-  Self-loop (A==B): `[2]A.proteins->[1]A.proteins`.
+- **Activation/deactivation pair**: V1 emits one per *gene*. For `unique`
+  genes the Catalyst IDs are `[1]B.active->` and `->[1]B.active` —
+  degenerate reactions into/out of nothing, filtered out. Non-unique
+  genes get real `[1]B.active->[1]B.inactive` and reverse reactions
+  between two species; those are NOT filtered (kept as reaction nodes
+  with substrate/product links). Their rates are composite expressions,
+  which `entity(::ReactionSystem)` handles by omitting the rate parameter.
+- **Proteolysis**: only emitted when a proteolysis link exists. IDs are
+  `[1]A.proteins;[1]B.proteins->[1]A.proteins` (cross-gene) or
+  `[2]A.proteins->[1]A.proteins` (self-loop).
 """
-function _regulatory_reaction_ids(raw_links, gene_lookup::Dict{Symbol})::Set{Symbol}
+function _regulatory_reaction_ids(definition::V1.Definition, raw_links)::Set{Symbol}
     ids = Set{Symbol}()
-    targets_seen = Set{Symbol}()
 
+    # For `unique` genes V1 emits degenerate `active->` and `->active`
+    # reactions (into/out of nothing) — filter these out. Non-unique genes
+    # get real `active<->inactive` transitions; those are kept as reaction
+    # nodes (`entity(::ReactionSystem)` tolerates their composite rates).
+    for g in definition.genes
+        g.unique || continue
+        to = g.name
+        push!(ids, Symbol("[1]$(to).active->"))
+        push!(ids, Symbol("->[1]$(to).active"))
+    end
+
+    # Proteolysis: one Catalyst reaction per declared link.
     for lnk in raw_links
-        to = lnk.to
-        from = lnk.from
+        lnk.kind == :proteolysis || continue
+        from, to = lnk.from, lnk.to
+        if from == to
+            push!(ids, Symbol("[2]$(to).proteins->[1]$(to).proteins"))
+        else
+            push!(ids, Symbol("[1]$(from).proteins;[1]$(to).proteins->[1]$(from).proteins"))
+        end
+    end
 
-        if lnk.kind in (:activation, :repression)
-            to in targets_seen && continue
-            push!(targets_seen, to)
-            target_gene = get(gene_lookup, to, nothing)
-            if target_gene !== nothing && target_gene.unique
-                push!(ids, Symbol("[1]$(to).active->"))
-                push!(ids, Symbol("->[1]$(to).active"))
-            else
-                push!(ids, Symbol("[1]$(to).active->[1]$(to).inactive"))
-                push!(ids, Symbol("[1]$(to).inactive->[1]$(to).active"))
-            end
+    ids
+end
 
-        elseif lnk.kind == :proteolysis
-            if from == to
-                push!(ids, Symbol("[2]$(to).proteins->[1]$(to).proteins"))
-            else
-                push!(ids, Symbol("[1]$(from).proteins;[1]$(to).proteins->[1]$(from).proteins"))
+"""
+    _attach_v1_transition_rates!(rs_network, definition)
+
+V1's non-unique `active<->inactive` reactions have composite (regulator-
+tempered) rates, so `entity(::ReactionSystem)` couldn't extract a single
+parameter symbol and left them without a `:rate` property. The base rate
+is a real per-gene MTK parameter (`<gene>.activation` / `<gene>.deactivation`),
+so we patch it in here — gives the reaction node a label and an editable
+parameter chip, just like cascade reactions.
+"""
+function _attach_v1_transition_rates!(rs_network::Entity, definition::V1.Definition)
+    for g in definition.genes
+        g.unique && continue
+        deact_id = Symbol("[1]$(g.name).active->[1]$(g.name).inactive")
+        act_id   = Symbol("[1]$(g.name).inactive->[1]$(g.name).active")
+        deact_rate = string(V1.parameter_name(g.name, :deactivation))
+        act_rate   = string(V1.parameter_name(g.name, :activation))
+        for node in rs_network.nodes
+            node.kind == :reaction || continue
+            if node.name == deact_id
+                node.properties[:rate] = Symbol(deact_rate)
+                push!(node.parameters, Parameter(name="rate", symbol=deact_rate))
+            elseif node.name == act_id
+                node.properties[:rate] = Symbol(act_rate)
+                push!(node.parameters, Parameter(name="rate", symbol=act_rate))
             end
         end
     end
-    ids
 end
 
 """
@@ -420,10 +462,10 @@ function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union
                   scope=:all)
         end
 
-        gene_lookup = Dict{Symbol, V1.Gene}(g.name => g for g in definition.genes)
-        filter_ids = _regulatory_reaction_ids(raw_links, gene_lookup)
+        filter_ids = _regulatory_reaction_ids(definition, raw_links)
         rs = f!.model.definition
         rs_network = entity(rs, filter_ids)
+        _attach_v1_transition_rates!(rs_network, definition)
         gene_nodes, aux_nodes, aux_links, summary_links = _genes_from_reaction_network(rs_network)
         nodes = vcat(gene_nodes, aux_nodes)
         links = vcat(reg_links, aux_links, summary_links)
@@ -479,8 +521,7 @@ function _entity_partial_species(
     end
 
     # Build filtered RS entity for included genes only
-    gene_lookup = Dict{Symbol, V1.Gene}(g.name => g for g in definition.genes)
-    filter_ids = _regulatory_reaction_ids(raw_links, gene_lookup)
+    filter_ids = _regulatory_reaction_ids(definition, raw_links)
     rs = f!.model.definition
     rs_network = entity(rs, filter_ids; species_genes=species_gene_set)
     species_gene_nodes, aux_nodes, aux_links, summary_links = _genes_from_reaction_network(rs_network)

@@ -222,9 +222,6 @@ export const useScheduleStore = defineStore(
             getSpeciesForSpeciesType,
             downloadSchedule
         }
-    },
-    {
-        persist: import.meta.env.DEV ? true : false
     }
 )
 
