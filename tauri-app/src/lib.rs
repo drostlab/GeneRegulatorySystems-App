@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
-use tauri::menu::{MenuBuilder, MenuItem, Submenu};
+use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem, Submenu};
 
 /// Menu item ID for the Julia environment reset action.
 const MENU_RESET_JULIA: &str = "reset-julia-env";
@@ -746,17 +746,32 @@ pub fn run() {
             // Opener plugin (reveal folders in native file manager)
             app.handle().plugin(tauri_plugin_opener::init())?;
 
-            // Startup menu: Advanced > Reset Julia Environment…
-            // Available on the loading screen before the frontend loads.
-            // The frontend's setupAppMenu() will replace the full bar later,
-            // but re-adds the Advanced submenu so the item stays reachable.
+            let handle = app.handle().clone();
+            let data_dir = resolve_data_dir(app);
+            let examples_dir = resolve_examples_dir(&data_dir);
+
+            // Store data_dir for IPC access
+            app.manage(DataDirState { path: data_dir.clone() });
+
+            // Startup menu: just Advanced > Reset Julia Environment…
+            // Available on the loading screen before the frontend loads. The
+            // frontend's setupAppMenu() later installs the full bar with
+            // File / Edit / View / Advanced once Vue mounts.
             let reset_item = MenuItem::with_id(
                 app.handle(), MENU_RESET_JULIA, "Reset Julia Environment…", true, None::<&str>,
             )?;
             let advanced_submenu = Submenu::with_items(
                 app.handle(), "Advanced", true, &[&reset_item],
             )?;
+            // Reserve the macOS app-menu slot so "Advanced" doesn't get
+            // absorbed into it. Quit is the only item that earns its keep.
+            let app_quit = PredefinedMenuItem::quit(app.handle(), None)?;
+            let app_submenu = Submenu::with_items(
+                app.handle(), "GeneRegulatorySystems", true, &[&app_quit],
+            )?;
+
             let startup_menu = MenuBuilder::new(app.handle())
+                .item(&app_submenu)
                 .item(&advanced_submenu)
                 .build()?;
             app.set_menu(startup_menu)?;
@@ -768,13 +783,6 @@ pub fn run() {
                     std::thread::spawn(move || run_reset_julia_dialogs(&app, &data_dir));
                 }
             });
-
-            let handle = app.handle().clone();
-            let data_dir = resolve_data_dir(app);
-            let examples_dir = resolve_examples_dir(&data_dir);
-
-            // Store data_dir for IPC access
-            app.manage(DataDirState { path: data_dir.clone() });
 
             // Move the setup logic to a thread so the IPC handler
             // can receive the Julia choice while we block on the channel.

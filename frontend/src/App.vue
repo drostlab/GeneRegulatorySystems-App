@@ -2,58 +2,39 @@
 import Splitter from 'primevue/splitter'
 import SplitterPanel from 'primevue/splitterpanel'
 import Button from 'primevue/button'
-import Menu from 'primevue/menu'
 import ScheduleEditor from './components/ScheduleEditor.vue'
 import NetworkDiagram from './components/NetworkDiagram.vue'
 import SimulationViewer from './components/TrackViewer.vue'
 import LogDrawer from './components/LogDrawer.vue'
-import { ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref } from 'vue'
 import { useTheme } from './composables/useTheme'
 import { useScheduleStore } from './stores/scheduleStore'
+import { isTauri } from '@/config/api'
 
 const { isDark, toggle } = useTheme()
 const scheduleStore = useScheduleStore()
 
 const networkDiagramRef = ref<InstanceType<typeof NetworkDiagram>>()
 const simulationViewerRef = ref<InstanceType<typeof SimulationViewer>>()
-const exportMenu = ref()
 
-const exportMenuItems = [
-    {
-        label: 'Schedule spec (JSON)',
-        icon: 'pi pi-file',
-        command: () => scheduleStore.downloadSchedule(),
-    },
-    {
-        label: 'Network diagram (SVG)',
-        icon: 'pi pi-share-alt',
-        command: () => networkDiagramRef.value?.exportSVG(),
-    },
-    {
-        label: 'Simulation chart (PNG)',
-        icon: 'pi pi-chart-line',
-        command: () => simulationViewerRef.value?.exportSVG(),
-    },
-]
-
-function toggleExportMenu(event: Event): void {
-    exportMenu.value.toggle(event)
-}
+// Native File > Export submenu items fire these events.
+const unlistenFns: Array<() => void> = []
+onMounted(async () => {
+    if (!isTauri()) return
+    const { listen } = await import('@tauri-apps/api/event')
+    unlistenFns.push(await listen('menu:export-schedule-json', () => scheduleStore.downloadSchedule()))
+    unlistenFns.push(await listen('menu:export-network-svg', () => networkDiagramRef.value?.exportSVG()))
+    unlistenFns.push(await listen('menu:export-simulation-png', () => simulationViewerRef.value?.exportSVG()))
+})
+onBeforeUnmount(() => {
+    unlistenFns.forEach(fn => fn())
+    unlistenFns.length = 0
+})
 </script>
 
 <template>
     <div style="display: flex; flex-direction: column; width: 100vw; height: 100vh">
         <div class="top-right-controls">
-            <Button
-                icon="pi pi-download"
-                severity="secondary"
-                text
-                rounded
-                aria-label="Export"
-                v-grs-tooltip="'Export'"
-                @click="toggleExportMenu"
-            />
-            <Menu ref="exportMenu" :model="exportMenuItems" popup />
             <Button
                 :icon="isDark ? 'pi pi-moon' : 'pi pi-sun'"
                 severity="secondary"
