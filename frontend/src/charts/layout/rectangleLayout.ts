@@ -3,6 +3,24 @@ import type { StructureNode, TimelineSegment } from '@/types/schedule'
 /** Default maximum concurrently visible execution-path rows in the timeline. */
 export const DEFAULT_MAX_TIMELINE_PATHS = 20
 
+interface Interval { from: number; to: number }
+
+/**
+ * Two-pointer scan over sorted interval lists. True iff any interval in `a`
+ * strictly overlaps any interval in `b` (touching boundaries don't count).
+ * O(n+m).
+ */
+function intervalsOverlap(a: Interval[], b: Interval[]): boolean {
+    let i = 0, j = 0
+    while (i < a.length && j < b.length) {
+        const ai = a[i]!, bj = b[j]!
+        if (ai.from < bj.to && bj.from < ai.to) return true
+        if (ai.to <= bj.from) i++
+        else j++
+    }
+    return false
+}
+
 export interface LayoutRectangle {
     segmentId: number
     executionPath: string
@@ -76,52 +94,44 @@ function computeYRangesFromStructure(
 
     const ranges = new Map<string, { yMin: number; yMax: number }>()
     const rowCache = new Map<StructureNode, number>()
-    const rangeCache = new Map<StructureNode, { from: number; to: number } | null>()
+    const intervalsCache = new Map<StructureNode, Interval[]>()
     const parallelCache = new Map<StructureNode, boolean>()
 
-    const nodeTimeRange = (node: StructureNode): { from: number; to: number } | null => {
-        if (rangeCache.has(node)) return rangeCache.get(node)!
-        let from = Infinity
-        let to = -Infinity
-        let has = false
+    // Collect every durational interval in a node's subtree, sorted by `from`.
+    // Loops produce multiple disjoint intervals per child (e.g. dark runs
+    // during [0,60k] ∪ [65k,125k] ∪ …); collapsing to min/max would falsely
+    // make sequential-but-interleaved siblings look overlapping.
+    const nodeIntervals = (node: StructureNode): Interval[] => {
+        const cached = intervalsCache.get(node)
+        if (cached) return cached
+        const out: Interval[] = []
         const segs = segmentsByPath.get(node.execution_path)
         if (segs) {
             for (const s of segs) {
-                if (s.from < s.to) {
-                    if (s.from < from) from = s.from
-                    if (s.to > to) to = s.to
-                    has = true
-                }
+                if (s.from < s.to) out.push({ from: s.from, to: s.to })
             }
         }
         for (const c of node.children) {
-            const r = nodeTimeRange(c)
-            if (r) {
-                if (r.from < from) from = r.from
-                if (r.to > to) to = r.to
-                has = true
-            }
+            for (const iv of nodeIntervals(c)) out.push(iv)
         }
-        const result = has ? { from, to } : null
-        rangeCache.set(node, result)
-        return result
+        out.sort((a, b) => a.from - b.from)
+        intervalsCache.set(node, out)
+        return out
     }
 
     const childrenAreParallel = (node: StructureNode): boolean => {
         if (node.children.length < 2) return false
         const cached = parallelCache.get(node)
         if (cached !== undefined) return cached
-        const childRanges: Array<{ from: number; to: number }> = []
+        const perChild: Interval[][] = []
         for (const c of node.children) {
-            const r = nodeTimeRange(c)
-            if (r) childRanges.push(r)
+            const ivs = nodeIntervals(c)
+            if (ivs.length > 0) perChild.push(ivs)
         }
         let parallel = false
-        outer: for (let i = 0; i < childRanges.length; i++) {
-            for (let j = i + 1; j < childRanges.length; j++) {
-                const a = childRanges[i]!
-                const b = childRanges[j]!
-                if (a.from < b.to && b.from < a.to) {
+        outer: for (let i = 0; i < perChild.length; i++) {
+            for (let j = i + 1; j < perChild.length; j++) {
+                if (intervalsOverlap(perChild[i]!, perChild[j]!)) {
                     parallel = true
                     break outer
                 }
@@ -132,7 +142,7 @@ function computeYRangesFromStructure(
     }
 
     /** A node is "instant" if its entire subtree contains no durational segment. */
-    const isInstant = (node: StructureNode): boolean => nodeTimeRange(node) === null
+    const isInstant = (node: StructureNode): boolean => nodeIntervals(node).length === 0
 
     const rowsNeeded = (node: StructureNode): number => {
         if (rowCache.has(node)) return rowCache.get(node)!
