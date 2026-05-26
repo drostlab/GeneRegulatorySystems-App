@@ -13,7 +13,7 @@
  */
 import type { Core } from 'cytoscape'
 import type { Ref } from 'vue'
-import type { UnionNetwork } from '@/types/network'
+import type { Parameter, UnionNetwork } from '@/types/network'
 import cytoscape from 'cytoscape'
 // @ts-ignore
 import fcose from 'cytoscape-fcose'
@@ -92,9 +92,35 @@ export class NetworkView {
         this.inlineParameters.setParameterLookup(lookup)
     }
 
-    /** Refresh inline chip values (call when the active model changes). */
+    /**
+     * Refresh inline chip values and parameter-driven edge data attributes
+     * (e.g. `at`, which drives regulatory edge width via `mapData`). Call
+     * when the active model changes so width/styles re-evaluate against the
+     * newly selected model's parameter values.
+     */
     refreshParameterValues(): void {
         this.inlineParameters.refreshValues()
+        this.syncElementParameterData()
+    }
+
+    /**
+     * Mirror `parameterLookup` into element `data(<name>)` attributes so any
+     * cytoscape style rule using `mapData(<name>, ...)` re-evaluates. Edge
+     * `parameters` arrays carry `{symbol, name}` slots — symbol keys the
+     * model-specific value, name is the data attribute the style references.
+     */
+    private syncElementParameterData(): void {
+        const cy = this.cy
+        if (!cy) return
+        cy.startBatch()
+        cy.elements().forEach((el: any) => {
+            const params = (el.data('parameters') ?? []) as Parameter[]
+            for (const p of params) {
+                const v = this.parameterLookup(p.symbol)
+                if (v !== undefined) el.data(p.name, v)
+            }
+        })
+        cy.endBatch()
     }
 
     /**
@@ -138,6 +164,11 @@ export class NetworkView {
             boxSelectionEnabled: false,
             selectionType: 'single',
         })
+
+        // Elements are built from `link.properties` (the backend's default
+        // model's values).  Sync to the currently active model before layout
+        // so widths reflect the right model on first paint.
+        this.syncElementParameterData()
 
         // Run animated fcose layout; attach modules on completion
         this.runLayout(network, geneColours)
