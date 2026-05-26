@@ -21,6 +21,7 @@ using JSON
 using Colors
 
 using ..ScheduleBindings: spec_bindings
+using ..V1Editing
 
 # ============================================================================
 # Exports
@@ -29,7 +30,7 @@ using ..ScheduleBindings: spec_bindings
 export Network, UnionNetwork, ModelExclusions, TimelineSegment, ScheduleData, StructureNode
 export ReifiedSchedule, ValidationMessage
 export reify_schedule, extract_network_for_model_path, extract_union_network, is_valid, get_error_messages
-export gene_colours_from_spec, clear_spec_cache
+export gene_colours_from_spec, clear_spec_cache, apply_edit_to_path!
 
 # ============================================================================
 # Schema Types
@@ -203,6 +204,12 @@ mutable struct SpecCacheEntry
     schedule_data::Union{ScheduleData, Nothing}
     validation_messages::Union{Vector{ValidationMessage}, Nothing}
     union_network::Union{UnionNetwork, Nothing}
+    # Per-model-path edits accumulated since the spec was loaded. Each
+    # entry holds a Definition that supersedes whatever `Scheduling.reify`
+    # would produce at that path. Stance 2: edits target a single path
+    # only; sibling paths that originally shared the same Definition stay
+    # unchanged. Cleared on spec re-upload (spec_hash change).
+    edits::Dict{String, V1.Definition}
 end
 
 const SPEC_CACHE_MAX = 16
@@ -224,7 +231,11 @@ function cache_entry(spec_string::AbstractString)::SpecCacheEntry
             touch_lru!(h)
             return existing
         end
-        entry = SpecCacheEntry(_parse_schedule(String(spec_string)), nothing, nothing, nothing)
+        entry = SpecCacheEntry(
+            _parse_schedule(String(spec_string)),
+            nothing, nothing, nothing,
+            Dict{String, V1.Definition}(),
+        )
         SPEC_CACHE[h] = entry
         touch_lru!(h)
         while length(SPEC_CACHE_LRU) > SPEC_CACHE_MAX
@@ -347,9 +358,15 @@ function extract_union_network(spec_string::String, segments::Vector{TimelineSeg
     parameters_by_model_path = Dict{String, Dict{String, Float64}}()
     for mp in model_paths
         try
-            reified = Scheduling.reify(entry.grs_schedule, mp)
-            per_model[mp] = network_from_reified(reified; include_reactions)
-            parameters_by_model_path[mp] = params_from_reified(reified)
+            edited = get(entry.edits, mp, nothing)
+            if edited !== nothing
+                per_model[mp], parameters_by_model_path[mp] =
+                    _network_and_params_from_definition(edited; include_reactions)
+            else
+                reified = Scheduling.reify(entry.grs_schedule, mp)
+                per_model[mp] = network_from_reified(reified; include_reactions)
+                parameters_by_model_path[mp] = params_from_reified(reified)
+            end
         catch e
             @warn "Could not extract for model_path" model_path=mp exception=e
             parameters_by_model_path[mp] = get(parameters_by_model_path, mp, Dict{String, Float64}())
@@ -358,8 +375,80 @@ function extract_union_network(spec_string::String, segments::Vector{TimelineSeg
 
     union_net = build_union(per_model, parameters_by_model_path)
     entry.union_network = union_net
-    @info "Union network built" nodes=length(union_net.nodes) links=length(union_net.links) models=length(per_model)
+    @info "Union network built" nodes=length(union_net.nodes) links=length(union_net.links) models=length(per_model) edited=length(entry.edits)
     return union_net
+end
+
+"""
+Walk a reified-schedule result to find the underlying `V1.Definition`.
+
+Reify returns nested wrappers: a `Primitive` whose `.f!` is the model,
+which is typically a `Wrapped` whose outer `.definition` is a `Locator`
+(a path marker, not the spec) and whose `.model` is another `Wrapped`
+whose `.definition` IS the `V1.Definition`. We descend both `.definition`
+and `.model` chains, returning the first `V1.Definition` we hit.
+
+Returns `nothing` if the path doesn't resolve to a v1 model (e.g. it's
+an `Instant`, a `Wait`, or some other model kind).
+"""
+function _find_v1_definition(x)::Union{V1.Definition, Nothing}
+    x isa V1.Definition && return x
+    x isa Primitive && return _find_v1_definition(x.f!)
+    if x isa Models.Wrapped
+        from_def = _find_v1_definition(x.definition)
+        from_def === nothing || return from_def
+        return _find_v1_definition(x.model)
+    end
+    return nothing
+end
+
+"""
+Build network + parameter views for a v1 `Definition` that doesn't come
+from `Scheduling.reify` (e.g. an edited Definition). We need a `Wrapped`
+to drive `NetworkRepresentation.entity` species-level expansion, so this
+calls `V1.build` — the expensive part of the edit path.
+"""
+function _network_and_params_from_definition(
+    def::V1.Definition; include_reactions::Bool=true,
+)::Tuple{Network, Dict{String, Float64}}
+    wrapped = V1.build(def)
+    network = network_from_reified(wrapped; include_reactions)
+    params  = Dict(string(k) => Float64(v) for (k, v) in Models.parameters(def))
+    return network, params
+end
+
+"""
+    apply_edit_to_path!(spec_string, model_path, action) -> UnionNetwork
+
+Apply one edit action to the Definition at `model_path` and return the
+updated union network. The Definition that gets edited is either the
+last-edited one for this path (if previous edits exist) or freshly
+reified from the schedule otherwise.
+
+`action` is a `Symbol`-keyed dict shaped like the frontend's
+`RawEditAction` (the caller has already used `model_path` to route here).
+
+Throws on validation errors — the caller is expected to surface them.
+"""
+function apply_edit_to_path!(
+    spec_string::String, model_path::String, action::AbstractDict{Symbol},
+    segments::Vector{TimelineSegment};
+    include_reactions::Bool=true,
+)::UnionNetwork
+    entry = cache_entry(spec_string)
+
+    current = get(entry.edits, model_path, nothing)
+    if current === nothing
+        reified = Scheduling.reify(entry.grs_schedule, model_path)
+        current = _find_v1_definition(reified)
+        current === nothing &&
+            error("no v1 Definition found at model path `$model_path` (got $(typeof(reified)))")
+    end
+
+    new_def = V1Editing.apply_edit(current, action)
+    entry.edits[model_path] = new_def
+    entry.union_network = nothing  # invalidate so the next call rebuilds
+    return extract_union_network(spec_string, segments; include_reactions)
 end
 
 # Link identity is topological (see `_link_id`); the `parameters` slot list is

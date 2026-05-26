@@ -3,6 +3,10 @@ import { ref, onMounted, watch, onBeforeUnmount, computed } from 'vue'
 import { useScheduleStore } from '@/stores/scheduleStore'
 import { useViewerStore } from '@/stores/viewerStore'
 import { NetworkView } from '@/network/NetworkView'
+import type { Core } from 'cytoscape'
+import type { ContextTarget } from '@/network/editing/ContextDispatch'
+import type { LinkKind, RawEditAction } from '@/network/editing/actions'
+import { executeEdit } from '@/network/editing/executeEdit'
 import { useTheme } from '@/composables/useTheme'
 import ProgressSpinner from 'primevue/progressspinner'
 import Button from 'primevue/button'
@@ -15,8 +19,60 @@ const viewerStore = useViewerStore()
 const networkView = new NetworkView()
 const { isDark, onThemeChange } = useTheme()
 const isDetailVisible = ref(false)
+const contextTarget = ref<ContextTarget | null>(null)
+const latestCy = ref<Core | null>(null)
 
-const contextMenuItems = computed(() => {
+const LINK_KINDS: { kind: LinkKind, label: string }[] = [
+    { kind: 'activation', label: 'activation' },
+    { kind: 'repression', label: 'repression' },
+    { kind: 'proteolysis', label: 'proteolysis' },
+]
+
+/** Pick the lowest unused positive integer as the new gene name. */
+function nextGeneName(taken: Set<string>): string {
+    for (let n = 1; n <= taken.size + 1; n++) {
+        const s = String(n)
+        if (!taken.has(s)) return s
+    }
+    return String(taken.size + 1)
+}
+
+/**
+ * Live source of truth for which gene names are in use right now. Reads cy
+ * directly rather than `scheduleStore.allGenes` (which is derived from the
+ * original loaded schedule and doesn't pick up optimistic create/delete).
+ */
+function takenGeneNames(): Set<string> {
+    const cy = latestCy.value
+    if (!cy) return new Set()
+    return new Set(cy.nodes('.gene').map((n: any) => String(n.id())))
+}
+
+function emit(raw: RawEditAction): void {
+    const cy = latestCy.value
+    const net = scheduleStore.unionNetwork
+    const spec = scheduleStore.schedule.spec
+    if (!cy || !net || !spec) return
+    const byPath = net.parameters_by_model_path ?? {}
+    const model_path = viewerStore.activeModelPath ?? Object.keys(byPath)[0]
+    if (!model_path) {
+        console.warn('[NetworkDiagram] no model_path available; dropping edit', raw)
+        return
+    }
+    executeEdit(raw, cy, {
+        model_path,
+        spec,
+        segments: scheduleStore.segments,
+        geneIds: takenGeneNames(),
+        // Replacing scheduleStore.unionNetwork triggers the existing watch
+        // that calls networkView.setNetwork, which now preserves positions
+        // for any node id present in both the old and new graphs.
+        onSuccess: (network) => { scheduleStore.unionNetwork = network },
+        onError: (msg) => console.warn('[edit]', msg),
+    })
+}
+
+const backgroundMenuItems = computed(() => {
     const net = scheduleStore.unionNetwork
     const allGenes = scheduleStore.allGenes ?? []
     const allSpecies: string[] = net
@@ -28,8 +84,17 @@ const contextMenuItems = computed(() => {
         || viewerStore.selectedOtherSpecies.length > 0
     return [
         {
+            label: 'Add gene',
+            command: () => {
+                const tgt = contextTarget.value
+                if (!tgt || tgt.kind !== 'background') return
+                const name = nextGeneName(takenGeneNames())
+                emit({ type: 'create_gene', name, position: tgt.position })
+            },
+        },
+        { separator: true },
+        {
             label: 'Select all genes',
-            icon: 'pi pi-asterisk',
             disabled: allGenes.length === 0,
             command: () => {
                 viewerStore.selectedGenes = [...allGenes]
@@ -37,17 +102,14 @@ const contextMenuItems = computed(() => {
         },
         {
             label: 'Select all species',
-            icon: 'pi pi-circle',
             disabled: allSpecies.length === 0,
             command: () => {
                 viewerStore.selectedSpeciesNodes = allSpecies
                 viewerStore.selectedOtherSpecies = scheduleStore.allOtherSpecies ?? []
             },
         },
-        { separator: true },
         {
             label: 'Clear selection',
-            icon: 'pi pi-times',
             disabled: !hasSelection,
             command: () => {
                 viewerStore.selectedGenes = []
@@ -56,6 +118,50 @@ const contextMenuItems = computed(() => {
             },
         },
     ]
+})
+
+const geneMenuItems = (geneId: string) => [
+    {
+        label: 'Rename gene',
+        command: () => networkView.startGeneRename(geneId),
+    },
+    {
+        label: 'Add regulatory link',
+        items: LINK_KINDS.map(lk => ({
+            label: lk.label,
+            command: () => networkView.startEdgeDraw(geneId, lk.kind),
+        })),
+    },
+    { separator: true },
+    {
+        label: 'Delete gene',
+        command: () => emit({ type: 'delete_gene', geneId }),
+    },
+]
+
+const regEdgeMenuItems = (linkId: string, currentKind: string) => [
+    {
+        label: 'Change kind',
+        items: LINK_KINDS
+            .filter(lk => lk.kind !== currentKind)
+            .map(lk => ({
+                label: lk.label,
+                command: () => emit({ type: 'change_link_kind', linkId, kind: lk.kind }),
+            })),
+    },
+    { separator: true },
+    {
+        label: 'Delete link',
+        command: () => emit({ type: 'delete_link', linkId }),
+    },
+]
+
+const contextMenuItems = computed(() => {
+    const tgt = contextTarget.value
+    if (!tgt || tgt.kind === 'background') return backgroundMenuItems.value
+    if (tgt.kind === 'gene') return geneMenuItems(tgt.id)
+    if (tgt.kind === 'reg-edge') return regEdgeMenuItems(tgt.id, tgt.linkKind)
+    return []
 })
 
 // Sync isDetailVisible when zoom or toggle changes detail visibility
@@ -102,14 +208,16 @@ onMounted(() => {
         return firstKey ? byPath[firstKey]?.[symbol] : undefined
     })
 
-    // TODO: persist to spec / fire `/schedules/edit`.
-    networkView.onParameterChange = (symbol, value) => {
-        console.debug('[NetworkDiagram] parameter change', symbol, '=', value)
-    }
+    networkView.onEditAction = emit
+    networkView.setGeneNameLookup(takenGeneNames)
+    networkView.onCyReady = (cy) => { latestCy.value = cy }
 
-    // Right-click on the network background surfaces a context menu with
-    // selection bulk-actions (select all genes/species, clear).
-    networkView.onContextMenu = (evt) => contextMenuRef.value?.show(evt)
+    // Right-click resolves to a target (background / gene / regulatory edge)
+    // and surfaces the matching context menu.
+    networkView.onContextMenu = (target, evt) => {
+        contextTarget.value = target
+        contextMenuRef.value?.show(evt)
+    }
 
     // Render when union network arrives
     if (scheduleStore.unionNetwork) {

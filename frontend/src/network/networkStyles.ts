@@ -26,6 +26,22 @@ import {
 
 const FONT_FAMILY = 'Montserrat'
 
+/**
+ * Shared gene-label typography. Single source of truth for both the canvas
+ * stylesheet (`node.gene` rules below) and the DOM overlay used by
+ * GeneRename so the inline rename input is pixel-faithful to the label it
+ * replaces.
+ *
+ *   compoundMarginY  -- matches the `text-margin-y` applied to compound
+ *                       parents (label sits this many MODEL pixels above
+ *                       the bbox top; multiply by zoom for rendered).
+ */
+export const GENE_LABEL_STYLE = {
+    fontFamily: FONT_FAMILY,
+    fontSize: 16,
+    compoundMarginY: -8,
+}
+
 /** Edge colours re-exported from theme for backward compat. */
 export const EDGE_COLOURS = THEME_EDGE_COLOURS
 
@@ -69,16 +85,27 @@ export function buildStylesheet(isDark = false): any[] {
     const t = getTheme(isDark)
     return [
         // -- base node (no borders) --
+        // `label` and `background-color` are scoped with `[field]` selectors
+        // so they only apply to elements that actually carry those data
+        // attributes. Cytoscape warns when `mapData(...)` resolves against
+        // an element missing the field — bare preview edges from
+        // edgehandles trigger those warnings on every draw otherwise.
+        {
+            selector: 'node[label]',
+            style: { 'label': 'data(label)' } as any,
+        },
+        {
+            selector: 'node[colour]',
+            style: { 'background-color': 'data(colour)' } as any,
+        },
         {
             selector: 'node',
             style: {
-                'label': 'data(label)',
                 'text-valign': 'center' as any,
                 'text-halign': 'center' as any,
                 'font-size': 3,
                 'font-family': FONT_FAMILY,
                 'border-width': 0,
-                'background-color': 'data(colour)',
                 'text-wrap': 'ellipsis' as any,
                 'text-max-width': '120px',
             } as any,
@@ -91,12 +118,15 @@ export function buildStylesheet(isDark = false): any[] {
                 'width': GENE_BASE.width,
                 'height': GENE_BASE.height,
                 'text-valign': 'center' as any,
-                'font-size': 16,
-                'color': 'data(textColour)',
+                'font-size': GENE_LABEL_STYLE.fontSize,
                 'padding': '6px',
                 'min-width': `${GENE_BASE.width}px`,
                 'min-height': `${GENE_BASE.height}px`,
             } as any,
+        },
+        {
+            selector: 'node.gene[textColour]',
+            style: { 'color': 'data(textColour)' } as any,
         },
         // -- compound gene (label above box): mode-aware colour, no ellipsis --
         // Fully opaque bg using a lightened (light mode) / darkened (dark mode)
@@ -112,13 +142,16 @@ export function buildStylesheet(isDark = false): any[] {
             selector: 'node.compound-parent',
             style: {
                 'text-valign': 'top' as any,
-                'text-margin-y': -8,
-                'background-color': 'data(compoundColour)',
+                'text-margin-y': GENE_LABEL_STYLE.compoundMarginY,
                 'background-opacity': 1,
                 'text-wrap': 'none' as any,
                 'text-max-width': '9999px',
                 'color': t.network.geneLabelText,
             } as any,
+        },
+        {
+            selector: 'node.compound-parent[compoundColour]',
+            style: { 'background-color': 'data(compoundColour)' } as any,
         },
         // -- kronecker (peripheral) gene: tiny circle, no label --
         {
@@ -182,16 +215,22 @@ export function buildStylesheet(isDark = false): any[] {
                 'shape': 'ellipse',
                 'width': REACTION_SIZE,
                 'height': REACTION_SIZE,
-                'label': 'data(rateName)',
                 'font-size': 1.8,
                 'text-valign': 'center' as any,
-                'text-background-color': 'data(parentColour)',
                 'text-background-opacity': 0.8,
                 'text-background-padding': '0.2px',
                 'background-color': t.network.reactionBg,
                 'background-opacity': 0,
                 'color': t.network.edgeLabelText,
             } as any,
+        },
+        {
+            selector: 'node.reaction[rateName]',
+            style: { 'label': 'data(rateName)' } as any,
+        },
+        {
+            selector: 'node.reaction[parentColour]',
+            style: { 'text-background-color': 'data(parentColour)' } as any,
         },
         // -- excluded (hidden by ModelFilter) --
         {
@@ -224,13 +263,24 @@ export function buildStylesheet(isDark = false): any[] {
             } as any,
         },
         // -- edges (base style) --
+        // Same `[field]` scoping as nodes — bare edges (e.g. edgehandles
+        // previews before we stamp `kind` data) shouldn't trigger mapData
+        // warnings.
+        {
+            selector: 'edge[label]',
+            style: { 'label': 'data(label)' } as any,
+        },
+        {
+            selector: 'edge[edgeColour]',
+            style: {
+                'line-color': 'data(edgeColour)',
+                'target-arrow-color': 'data(edgeColour)',
+            } as any,
+        },
         {
             selector: 'edge',
             style: {
                 'width': 1,
-                'label': 'data(label)',
-                'line-color': 'data(edgeColour)',
-                'target-arrow-color': 'data(edgeColour)',
                 'target-arrow-shape': 'triangle',
                 'curve-style': 'bezier',
                 'font-size': 7,
@@ -247,7 +297,7 @@ export function buildStylesheet(isDark = false): any[] {
         },
         // -- gene-view regulatory edges: width scaled by binding site (opacity handled below) --
         {
-            selector: 'edge[kind="activation"], edge[kind="repression"]',
+            selector: 'edge[kind="activation"][at], edge[kind="repression"][at]',
             style: {
                 'width': 'mapData(at, 0.1, 10, 5, 1)',
             } as any,
@@ -271,11 +321,16 @@ export function buildStylesheet(isDark = false): any[] {
         {
             selector: 'edge.species-view',
             style: {
-                'width': 'mapData(at, 0.1, 10, 2.5, 0.75)',
                 'font-size': 3,
                 'arrow-scale': 0.8,
                 'text-opacity': 1,
                 'z-index': -100,
+            } as any,
+        },
+        {
+            selector: 'edge.species-view[at]',
+            style: {
+                'width': 'mapData(at, 0.1, 10, 2.5, 0.75)',
             } as any,
         },
         {
@@ -357,13 +412,13 @@ export function buildStylesheet(isDark = false): any[] {
         //   3. activation/repression (not dimmed, not peripheral) → mapData by `at`
         // ====================================================================
         {
-            selector: 'edge[kind="activation"]:not(.dimmed):not(.peripheral), edge[kind="repression"]:not(.dimmed):not(.peripheral)',
+            selector: 'edge[kind="activation"][at]:not(.dimmed):not(.peripheral), edge[kind="repression"][at]:not(.dimmed):not(.peripheral)',
             style: {
                 'opacity': 'mapData(at, 0.1, 10, 1, 0.5)',
             } as any,
         },
         {
-            selector: 'edge.species-view:not(.dimmed):not(.peripheral)',
+            selector: 'edge.species-view[at]:not(.dimmed):not(.peripheral)',
             style: {
                 'opacity': 'mapData(at, 0.1, 10, 0.35, 0.15)',
             } as any,
@@ -402,6 +457,30 @@ export function buildStylesheet(isDark = false): any[] {
                 'z-index': -100,
                 'opacity': DIM_OPACITY,
             } as any,
+        },
+        // ====================================================================
+        // Editing overlays
+        // ====================================================================
+        // Hide the canvas label of a gene currently being renamed — the DOM
+        // overlay (GeneRename) replaces it pixel-faithfully.
+        {
+            selector: 'node.renaming',
+            style: { 'text-opacity': 0 } as any,
+        },
+        // edgehandles draws two visuals during a draw: a "ghost" line from
+        // source to cursor and a snapped "preview" edge. We hide the ghost
+        // (busy + redundant once snap kicks in) and keep the preview, which
+        // we style via stamped `kind` data (see EdgeCreation.edgeParams) so
+        // it picks up the existing activation/repression/proteolysis rules.
+        {
+            selector: '.eh-ghost-edge',
+            style: { 'opacity': 0, 'events': 'no' } as any,
+        },
+        // edgehandles applies a thick border to source/target by default;
+        // we suppress it (the snap-styled preview edge is feedback enough).
+        {
+            selector: '.eh-source, .eh-target, .eh-hover',
+            style: { 'border-width': 0, 'overlay-opacity': 0 } as any,
         },
     ]
 }

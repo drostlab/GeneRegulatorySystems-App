@@ -57,6 +57,11 @@ export class SelectionSync {
      */
     private onNodeTap = (evt: any): void => {
         if (this.updating) return
+        // Ignore the tap that completes an EdgeCreation draw — otherwise
+        // clicking the target gene both creates the link and selects the
+        // gene, which is jarring. EdgeCreation sets `grs_drawing` for the
+        // duration of the gesture (cleared on next rAF after ehcomplete).
+        if (this.cy?.scratch('grs_drawing')) return
         this.updating = true
 
         const node = evt.target

@@ -31,13 +31,32 @@ import { DynamicsSync } from './DynamicsSync'
 import { createEdgeTooltip, createNodeTooltip, type Tooltip } from './Tooltip'
 import {
     InlineParameters,
-    type ParameterChangeHandler,
     type ParameterValueLookup,
-} from './InlineParameters'
+} from './editing/InlineParameters'
+import type { RawEditActionHandler, LinkKind } from './editing/actions'
+import type { GeneNameLookup } from './editing/GeneRename'
+import {
+    ContextDispatch,
+    type ContextMenuHandler,
+} from './editing/ContextDispatch'
+import { EdgeCreation } from './editing/EdgeCreation'
+import { GeneRename } from './editing/GeneRename'
 import { saveFile } from '@/utils/saveFile'
 
 cytoscape.use(fcose)
 cytoscape.use(svgExporter)
+
+/**
+ * Everything we restore across a `setNetwork` rebuild so an edit doesn't
+ * visually disturb the user's frame: where things were, where they were
+ * looking, and what level of detail they were looking at.
+ */
+interface ViewState {
+    positions: Map<string, { x: number, y: number }>
+    pan: { x: number, y: number }
+    zoom: number
+    detailVisible: boolean
+}
 
 export class NetworkView {
     private cy: Core | null = null
@@ -50,6 +69,9 @@ export class NetworkView {
     private hoverSync = new HoverSync()
     private dynamicsSync = new DynamicsSync()
     private inlineParameters = new InlineParameters()
+    private contextDispatch = new ContextDispatch()
+    private edgeCreation = new EdgeCreation()
+    private geneRename = new GeneRename()
 
     /**
      * Looks up a parameter's current value for the active model.
@@ -69,16 +91,21 @@ export class NetworkView {
         this._onDetailChange = cb
     }
 
-    /** External callback for right-click on the network background. */
-    private _onContextMenu: ((evt: MouseEvent) => void) | null = null
+    /** Fired with the new cytoscape instance after every `setNetwork`. */
+    private _onCyReady: ((cy: Core) => void) | null = null
+    set onCyReady(cb: ((cy: Core) => void) | null) {
+        this._onCyReady = cb
+        if (cb && this.cy) cb(this.cy)
+    }
 
     /**
-     * Register a handler invoked on right-click of the cytoscape background
-     * (not on an element). The handler receives the original `MouseEvent`
-     * with `clientX/Y`; useful for surfacing a PrimeVue `ContextMenu`.
+     * Register a handler invoked on right-click of any dispatchable target
+     * (background, gene compound, regulatory edge). Receives the resolved
+     * target plus the original `MouseEvent` (for PrimeVue `ContextMenu`
+     * positioning).
      */
-    set onContextMenu(cb: ((evt: MouseEvent) => void) | null) {
-        this._onContextMenu = cb
+    set onContextMenu(cb: ContextMenuHandler | null) {
+        this.contextDispatch.onContextMenu = cb
     }
 
     /**
@@ -124,12 +151,31 @@ export class NetworkView {
     }
 
     /**
-     * Register a handler invoked when a user commits a new value via an
-     * inline parameter chip. The handler receives the canonical parameter
-     * symbol and the parsed numeric value.
+     * Register a handler invoked when the user commits any edit (parameter
+     * change, link creation, rename, delete, ...). All editing submodules
+     * funnel through this single channel. The action is "raw" — the caller
+     * stamps the active `model_path` before dispatching.
      */
-    set onParameterChange(handler: ParameterChangeHandler | null) {
+    set onEditAction(handler: RawEditActionHandler | null) {
         this.inlineParameters.onParameterChange = handler
+            ? (symbol, value) => handler({ type: 'set_parameter', symbol, value })
+            : null
+        this.edgeCreation.onEdgeComplete = handler
+            ? (source, target, kind) => handler({ type: 'create_link', source, target, kind })
+            : null
+        this.geneRename.onRename = handler
+            ? (geneId, newName) => handler({ type: 'rename_gene', geneId, newName })
+            : null
+    }
+
+    /** Supply gene-name lookup for in-flight rename collision validation. */
+    setGeneNameLookup(lookup: GeneNameLookup): void {
+        this.geneRename.setGeneNameLookup(lookup)
+    }
+
+    /** The active cytoscape instance, or null before `setNetwork`. */
+    get cytoscape(): Core | null {
+        return this.cy
     }
 
     /**
@@ -145,8 +191,20 @@ export class NetworkView {
 
     /**
      * Set or replace the union network. Destroys the old graph and rebuilds.
+     *
+     * Position preservation: before destroying the previous cy we snapshot
+     * every node's position by id. Any id that survives into the new graph
+     * gets pinned (via fcose's `fixedNodeConstraint`), so existing nodes
+     * stay exactly where the user placed them and only genuinely new
+     * structure gets laid out. Used by the edit flow to make `apply →
+     * reload-from-backend` feel like an in-place mutation.
      */
     setNetwork(network: UnionNetwork, geneColours: Record<string, string>): void {
+        // Snapshot everything restorable BEFORE destroying — `cy.destroy()`
+        // invalidates every element ref. Null on first-time loads, in which
+        // case `restoreViewState` is a no-op and fcose does its full thing.
+        const viewState = this.snapshotViewState()
+
         this.destroyCytoscape()
 
         if (!this.container) return
@@ -170,8 +228,17 @@ export class NetworkView {
         // so widths reflect the right model on first paint.
         this.syncElementParameterData()
 
+        // Restore pan + zoom so an edit-reload doesn't visually jump.
+        // Detail mode (gene vs species view) is restored after AdaptiveZoom
+        // attaches — see `runLayout`'s layoutstop callback.
+        this.restoreViewport(viewState)
+
+        // Notify caller (e.g. editStore) about the new cy instance before
+        // layout runs — they may want to bind handlers immediately.
+        this._onCyReady?.(this.cy)
+
         // Run animated fcose layout; attach modules on completion
-        this.runLayout(network, geneColours)
+        this.runLayout(network, geneColours, viewState)
     }
 
     /** Destroy everything. */
@@ -187,9 +254,20 @@ export class NetworkView {
         this.applyContainerBackground()
         this.adaptiveZoom.applyTheme(isDark)
         this.inlineParameters.applyTheme(isDark)
+        this.geneRename.applyTheme(isDark)
         if (this.cy) {
             this.cy.style(buildStylesheet(isDark))
         }
+    }
+
+    /** Begin drawing a new link of `kind` from the gene `sourceId`. */
+    startEdgeDraw(sourceId: string, kind: LinkKind): void {
+        this.edgeCreation.startDraw(sourceId, kind)
+    }
+
+    /** Begin inline rename of a gene compound. */
+    startGeneRename(geneId: string): void {
+        this.geneRename.start(geneId)
     }
 
     /** Toggle between gene and species views manually. */
@@ -219,17 +297,94 @@ export class NetworkView {
     // Internal
     // ========================================================================
 
-    private runLayout(network: UnionNetwork, geneColours: Record<string, string>): void {
+    /**
+     * Snapshot the current cy's node positions by id. Returns an empty map
+     * if there's no cy yet — handy for the initial `setNetwork` where
+     * everything is genuinely new and we want fcose to do its full thing.
+     */
+    /**
+     * Capture everything restorable across a `setNetwork` rebuild:
+     *   - per-node positions (pin via fcose `fixedNodeConstraint`)
+     *   - viewport (pan + zoom)
+     *   - detail mode (gene view vs species view)
+     *
+     * Returns `null` on first-time loads (no previous cy) so callers can
+     * skip restoration and let fcose lay things out from scratch.
+     *
+     * Selection lives in `viewerStore` and persists across rebuilds on its
+     * own; chip edit state is per-element and dies with the destroy, which
+     * is fine — no edit can be in progress at this moment by construction
+     * (`emit` only fires on commit).
+     */
+    private snapshotViewState(): ViewState | null {
+        if (!this.cy) return null
+        const positions = new Map<string, { x: number, y: number }>()
+        this.cy.nodes().forEach((n: any) => {
+            const p = n.position()
+            positions.set(String(n.id()), { x: p.x, y: p.y })
+        })
+        const p = this.cy.pan()
+        return {
+            positions,
+            pan: { x: p.x, y: p.y },
+            zoom: this.cy.zoom(),
+            detailVisible: this.adaptiveZoom.isDetailVisible,
+        }
+    }
+
+    /** Restore pan + zoom on the freshly-created cy. No-op when null. */
+    private restoreViewport(state: ViewState | null): void {
+        if (!state || !this.cy) return
+        this.cy.zoom(state.zoom)
+        this.cy.pan(state.pan)
+    }
+
+    /**
+     * Restore detail mode after AdaptiveZoom has attached. AdaptiveZoom
+     * resets to gene view on attach and then auto-checks zoom 500ms later;
+     * we short-circuit that by flipping immediately if needed.
+     */
+    private restoreDetailMode(state: ViewState | null): void {
+        if (!state) return
+        if (state.detailVisible !== this.adaptiveZoom.isDetailVisible) {
+            this.adaptiveZoom.toggleDetail()
+        }
+    }
+
+    private runLayout(
+        network: UnionNetwork,
+        geneColours: Record<string, string>,
+        viewState: ViewState | null = null,
+    ): void {
         if (!this.cy) return
+
+        // Pin every node whose id survived from the previous graph. If 100%
+        // of nodes are pinned, fcose effectively no-ops (existing layout
+        // preserved exactly). If a handful are unpinned (e.g. a freshly
+        // created gene), fcose places only those, relative to neighbours.
+        const positions = viewState?.positions
+        const fixedNodeConstraint = !positions || positions.size === 0
+            ? undefined
+            : this.cy.nodes()
+                .map((n: any) => ({ id: String(n.id()), pos: positions.get(String(n.id())) }))
+                .filter((e: any) => e.pos !== undefined)
+                .map((e: any) => ({ nodeId: e.id, position: e.pos }))
+
+        const hasFixed = fixedNodeConstraint !== undefined && fixedNodeConstraint.length > 0
 
         const layout = this.cy.layout({
             name: 'fcose',
             quality: 'proof',
-            randomize: true,
-            animate: true,
+            // Skip randomization when we're preserving most positions —
+            // otherwise fcose perturbs even pinned nodes' neighbours.
+            randomize: !hasFixed,
+            // No animation on edit reloads — the pinned nodes don't move and
+            // animating just the new ones for 400ms feels janky.
+            animate: !hasFixed,
             animationDuration: 1000,
-            fit: true,
+            fit: !hasFixed,
             padding: 50,
+            ...(hasFixed ? { fixedNodeConstraint } : {}),
             nodeDimensionsIncludeLabels: true,
             uniformNodeDimensions: false,
             packComponents: true,
@@ -262,6 +417,7 @@ export class NetworkView {
             if (!this.cy) return
 
             this.adaptiveZoom.attach(this.cy, network, geneColours, this.isDark)
+            this.restoreDetailMode(viewState)
             this.modelFilter.attach(this.cy)
             this.selectionSync.attach(this.cy)
             this.hoverSync.attach(this.cy)
@@ -286,15 +442,9 @@ export class NetworkView {
                 if (evt.target === this.cy) this.cy!.fit(undefined, 50)
             })
 
-            // Right-click on background -> external context menu (e.g. for
-            // "Select all genes / species / Clear selection" actions).
-            this.cy.on('cxttap', (evt: any) => {
-                if (evt.target !== this.cy) return
-                const oe = evt.originalEvent as MouseEvent | undefined
-                if (!oe || !this._onContextMenu) return
-                oe.preventDefault?.()
-                this._onContextMenu(oe)
-            })
+            this.contextDispatch.attach(this.cy)
+            this.edgeCreation.attach(this.cy)
+            this.geneRename.attach(this.cy, this.isDark)
 
             // When detail visibility changes (zoom or toggle), sync externally
             this.adaptiveZoom.onDetailChange = (visible: boolean) => {
@@ -323,6 +473,9 @@ export class NetworkView {
         this.edgeTooltip.destroy()
         this.nodeTooltip.destroy()
         this.inlineParameters.destroy()
+        this.contextDispatch.destroy()
+        this.edgeCreation.destroy()
+        this.geneRename.destroy()
     }
 
     private destroyCytoscape(): void {

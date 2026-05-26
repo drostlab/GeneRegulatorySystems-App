@@ -1,6 +1,7 @@
 import { apiFetchJson, apiFetchText } from '@/utils/api'
 import { parseScheduleKey, type Schedule, type TimelineSegment } from '@/types/schedule'
 import type { UnionNetwork } from '@/types/network'
+import type { EditAction } from '@/network/editing/actions'
 
 export async function fetchAvailableSchedules(): Promise<string[]> {
     return apiFetchJson<string[]>('/schedules')
@@ -50,6 +51,33 @@ export async function fetchUnionNetwork(spec: string, segments: TimelineSegment[
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ schedule_spec: spec, segments })
+        }
+    )
+}
+
+/**
+ * Apply one edit action server-side and return the rebuilt union network.
+ * `action.model_path` is already stamped by the executeEdit layer; the
+ * backend strips it from the dispatch dict and uses it to route to the
+ * right Definition.
+ */
+export async function applyEdit(
+    spec: string,
+    segments: TimelineSegment[],
+    action: EditAction,
+): Promise<UnionNetwork> {
+    const { model_path, ...rest } = action
+    return apiFetchJson<UnionNetwork>(
+        '/schedules/edit',
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                schedule_spec: spec,
+                model_path,
+                segments,
+                action: rest,
+            }),
         }
     )
 }

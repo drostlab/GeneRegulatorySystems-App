@@ -31,6 +31,7 @@
 import type { Core } from 'cytoscape'
 import type { Parameter } from '@/types/network'
 import { getTheme } from '@/config/theme'
+import { createInlineInput } from './inlineEdit'
 
 export type ParameterValueLookup = (symbol: string) => number | undefined
 
@@ -381,52 +382,32 @@ export class InlineParameters {
         const label = document.createElement('span')
         label.textContent = `${name}=`
 
-        const input = document.createElement('input')
-        input.type = 'text'
-        input.value = current === undefined ? '' : String(current)
-        Object.assign(input.style, this.inputStyles(input.value.length))
-
-        wrapper.appendChild(label)
-        wrapper.appendChild(input)
-        chip.replaceChildren(wrapper)
-
-        requestAnimationFrame(() => {
-            input.focus()
-            input.select()
-        })
-
         const cleanup = () => {
             chip.dataset.editing = 'false'
             Object.assign(chip.style, this.chipStyles().chipIdle)
             this.renderChipText(chip)
         }
 
-        const commit = () => {
-            const parsed = Number(input.value)
-            if (!Number.isFinite(parsed)) { cleanup(); return }
-            const previous = this.lookup(sym)
-            if (previous !== undefined && parsed === previous) { cleanup(); return }
-            cleanup()
-            this.handler?.(sym, parsed)
-        }
-        const cancel = () => cleanup()
+        const initial = current === undefined ? '' : String(current)
+        const { input, focusAndSelect } = createInlineInput({
+            initialValue: initial,
+            onCommit: (raw) => {
+                const parsed = Number(raw)
+                if (!Number.isFinite(parsed)) { cleanup(); return }
+                const previous = this.lookup(sym)
+                if (previous !== undefined && parsed === previous) { cleanup(); return }
+                cleanup()
+                this.handler?.(sym, parsed)
+            },
+            onCancel: cleanup,
+        })
+        Object.assign(input.style, this.inputStyles())
 
-        let finished = false
-        const finishOnce = (fn: () => void) => () => {
-            if (finished) return
-            finished = true
-            input.removeEventListener('blur', onBlur)
-            fn()
-        }
-        const onBlur = finishOnce(commit)
-        input.addEventListener('keydown', e => {
-            if (e.key === 'Enter') { e.preventDefault(); finishOnce(commit)() }
-            else if (e.key === 'Escape') { e.preventDefault(); finishOnce(cancel)() }
-        })
-        input.addEventListener('input', () => {
-            input.style.width = `${Math.max(4, input.value.length + 1)}ch`
-        })
-        input.addEventListener('blur', onBlur)
+        wrapper.appendChild(label)
+        wrapper.appendChild(input)
+        chip.replaceChildren(wrapper)
+
+        focusAndSelect()
     }
 
     // ========================================================================
@@ -481,10 +462,9 @@ export class InlineParameters {
         }
     }
 
-    private inputStyles(initialLen: number): Partial<CSSStyleDeclaration> {
+    private inputStyles(): Partial<CSSStyleDeclaration> {
         const t = getTheme(this.isDark)
         return {
-            width: `${Math.max(4, initialLen + 1)}ch`,
             padding: '0',
             border: 'none',
             borderBottom: `0.1em solid ${t.network.edgeLabelText}`,

@@ -20,6 +20,7 @@ include("simulation/gap_tracking.jl")
 include("simulation/simulation_controller.jl")
 include("simulation/streaming_sink.jl")
 include("schedule/schedule_storage.jl")
+include("schedule/v1_editing.jl")
 include("schedule/schedule_visualisation.jl")
 include("simulation/simulation.jl")
 include("simulation/timeseries_summary.jl")
@@ -34,6 +35,7 @@ using .StreamingSink
 using .Simulation
 using .SimulationControl
 using .ScheduleVisualization
+using .V1Editing
 using .PhaseSpace
 using .TimeseriesSummary
 using Base: @kwdef
@@ -134,6 +136,39 @@ end
 # extract union network across all model paths
 @post "/schedules/union-network" function(req, data::Json{UnionNetworkRequest})
     return ScheduleVisualization.extract_union_network(data.payload.schedule_spec, data.payload.segments)::ScheduleVisualization.UnionNetwork
+end
+
+# ============================================================================
+# Edit endpoint
+# ============================================================================
+#
+# Apply one user edit action to the v1 Definition at `model_path`. Stance 2:
+# only that model_path is mutated; sibling paths sharing the same Definition
+# stay untouched (`apply_edit_to_path!` copy-on-writes per-path).
+#
+# The frontend posts the action verbatim (Symbol-keyed via JSON keys); the
+# response is the rebuilt union network so the frontend can reload with
+# position preservation.
+@kwdef struct EditRequest
+    schedule_spec::String
+    model_path::String
+    segments::Vector{ScheduleVisualization.TimelineSegment}
+    action::Dict{String, Any}
+end
+
+@post "/schedules/edit" function(_, data::Json{EditRequest})
+    action_sym = Dict(Symbol(k) => v for (k, v) in data.payload.action)
+    try
+        return ScheduleVisualization.apply_edit_to_path!(
+            data.payload.schedule_spec,
+            data.payload.model_path,
+            action_sym,
+            data.payload.segments,
+        )::ScheduleVisualization.UnionNetwork
+    catch e
+        @warn "Edit failed" exception=e action=data.payload.action model_path=data.payload.model_path
+        return HTTP.Response(400, string(e))
+    end
 end
 
 

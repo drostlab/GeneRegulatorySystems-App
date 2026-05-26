@@ -17,6 +17,7 @@
     "@tauri-apps/plugin-fs": "^2.5.0",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "cytoscape": "^3.33.1",
+    "cytoscape-edgehandles": "^4.0.1",
     "cytoscape-fcose": "^2.2.0",
     "cytoscape-popper": "^4.0.1",
     "cytoscape-svg": "^0.4.0",
