@@ -223,7 +223,7 @@ function run_simulation(result::SimulationResult, schedule::Models.Model;
 
     # Count frames from Arrow files
     @info "[Simulation] Counting frames" id=result.id
-    frame_count = _count_frames_in_result(result.path)
+    frame_count = count_frames_in_result(result.path)
     @info "[Simulation] Frame count" id=result.id frames=frame_count
 
     # Update metadata with final status
@@ -243,13 +243,13 @@ function run_simulation(result::SimulationResult, schedule::Models.Model;
 end
 
 """
-    _count_frames_in_result(result_path::String)::Int
+    count_frames_in_result(result_path::String)::Int
 
 Internal: count frames by reading Arrow event files.
 
 Each unique (episode_i, time) pair represents one frame.
 """
-function _count_frames_in_result(result_path::String)::Int
+function count_frames_in_result(result_path::String)::Int
     frame_count = 0
     all_files = readdir(result_path)
     @debug "[Simulation] Reading result directory" path=result_path files=all_files
@@ -434,17 +434,17 @@ function load_timeseries_for_species(
         @warn "Result directory not found" result_path
         return Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}()
     end
-    (i_to_path, i_to_from, i_to_max_time) = _load_index_mapping(result_path)
+    (i_to_path, i_to_from, i_to_max_time) = load_index_mapping(result_path)
     if isempty(i_to_path)
         error("Result is missing index data (index.arrow) — it may be from an older format or corrupt")
     end
-    ts = _load_events_as_timeseries(result_path, i_to_path, i_to_max_time; i_to_from, species_filter)
+    ts = load_events_as_timeseries(result_path, i_to_path, i_to_max_time; i_to_from, species_filter)
     @debug "Loaded filtered timeseries" result_path species_count=length(species_filter) series_count=length(ts)
     return ts
 end
 
 """
-    _load_events_as_timeseries(result_path, i_to_path, i_to_max_time; species_filter) -> timeseries
+    load_events_as_timeseries(result_path, i_to_path, i_to_max_time; species_filter) -> timeseries
 
 Shared core for loading events from Arrow files into timeseries format.
 
@@ -455,7 +455,7 @@ would share a single max_time computed across all iterations.
 
 - `species_filter`: if provided, only those species are loaded.
 """
-function _load_events_as_timeseries(
+function load_events_as_timeseries(
     result_path::String,
     i_to_path::Dict{Int, String},
     i_to_max_time::Dict{Int, Float64};
@@ -538,12 +538,12 @@ function _load_events_as_timeseries(
         end
     end
 
-    @debug "_load_events_as_timeseries" result_path species_count=length(timeseries)
+    @debug "load_events_as_timeseries" result_path species_count=length(timeseries)
     return timeseries
 end
 
 """
-    _load_index_mapping(result_path) -> (i_to_path, i_to_from, i_to_max_time)
+    load_index_mapping(result_path) -> (i_to_path, i_to_from, i_to_max_time)
 
 Load episode metadata from `index.arrow`.
 
@@ -556,7 +556,7 @@ Using the index `to` column avoids the path-string collision bug: when a looping
 schedule repeats the same structural path, all iterations share the same path string
 but have distinct episode indices with correct individual end times.
 """
-function _load_index_mapping(result_path::String)::Tuple{Dict{Int, String}, Dict{Int, Float64}, Dict{Int, Float64}}
+function load_index_mapping(result_path::String)::Tuple{Dict{Int, String}, Dict{Int, Float64}, Dict{Int, Float64}}
     i_to_path = Dict{Int, String}()
     i_to_from = Dict{Int, Float64}()
     i_to_max_time = Dict{Int, Float64}()

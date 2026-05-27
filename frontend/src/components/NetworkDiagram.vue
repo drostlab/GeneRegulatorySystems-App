@@ -139,20 +139,23 @@ const geneMenuItems = (geneId: string) => [
     },
 ]
 
-const regEdgeMenuItems = (linkId: string, currentKind: string) => [
+const regEdgeMenuItems = (source: string, target: string, currentKind: LinkKind) => [
     {
         label: 'Change kind',
         items: LINK_KINDS
             .filter(lk => lk.kind !== currentKind)
             .map(lk => ({
                 label: lk.label,
-                command: () => emit({ type: 'change_link_kind', linkId, kind: lk.kind }),
+                command: () => emit({
+                    type: 'change_link_kind',
+                    source, target, oldKind: currentKind, newKind: lk.kind,
+                }),
             })),
     },
     { separator: true },
     {
         label: 'Delete link',
-        command: () => emit({ type: 'delete_link', linkId }),
+        command: () => emit({ type: 'delete_link', source, target, kind: currentKind }),
     },
 ]
 
@@ -160,7 +163,9 @@ const contextMenuItems = computed(() => {
     const tgt = contextTarget.value
     if (!tgt || tgt.kind === 'background') return backgroundMenuItems.value
     if (tgt.kind === 'gene') return geneMenuItems(tgt.id)
-    if (tgt.kind === 'reg-edge') return regEdgeMenuItems(tgt.id, tgt.linkKind)
+    if (tgt.kind === 'reg-edge') {
+        return regEdgeMenuItems(tgt.source, tgt.target, tgt.linkKind as LinkKind)
+    }
     return []
 })
 

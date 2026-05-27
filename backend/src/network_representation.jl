@@ -94,7 +94,7 @@ end
 parent(name::Symbol) = species_components(name).parent
 
 """Whether `name` is in `gene_set` directly, or is a species of a gene in the set."""
-function _belongs_to_gene_set(name::Symbol, gene_set::Set{Symbol})::Bool
+function belongs_to_gene_set(name::Symbol, gene_set::Set{Symbol})::Bool
     name ∈ gene_set && return true
     p = parent(name)
     p !== nothing && p ∈ gene_set
@@ -149,7 +149,7 @@ function entity(rs::ReactionSystem, filter_ids::Set{Symbol};
             has_core || continue
         end
 
-        rxn_name = _reaction_id(rxn)
+        rxn_name = reaction_id(rxn)
         rxn_name in filter_ids && continue
 
         # For cascade and auxiliary reactions `rxn.rate` is a single MTK
@@ -191,7 +191,7 @@ function entity(rs::ReactionSystem, filter_ids::Set{Symbol};
 end
 
 """
-    _regulatory_reaction_ids(definition, raw_links) -> Set{Symbol}
+    regulatory_reaction_ids(definition, raw_links) -> Set{Symbol}
 
 Derive the exact Catalyst reaction IDs that are implementation artifacts of
 V1's regulation pipeline, so they can be excluded from the network graph
@@ -209,7 +209,7 @@ correspond to "real" reaction nodes).
   `[1]A.proteins;[1]B.proteins->[1]A.proteins` (cross-gene) or
   `[2]A.proteins->[1]A.proteins` (self-loop).
 """
-function _regulatory_reaction_ids(definition::V1.Definition, raw_links)::Set{Symbol}
+function regulatory_reaction_ids(definition::V1.Definition, raw_links)::Set{Symbol}
     ids = Set{Symbol}()
 
     # For `unique` genes V1 emits degenerate `active->` and `->active`
@@ -238,7 +238,7 @@ function _regulatory_reaction_ids(definition::V1.Definition, raw_links)::Set{Sym
 end
 
 """
-    _attach_v1_transition_rates!(rs_network, definition)
+    attach_v1_transition_rates!(rs_network, definition)
 
 V1's non-unique `active<->inactive` reactions have composite (regulator-
 tempered) rates, so `entity(::ReactionSystem)` couldn't extract a single
@@ -247,7 +247,7 @@ is a real per-gene MTK parameter (`<gene>.activation` / `<gene>.deactivation`),
 so we patch it in here — gives the reaction node a label and an editable
 parameter chip, just like cascade reactions.
 """
-function _attach_v1_transition_rates!(rs_network::Entity, definition::V1.Definition)
+function attach_v1_transition_rates!(rs_network::Entity, definition::V1.Definition)
     for g in definition.genes
         g.unique && continue
         deact_id = Symbol("[1]$(g.name).active->[1]$(g.name).inactive")
@@ -272,7 +272,7 @@ Generate a deterministic reaction ID from substrates and products.
 Format: [stoich]species;[stoich]species->[stoich]species;[stoich]species
 Example: [2]1.mRNA;[1]1.protein->[1]1.mRNA;[2]1.protein
 """
-function _reaction_id(rxn::Reaction)::Symbol
+function reaction_id(rxn::Reaction)::Symbol
     substrates = [
         string("[", rxn.substoich[i], "]", SpeciesId(s).name)
         for (i, s) in enumerate(rxn.substrates)
@@ -285,7 +285,7 @@ function _reaction_id(rxn::Reaction)::Symbol
 end
 
 """
-    _genes_from_reaction_network(rs_network) -> (genes, aux_nodes, aux_links, summary_links)
+    genes_from_reaction_network(rs_network) -> (genes, aux_nodes, aux_links, summary_links)
 
 Partition species and reaction nodes from a reaction system into gene groups.
 
@@ -297,7 +297,7 @@ Partition species and reaction nodes from a reaction system into gene groups.
    from each contributing gene, for the zoomed-out view.
 5. Intra-gene substrate/product links are tagged scope=:species.
 """
-function _genes_from_reaction_network(rs_network::Entity)::Tuple{Vector{Entity}, Vector{Entity}, Vector{Link}, Vector{Link}}
+function genes_from_reaction_network(rs_network::Entity)::Tuple{Vector{Entity}, Vector{Entity}, Vector{Link}, Vector{Link}}
 
     species_nodes = [n for n in rs_network.nodes if n.kind == :species]
     reaction_nodes = [n for n in rs_network.nodes if n.kind == :reaction]
@@ -418,24 +418,24 @@ function _genes_from_reaction_network(rs_network::Entity)::Tuple{Vector{Entity},
 end
 
 """
-    _resolve_reg_endpoint(name, gene_names, suffix) -> Symbol
+    resolve_reg_endpoint(name, gene_names, suffix) -> Symbol
 
 Resolve a regulatory link endpoint to species level.
 If `name` is a gene, append `.suffix` (e.g. `:A` -> `Symbol("A.proteins")`).
 Otherwise keep as-is (e.g. `:AA` stays `:AA`).
 """
-function _resolve_reg_endpoint(name::Symbol, gene_names::Set{Symbol}, suffix::String)::Symbol
+function resolve_reg_endpoint(name::Symbol, gene_names::Set{Symbol}, suffix::String)::Symbol
     name in gene_names ? Symbol("$(name).$(suffix)") : name
 end
 
 """
-    _regulatory_link_parameters(l) -> Vector{Parameter}
+    regulatory_link_parameters(l) -> Vector{Parameter}
 
 Build the parameter list for a regulatory link from `Models.describe`. The
 property keys (`:at`, `:k`) are exactly the V1 parameter fields exposed by the
 link kind; the canonical symbol is `V1.parameter_name(to, kind, from, field)`.
 """
-function _regulatory_link_parameters(l)::Vector{Parameter}
+function regulatory_link_parameters(l)::Vector{Parameter}
     [
         Parameter(name=string(key),
                   symbol=string(V1.parameter_name(l.to, l.kind, l.from, key)))
@@ -453,20 +453,20 @@ function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union
     if include_reactions === true
         # Species-level resolution for regulatory links
         reg_links = map(raw_links) do l
-            from_resolved = _resolve_reg_endpoint(l.from, gene_names, "proteins")
+            from_resolved = resolve_reg_endpoint(l.from, gene_names, "proteins")
             to_suffix = l.kind == :proteolysis ? "proteins" : "active"
-            to_resolved = _resolve_reg_endpoint(l.to, gene_names, to_suffix)
+            to_resolved = resolve_reg_endpoint(l.to, gene_names, to_suffix)
             Link(; kind=l.kind, from=from_resolved, to=to_resolved,
                   properties=l.properties,
-                  parameters=_regulatory_link_parameters(l),
+                  parameters=regulatory_link_parameters(l),
                   scope=:all)
         end
 
-        filter_ids = _regulatory_reaction_ids(definition, raw_links)
+        filter_ids = regulatory_reaction_ids(definition, raw_links)
         rs = f!.model.definition
         rs_network = entity(rs, filter_ids)
-        _attach_v1_transition_rates!(rs_network, definition)
-        gene_nodes, aux_nodes, aux_links, summary_links = _genes_from_reaction_network(rs_network)
+        attach_v1_transition_rates!(rs_network, definition)
+        gene_nodes, aux_nodes, aux_links, summary_links = genes_from_reaction_network(rs_network)
         nodes = vcat(gene_nodes, aux_nodes)
         links = vcat(reg_links, aux_links, summary_links)
     elseif include_reactions === false
@@ -474,7 +474,7 @@ function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union
         reg_links = map(raw_links) do l
             Link(; kind=l.kind, from=l.from, to=l.to,
                   properties=l.properties,
-                  parameters=_regulatory_link_parameters(l),
+                  parameters=regulatory_link_parameters(l),
                   scope=:all)
         end
         nodes = [Entity(kind=:gene, name=g.name) for g in definition.genes]
@@ -482,7 +482,7 @@ function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union
     else
         # Partial: species detail only for genes in include_reactions::Set{Symbol}
         species_gene_set = include_reactions::Set{Symbol}
-        nodes, links = _entity_partial_species(definition, f!, gene_names, raw_links, species_gene_set)
+        nodes, links = entity_partial_species(definition, f!, gene_names, raw_links, species_gene_set)
     end
 
     Entity(
@@ -495,23 +495,23 @@ function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union
 end
 
 """
-    _entity_partial_species(definition, f!, gene_names, raw_links, species_gene_set)
+    entity_partial_species(definition, f!, gene_names, raw_links, species_gene_set)
 
 Build V1 entity nodes/links with species detail only for genes in `species_gene_set`.
 Genes outside the set get flat gene nodes; regulatory links between two included
 genes are resolved to species level, others stay at gene level.
 """
-function _entity_partial_species(
+function entity_partial_species(
     definition::V1.Definition, f!::Wrapped,
     gene_names::Set{Symbol}, raw_links, species_gene_set::Set{Symbol},
 )
     # Regulatory links: resolve endpoints to species only when both genes are included
     reg_links = map(raw_links) do l
-        params = _regulatory_link_parameters(l)
+        params = regulatory_link_parameters(l)
         if l.from ∈ species_gene_set && l.to ∈ species_gene_set
-            from_resolved = _resolve_reg_endpoint(l.from, gene_names, "proteins")
+            from_resolved = resolve_reg_endpoint(l.from, gene_names, "proteins")
             to_suffix = l.kind == :proteolysis ? "proteins" : "active"
-            to_resolved = _resolve_reg_endpoint(l.to, gene_names, to_suffix)
+            to_resolved = resolve_reg_endpoint(l.to, gene_names, to_suffix)
             Link(; kind=l.kind, from=from_resolved, to=to_resolved,
                   properties=l.properties, parameters=params, scope=:all)
         else
@@ -521,10 +521,10 @@ function _entity_partial_species(
     end
 
     # Build filtered RS entity for included genes only
-    filter_ids = _regulatory_reaction_ids(definition, raw_links)
+    filter_ids = regulatory_reaction_ids(definition, raw_links)
     rs = f!.model.definition
     rs_network = entity(rs, filter_ids; species_genes=species_gene_set)
-    species_gene_nodes, aux_nodes, aux_links, summary_links = _genes_from_reaction_network(rs_network)
+    species_gene_nodes, aux_nodes, aux_links, summary_links = genes_from_reaction_network(rs_network)
 
     # Flat nodes for excluded genes
     flat_gene_nodes = [
@@ -537,55 +537,55 @@ function _entity_partial_species(
     (nodes, links)
 end
 
-function _collect_core_symbols(t::Differentiation.Transient, symbols::Set{Symbol})
+function collect_core_symbols(t::Differentiation.Transient, symbols::Set{Symbol})
     # Timer genes are created anonymous (name = Symbol()) in RandomDifferentiation
     # and renamed to "$(differentiator)_timer" by Differentiation.build.
     # Derive the timer name from the differentiator to match what ends up in the V1 model.
-    diff_name = _diff_node_name(t.differentiator)
+    diff_name = diff_node_name(t.differentiator)
     push!(symbols, diff_name)
     push!(symbols, Symbol("$(diff_name)_timer"))
-    _collect_core_symbols(t.next, symbols)
-    _collect_core_symbols(t.alternative, symbols)
+    collect_core_symbols(t.next, symbols)
+    collect_core_symbols(t.alternative, symbols)
 end
 
-function _collect_core_symbols(s::Symbol, symbols::Set{Symbol})
+function collect_core_symbols(s::Symbol, symbols::Set{Symbol})
     push!(symbols, s)
 end
 
-function _collect_core_symbols(g::V1.Gene, symbols::Set{Symbol})
+function collect_core_symbols(g::V1.Gene, symbols::Set{Symbol})
     push!(symbols, g.name)
 end
 
 # Collect timer gene names by deriving from differentiator names (same convention as make_timer!).
-function _collect_timer_symbols!(t::Differentiation.Transient, symbols::Set{Symbol})
-    diff_name = _diff_node_name(t.differentiator)
+function collect_timer_symbols!(t::Differentiation.Transient, symbols::Set{Symbol})
+    diff_name = diff_node_name(t.differentiator)
     push!(symbols, Symbol("$(diff_name)_timer"))
-    _collect_timer_child!(t.next, symbols)
-    _collect_timer_child!(t.alternative, symbols)
+    collect_timer_child!(t.next, symbols)
+    collect_timer_child!(t.alternative, symbols)
 end
-_collect_timer_child!(t::Differentiation.Transient, symbols) = _collect_timer_symbols!(t, symbols)
-_collect_timer_child!(::Any, ::Any) = nothing
+collect_timer_child!(t::Differentiation.Transient, symbols) = collect_timer_symbols!(t, symbols)
+collect_timer_child!(::Any, ::Any) = nothing
 
 # Helpers to extract a gene name from a differentiator/leaf, which may be a V1.Gene or plain Symbol.
-_diff_node_name(g::V1.Gene)::Symbol = g.name
-_diff_node_name(s::Symbol)::Symbol = s
+diff_node_name(g::V1.Gene)::Symbol = g.name
+diff_node_name(s::Symbol)::Symbol = s
 
 # Traverse the differentiation tree and emit invisible spring edges (scope=:gene, weight=0.5).
-function _collect_tree_links!(t::Differentiation.Transient, links::Vector{Link})
-    parent_name = _diff_node_name(t.differentiator)
-    _collect_tree_child_link!(parent_name, t.next, links)
-    _collect_tree_child_link!(parent_name, t.alternative, links)
+function collect_tree_links!(t::Differentiation.Transient, links::Vector{Link})
+    parent_name = diff_node_name(t.differentiator)
+    collect_tree_child_link!(parent_name, t.next, links)
+    collect_tree_child_link!(parent_name, t.alternative, links)
 end
 
-function _collect_tree_child_link!(parent::Symbol, child::Differentiation.Transient, links::Vector{Link})
-    child_name = _diff_node_name(child.differentiator)
+function collect_tree_child_link!(parent::Symbol, child::Differentiation.Transient, links::Vector{Link})
+    child_name = diff_node_name(child.differentiator)
     push!(links, Link(kind=:differentiation_tree, from=parent, to=child_name,
                       scope=:gene, properties=Dict{Symbol,Any}(:weight => 0.5)))
-    _collect_tree_links!(child, links)
+    collect_tree_links!(child, links)
 end
 
-function _collect_tree_child_link!(parent::Symbol, child::Union{V1.Gene, Symbol}, links::Vector{Link})
-    push!(links, Link(kind=:differentiation_tree, from=parent, to=_diff_node_name(child),
+function collect_tree_child_link!(parent::Symbol, child::Union{V1.Gene, Symbol}, links::Vector{Link})
+    push!(links, Link(kind=:differentiation_tree, from=parent, to=diff_node_name(child),
                       scope=:gene, properties=Dict{Symbol,Any}(:weight => 0.5)))
 end
 
@@ -593,11 +593,11 @@ function entity(definition::Differentiation.Definition, f!::Wrapped; kw...)
     v1_entity = entity(f!.model; kw...)
 
     core_symbols = Set{Symbol}()
-    _collect_core_symbols(definition.differentiation, core_symbols)
+    collect_core_symbols(definition.differentiation, core_symbols)
 
     core_nodes = [n for n in v1_entity.nodes if n.name in core_symbols]
     core_links = [l for l in v1_entity.links
-                  if _belongs_to_gene_set(l.from, core_symbols) && _belongs_to_gene_set(l.to, core_symbols)]
+                  if belongs_to_gene_set(l.from, core_symbols) && belongs_to_gene_set(l.to, core_symbols)]
 
     diff_core = Entity(
         kind=:differentiation_core,
@@ -608,10 +608,10 @@ function entity(definition::Differentiation.Definition, f!::Wrapped; kw...)
 
     peripheral_nodes = [n for n in v1_entity.nodes if n.name ∉ core_symbols]
     peripheral_links = [l for l in v1_entity.links
-                        if !(_belongs_to_gene_set(l.from, core_symbols) && _belongs_to_gene_set(l.to, core_symbols))]
+                        if !(belongs_to_gene_set(l.from, core_symbols) && belongs_to_gene_set(l.to, core_symbols))]
 
     tree_links = Link[]
-    _collect_tree_links!(definition.differentiation, tree_links)
+    collect_tree_links!(definition.differentiation, tree_links)
 
     Entity(
         kind=:differentiation_model,
@@ -653,14 +653,14 @@ function entity(definition::RandomDifferentiation.Definition, f!::Wrapped; inclu
     diff_def = f!.model.definition  # Differentiation.Definition (already instantiated)
 
     core_symbols = Set{Symbol}()
-    _collect_core_symbols(diff_def.differentiation, core_symbols)
+    collect_core_symbols(diff_def.differentiation, core_symbols)
     timer_symbols = Set{Symbol}()
-    _collect_timer_symbols!(diff_def.differentiation, timer_symbols)
+    collect_timer_symbols!(diff_def.differentiation, timer_symbols)
 
     # Build entity with species detail for core genes, flat nodes for peripheral
     base_entity = entity(f!.model; include_reactions=core_symbols, kw...)
 
-    function _tag(n::Entity)
+    function tag(n::Entity)
         n.kind != :gene && return n
         if n.name ∉ core_symbols
             return Entity(kind=n.kind, name=n.name,
@@ -679,15 +679,15 @@ function entity(definition::RandomDifferentiation.Definition, f!::Wrapped; inclu
     tagged_nodes = map(base_entity.nodes) do child
         if child.kind == :differentiation_core
             Entity(kind=child.kind, name=child.name, properties=child.properties,
-                   nodes=map(_tag, child.nodes), links=child.links)
+                   nodes=map(tag, child.nodes), links=child.links)
         else
-            _tag(child)
+            tag(child)
         end
     end
 
     # Tag regulatory links that involve at least one peripheral (Kronecker) node.
     tagged_links = map(base_entity.links) do l
-        if !_belongs_to_gene_set(l.from, core_symbols) || !_belongs_to_gene_set(l.to, core_symbols)
+        if !belongs_to_gene_set(l.from, core_symbols) || !belongs_to_gene_set(l.to, core_symbols)
             Link(kind=l.kind, from=l.from, to=l.to, scope=l.scope,
                  properties=merge(l.properties, Dict{Symbol,Any}(:peripheral => true)))
         else
@@ -696,7 +696,7 @@ function entity(definition::RandomDifferentiation.Definition, f!::Wrapped; inclu
     end
 
     tree_links = Link[]
-    _collect_tree_links!(diff_def.differentiation, tree_links)
+    collect_tree_links!(diff_def.differentiation, tree_links)
 
     Entity(
         kind=:random_differentiation,

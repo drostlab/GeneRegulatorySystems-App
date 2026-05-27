@@ -20,7 +20,8 @@ export type ContextTarget =
     /** `position` is in cytoscape model space (where the user right-clicked). */
     | { kind: 'background', position: { x: number, y: number } }
     | { kind: 'gene', id: string }
-    | { kind: 'reg-edge', id: string, linkKind: string }
+    /** `source`/`target` are the edge's endpoint ids (species-level). */
+    | { kind: 'reg-edge', id: string, linkKind: string, source: string, target: string }
 
 const REGULATORY_EDGE_KINDS = new Set(['activation', 'repression', 'proteolysis'])
 
@@ -74,7 +75,13 @@ export class ContextDispatch {
         if (typeof t.isEdge === 'function' && t.isEdge()) {
             const linkKind = String(t.data('kind') ?? '')
             if (!REGULATORY_EDGE_KINDS.has(linkKind)) return null
-            return { kind: 'reg-edge', id: String(t.id()), linkKind }
+            return {
+                kind: 'reg-edge',
+                id: String(t.id()),
+                linkKind,
+                source: String(t.data('source')),
+                target: String(t.data('target')),
+            }
         }
 
         if (typeof t.isNode === 'function' && t.isNode()) {

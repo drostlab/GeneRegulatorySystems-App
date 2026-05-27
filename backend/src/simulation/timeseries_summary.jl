@@ -8,7 +8,7 @@ Two strategies:
   Direct averaging at each time point, no interpolation needed.
 - **Continuous schedules**: paths have irregular event-driven times.
   Build a uniform time grid via linear spacing, then use step-function
-  interpolation (`_step_value`) to evaluate each path at each grid point.
+  interpolation (`step_value`) to evaluate each path at each grid point.
 
 The caller does not choose the strategy; it is auto-detected from the
 index.arrow episode metadata.
@@ -51,13 +51,13 @@ function compute_summary(
     timeseries = load_timeseries_for_species(result_path, species_filter)
     isempty(timeseries) && return Dict{Symbol, SpeciesSummary}()
 
-    grid = _detect_shared_grid(timeseries)
+    grid = detect_shared_grid(timeseries)
     if !isnothing(grid)
         @debug "TimeseriesSummary: using shared grid" n_points=length(grid)
-        return _summarise_on_shared_grid(timeseries, grid)
+        return summarise_on_shared_grid(timeseries, grid)
     else
         @debug "TimeseriesSummary: using uniform interpolation grid" n_points
-        return _summarise_on_uniform_grid(timeseries, n_points)
+        return summarise_on_uniform_grid(timeseries, n_points)
     end
 end
 
@@ -69,14 +69,14 @@ end
 Detect whether all paths for all species share the same time grid.
 Returns the grid if so, `nothing` otherwise.
 """
-function _detect_shared_grid(
+function detect_shared_grid(
     timeseries::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}
 )::Union{Nothing, Vector{Float64}}
     reference_grid::Union{Nothing, Vector{Float64}} = nothing
 
     for path_map in values(timeseries)
         for series in values(path_map)
-            times = _extract_times(series)
+            times = extract_times(series)
             isempty(times) && continue
             if isnothing(reference_grid)
                 reference_grid = times
@@ -89,7 +89,7 @@ function _detect_shared_grid(
 end
 
 """Extract sorted unique time points from a series, excluding gap markers (-1)."""
-function _extract_times(series::Vector{Tuple{Float64, Int}})::Vector{Float64}
+function extract_times(series::Vector{Tuple{Float64, Int}})::Vector{Float64}
     times = Float64[]
     for (t, state) in series
         if state != -1
@@ -100,7 +100,7 @@ function _extract_times(series::Vector{Tuple{Float64, Int}})::Vector{Float64}
 end
 
 """Compute mean + SE at each shared grid point."""
-function _summarise_on_shared_grid(
+function summarise_on_shared_grid(
     timeseries::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}},
     grid::Vector{Float64}
 )::Dict{Symbol, SpeciesSummary}
@@ -118,14 +118,14 @@ function _summarise_on_shared_grid(
         if n_paths == 1
             # Single path: mean = values, SE = 0
             for (i, t) in enumerate(grid)
-                mean_vals[i] = Float64(_step_value(paths[1], t))
+                mean_vals[i] = Float64(step_value(paths[1], t))
             end
         else
             # Multiple paths: accumulate values per time point
             vals = zeros(Float64, n_paths)
             for (i, t) in enumerate(grid)
                 for (j, series) in enumerate(paths)
-                    vals[j] = Float64(_step_value(series, t))
+                    vals[j] = Float64(step_value(series, t))
                 end
                 mean_vals[i] = mean(vals)
                 se_vals[i] = std(vals) / sqrt(n_paths)
@@ -143,7 +143,7 @@ end
 # ============================================================================
 
 """Build a uniform grid across the full time range and interpolate."""
-function _summarise_on_uniform_grid(
+function summarise_on_uniform_grid(
     timeseries::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}},
     n_points::Int
 )::Dict{Symbol, SpeciesSummary}
@@ -162,7 +162,7 @@ function _summarise_on_uniform_grid(
     (isinf(t_min) || t_min >= t_max) && return Dict{Symbol, SpeciesSummary}()
 
     grid = collect(range(t_min, t_max; length=n_points))
-    return _summarise_on_shared_grid(timeseries, grid)
+    return summarise_on_shared_grid(timeseries, grid)
 end
 
 # ============================================================================
@@ -170,7 +170,7 @@ end
 # ============================================================================
 
 """Last recorded value at or before `t` (step-function lookup)."""
-function _step_value(ts::Vector{Tuple{Float64, Int}}, t::Float64)::Int
+function step_value(ts::Vector{Tuple{Float64, Int}}, t::Float64)::Int
     isempty(ts) && return 0
     idx = searchsortedlast(ts, (t, typemax(Int)); by = first)
     idx == 0 ? 0 : ts[idx][2]

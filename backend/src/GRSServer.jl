@@ -239,7 +239,7 @@ const active_controller = Ref{Union{Nothing, SimulationController}}(nothing)
     end
 
     for raw_msg in ws
-        _handle_ws_message(raw_msg)
+        handle_ws_message(raw_msg)
     end
 
     lock(WS_LOCK) do
@@ -249,7 +249,7 @@ const active_controller = Ref{Union{Nothing, SimulationController}}(nothing)
     @info "WebSocket client disconnected"
 end
 
-function _handle_ws_message(raw::String)
+function handle_ws_message(raw::String)
     msg = JSON.parse(raw)
     msg_type = haskey(msg, "type") ? msg["type"] : ""
     @info "[WS] Received message" type=msg_type

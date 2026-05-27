@@ -52,7 +52,7 @@ mutable struct SimulationController
 end
 
 """Look up the current WebSocket client from the shared ref."""
-function _get_ws(ctrl::SimulationController)::Union{HTTP.WebSocket, Nothing}
+function get_ws(ctrl::SimulationController)::Union{HTTP.WebSocket, Nothing}
     lock(ctrl.ws_lock) do
         ctrl.ws_ref[]
     end
@@ -117,7 +117,7 @@ Send a progress message to the WebSocket client.
 """
 function send_progress(ctrl::SimulationController, current_time::Float64, frame_count::Int;
                        total_progress::Union{Float64, Nothing} = nothing)
-    ws = _get_ws(ctrl)
+    ws = get_ws(ctrl)
     isnothing(ws) && return
 
     msg = Dict{String, Any}(
@@ -144,7 +144,7 @@ Send incremental timeseries data for subscribed species via WebSocket.
 """
 function send_timeseries(ctrl::SimulationController, timeseries_data::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}})
     isempty(timeseries_data) && return
-    ws = _get_ws(ctrl)
+    ws = get_ws(ctrl)
     isnothing(ws) && return
 
     # Convert to JSON-friendly format: { species: { segmentId: [[t, v], ...] } }
@@ -176,7 +176,7 @@ end
 Send a status change message via WebSocket.
 """
 function send_status(ctrl::SimulationController, status::String; error::Union{String, Nothing} = nothing)
-    ws = _get_ws(ctrl)
+    ws = get_ws(ctrl)
     if isnothing(ws)
         @warn "[SimulationController] send_status: ws is nothing, cannot send" status=status id=ctrl.simulation_id
         return

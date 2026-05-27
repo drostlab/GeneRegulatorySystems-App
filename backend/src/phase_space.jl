@@ -76,7 +76,7 @@ function compute_and_store(
 )::Union{PhaseSpaceResult, Nothing}
     @info "[PhaseSpace] Starting computation" simulation_id
 
-    protein_series = _load_protein_timeseries(result_path)
+    protein_series = load_protein_timeseries(result_path)
     if isempty(protein_series)
         @warn "[PhaseSpace] No protein species found" simulation_id
         return nothing
@@ -85,7 +85,7 @@ function compute_and_store(
     gene_names = sort(collect(keys(protein_series)), by = string)  # Vector{Symbol}
     n_genes    = length(gene_names)
 
-    cells   = _collect_cells(result_path, protein_series)
+    cells   = collect_cells(result_path, protein_series)
     n_cells = length(cells)
     if n_cells < 4
         @warn "[PhaseSpace] Too few cells for embedding" simulation_id n_cells
@@ -93,16 +93,16 @@ function compute_and_store(
     end
 
     @info "[PhaseSpace] Building expression matrix" n_cells n_genes
-    X = _build_expression_matrix(cells, gene_names, protein_series)  # n_cells × n_genes
+    X = build_expression_matrix(cells, gene_names, protein_series)  # n_cells × n_genes
     X .= log1p.(X)
 
-    method = _choose_method(n_genes)
+    method = choose_method(n_genes)
     @info "[PhaseSpace] Using method" method n_genes
 
-    coords, axis_labels, axis_top_genes = _project(X, gene_names, n_cells, n_genes, method)
+    coords, axis_labels, axis_top_genes = project(X, gene_names, n_cells, n_genes, method)
     coords === nothing && return nothing  # 2 × n_cells
 
-    colours = _compute_colours(X, cells, gene_names, gene_colours)
+    colours = compute_colours(X, cells, gene_names, gene_colours)
 
     points = [
         PhaseSpacePoint(
@@ -124,7 +124,7 @@ function compute_and_store(
         n_genes,
         n_cells,
     )
-    _store(result_path, result)
+    store(result_path, result)
 
     @info "[PhaseSpace] Completed" simulation_id n_cells n_genes method
     return result
@@ -144,7 +144,7 @@ function load_phasespace(result_path::String)::Union{PhaseSpaceResult, Nothing}
 
     # Read points from TSV (new format) or inline JSON (legacy)
     if isfile(tsv_file)
-        points = _read_points_tsv(tsv_file)
+        points = read_points_tsv(tsv_file)
     elseif haskey(data, "points")
         points = [
             PhaseSpacePoint(
@@ -169,7 +169,7 @@ function load_phasespace(result_path::String)::Union{PhaseSpaceResult, Nothing}
 end
 
 """Read phase-space points from a TSV file (header + data rows)."""
-function _read_points_tsv(path::String)::Vector{PhaseSpacePoint}
+function read_points_tsv(path::String)::Vector{PhaseSpacePoint}
     lines = readlines(path)
     length(lines) < 2 && return PhaseSpacePoint[]
     points = Vector{PhaseSpacePoint}(undef, length(lines) - 1)
@@ -190,7 +190,7 @@ end
 # Internal: method selection
 # ============================================================================
 
-function _choose_method(n_genes::Int)::Symbol
+function choose_method(n_genes::Int)::Symbol
     n_genes <= 2  && return :direct
     n_genes <= 20 && return :pca
     return :pca_umap
@@ -204,7 +204,7 @@ end
 Dispatch to the correct projection.  Returns `(2 × n_cells matrix, axis_labels, axis_top_genes)`
 or `(nothing, ...)` on failure.
 """
-function _project(
+function project(
     X::Matrix{Float64},
     gene_names::Vector{Symbol},
     n_cells::Int,
@@ -212,11 +212,11 @@ function _project(
     method::Symbol,
 )::Tuple{Union{Matrix{Float64}, Nothing}, Vector{String}, Vector{String}}
     if method == :direct
-        return _run_direct(X, gene_names, n_genes)
+        return run_direct(X, gene_names, n_genes)
     elseif method == :pca
-        return _run_pca_2d(X, gene_names, n_cells)
+        return run_pca_2d(X, gene_names, n_cells)
     else  # :pca_umap
-        return _run_pca_umap(X, gene_names, n_cells, n_genes)
+        return run_pca_umap(X, gene_names, n_cells, n_genes)
     end
 end
 
@@ -227,7 +227,7 @@ For n_genes ≤ 2: use gene columns directly as x/y axes.
 Pick the two highest-variance columns when there is more than one.
 For n_genes == 1: x = that gene, y = zeros.
 """
-function _run_direct(
+function run_direct(
     X::Matrix{Float64},
     gene_names::Vector{Symbol},
     n_genes::Int,
@@ -255,7 +255,7 @@ end
 Fit PCA, take the first 2 components.  Returns variance-explained axis labels
 and the gene with the highest absolute loading per component.
 """
-function _run_pca_2d(
+function run_pca_2d(
     X::Matrix{Float64},
     gene_names::Vector{Symbol},
     n_cells::Int,
@@ -301,7 +301,7 @@ end
 PCA 50 components → UMAP 2-D.
 Axis labels are "UMAP 1" / "UMAP 2"; top genes from the first two PCs.
 """
-function _run_pca_umap(
+function run_pca_umap(
     X::Matrix{Float64},
     gene_names::Vector{Symbol},
     n_cells::Int,
@@ -345,7 +345,7 @@ Returns `Dict{Symbol, Dict{String, Vector{Tuple{Float64,Int}}}}`:
 Keys are bare gene names (e.g. `:tetR`, `:1`), derived by stripping the
 `.proteins` suffix from the Arrow species name.
 """
-function _load_protein_timeseries(
+function load_protein_timeseries(
     result_path::String,
 )::Dict{Symbol, Dict{String, Vector{Tuple{Float64,Int}}}}
     i_to_path = Dict{Int, String}()
@@ -403,19 +403,19 @@ Sample observation points on a regular time grid, at most `n_per_path` per path.
 
 Collects all unique paths and the overall time range from the data, then
 returns `n_per_path` evenly-spaced (path, t) pairs per path.  The step-function
-interpolation in `_build_expression_matrix` handles the value lookup.
+interpolation in `build_expression_matrix` handles the value lookup.
 
 When the index contains snapshot episodes (`from == to`), those are exact
 observation timepoints from a step-based schedule and are used directly.
 Otherwise (continuous runs), every recorded event timestamp is used as a cell —
 the user is responsible for keeping run sizes manageable via `step:`.
 """
-function _collect_cells(
+function collect_cells(
     result_path::String,
     protein_series::Dict{Symbol, Dict{String, Vector{Tuple{Float64,Int}}}},
 )::Vector{Tuple{String, Float64}}
     # --- try snapshot cells from index ---
-    cells = _collect_snapshot_cells(result_path)
+    cells = collect_snapshot_cells(result_path)
     if !isempty(cells)
         @debug "[PhaseSpace] Using snapshot cells from index" n_cells=length(cells)
         return cells
@@ -423,7 +423,7 @@ function _collect_cells(
 
     # --- fallback: uniform time sampling ---
     @debug "[PhaseSpace] No snapshot episodes; using all event timestamps as cells"
-    return _collect_cells_uniform(protein_series)
+    return collect_cells_uniform(protein_series)
 end
 
 """Read snapshot episodes (from == to) from index.arrow as exact cell observations.
@@ -434,7 +434,7 @@ count > 0) on the same path, where the silent run's `to` matches the snapshot's
 `from`. This excludes instant model adjustments (seed, add) which also have
 from == to but are not terminal observations.
 """
-function _collect_snapshot_cells(result_path::String)::Vector{Tuple{String, Float64}}
+function collect_snapshot_cells(result_path::String)::Vector{Tuple{String, Float64}}
     index_file = joinpath(result_path, "index.arrow")
     isfile(index_file) || return Tuple{String, Float64}[]
     idx_tbl = Arrow.Table(index_file)
@@ -474,7 +474,7 @@ Each unique (path, t) in the protein timeseries corresponds to a real observed
 system state. The user is responsible for keeping run sizes manageable; no
 implicit subsampling is performed.
 """
-function _collect_cells_uniform(
+function collect_cells_uniform(
     protein_series::Dict{Symbol, Dict{String, Vector{Tuple{Float64,Int}}}},
 )::Vector{Tuple{String, Float64}}
     cell_set = Set{Tuple{String, Float64}}()
@@ -492,14 +492,14 @@ function _collect_cells_uniform(
 end
 
 """Last recorded value at or before `t` (step-function lookup)."""
-function _step_value(ts::Vector{Tuple{Float64,Int}}, t::Float64)::Int
+function step_value(ts::Vector{Tuple{Float64,Int}}, t::Float64)::Int
     isempty(ts) && return 0
     idx = searchsortedlast(ts, (t, typemax(Int)); by = first)
     idx == 0 ? 0 : ts[idx][2]
 end
 
 """Build n_cells × n_genes Float64 matrix via step-function interpolation."""
-function _build_expression_matrix(
+function build_expression_matrix(
     cells::Vector{Tuple{String, Float64}},
     gene_names::Vector{Symbol},
     protein_series::Dict{Symbol, Dict{String, Vector{Tuple{Float64,Int}}}},
@@ -511,7 +511,7 @@ function _build_expression_matrix(
         path_map = get(protein_series, gene, Dict{String, Vector{Tuple{Float64,Int}}}())
         for (i, (path, t)) in enumerate(cells)
             ts = get(path_map, path, Tuple{Float64,Int}[])
-            X[i, j] = Float64(_step_value(ts, t))
+            X[i, j] = Float64(step_value(ts, t))
         end
     end
     return X
@@ -529,20 +529,20 @@ Strategy:
   protein genes (differentiation model).
 - Otherwise → colour by execution path using a fixed hue palette.
 """
-function _compute_colours(
+function compute_colours(
     X::Matrix{Float64},
     cells::Vector{Tuple{String, Float64}},
     gene_names::Vector{Symbol},
     gene_colours::Dict{String,String},
 )::Vector{String}
-    coloured_idx = _coloured_gene_indices(gene_names, gene_colours)
+    coloured_idx = coloured_gene_indices(gene_names, gene_colours)
     if !isempty(coloured_idx)
-        return _softmax_colours(X, gene_names, coloured_idx, gene_colours)
+        return softmax_colours(X, gene_names, coloured_idx, gene_colours)
     elseif length(gene_names) == 2
         # No saturated gene colours but exactly 2 genes: softmax with default palette.
-        return _softmax_colours_2_default(X)
+        return softmax_colours_2_default(X)
     else
-        return _path_colours(cells)
+        return path_colours(cells)
     end
 end
 
@@ -550,19 +550,19 @@ end
 Indices into `gene_names` whose base gene (sans `_protein`) has a
 saturated (non-grey) hex colour in `gene_colours`.
 """
-function _coloured_gene_indices(
+function coloured_gene_indices(
     gene_names::Vector{Symbol},
     gene_colours::Dict{String,String},
 )::Vector{Int}
     [j for (j, g) in enumerate(gene_names)
-       if _is_saturated(get(gene_colours, replace(string(g), r"_protein$" => ""), "#888888"))]
+       if is_saturated(get(gene_colours, replace(string(g), r"_protein$" => ""), "#888888"))]
 end
 
 """
 Softmax blend for the 2-gene direct case when no saturated gene colours exist.
 Assigns two fixed contrasting colours (warm red / cool blue).
 """
-function _softmax_colours_2_default(X::Matrix{Float64})::Vector{String}
+function softmax_colours_2_default(X::Matrix{Float64})::Vector{String}
     default_rgb = ((0.88, 0.32, 0.32), (0.32, 0.52, 0.88))
     n_cells = size(X, 1)
     result  = Vector{String}(undef, n_cells)
@@ -574,13 +574,13 @@ function _softmax_colours_2_default(X::Matrix{Float64})::Vector{String}
         r = w[1] * default_rgb[1][1] + w[2] * default_rgb[2][1]
         g = w[1] * default_rgb[1][2] + w[2] * default_rgb[2][2]
         b = w[1] * default_rgb[1][3] + w[2] * default_rgb[2][3]
-        result[i] = _to_hex(r, g, b)
+        result[i] = to_hex(r, g, b)
     end
     return result
 end
 
 """Per-cell softmax blend over non-grey gene hex colours."""
-function _softmax_colours(
+function softmax_colours(
     X::Matrix{Float64},
     gene_names::Vector{Symbol},
     coloured_idx::Vector{Int},
@@ -602,17 +602,17 @@ function _softmax_colours(
         r = sum(weights[k] * rgb[k][1] for k in eachindex(coloured_idx))
         g = sum(weights[k] * rgb[k][2] for k in eachindex(coloured_idx))
         b = sum(weights[k] * rgb[k][3] for k in eachindex(coloured_idx))
-        result[i] = _to_hex(r, g, b)
+        result[i] = to_hex(r, g, b)
     end
     return result
 end
 
 """Colour each cell by its execution path using evenly-spaced hues."""
-function _path_colours(cells::Vector{Tuple{String, Float64}})::Vector{String}
+function path_colours(cells::Vector{Tuple{String, Float64}})::Vector{String}
     unique_paths = unique(first.(cells))
     n = length(unique_paths)
     path_colour = Dict(
-        path => _to_hex(
+        path => to_hex(
             (cos(2π * (i-1) / n) * 0.25 + 0.75),
             (cos(2π * (i-1) / n - 2π/3) * 0.25 + 0.75),
             (cos(2π * (i-1) / n + 2π/3) * 0.25 + 0.75),
@@ -623,7 +623,7 @@ function _path_colours(cells::Vector{Tuple{String, Float64}})::Vector{String}
 end
 
 """True when hex colour has HSL saturation > 0.05."""
-function _is_saturated(hex_colour::String)::Bool
+function is_saturated(hex_colour::String)::Bool
     hex = lstrip(hex_colour, '#')
     length(hex) == 6 || return false
     r = parse(Int, hex[1:2]; base=16) / 255.0
@@ -636,7 +636,7 @@ function _is_saturated(hex_colour::String)::Bool
     return (cmax - cmin) / denom > 0.05
 end
 
-function _to_hex(r::Float64, g::Float64, b::Float64)::String
+function to_hex(r::Float64, g::Float64, b::Float64)::String
     ri = round(Int, clamp(r, 0.0, 1.0) * 255)
     gi = round(Int, clamp(g, 0.0, 1.0) * 255)
     bi = round(Int, clamp(b, 0.0, 1.0) * 255)
@@ -650,7 +650,7 @@ end
 # Internal: storage
 # ============================================================================
 
-function _store(result_path::String, result::PhaseSpaceResult)
+function store(result_path::String, result::PhaseSpaceResult)
     # Metadata as compact JSON
     meta_file = joinpath(result_path, "phasespace.json")
     meta = Dict(

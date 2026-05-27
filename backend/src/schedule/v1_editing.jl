@@ -241,29 +241,17 @@ function apply_edit(definition::Definition, action::AbstractDict{Symbol})
             Symbol(action[:geneId]), Symbol(action[:newName]))
     elseif t === :create_link
         add_slot(definition,
-            Symbol(action[:target]), Symbol(action[:kind]), Symbol(action[:source]);
+            gene_of(action[:target]), Symbol(action[:kind]), gene_of(action[:source]);
             at = Float64(get(action, :at, 1.0)),
             k  = Float64(get(action, :k, -1.0)))
     elseif t === :delete_link
-        if haskey(action, :linkId)
-            (; from, target, kind) = _parse_link_id(String(action[:linkId]))
-            remove_slot(definition, target, kind, from)
-        else
-            remove_slot(definition,
-                Symbol(action[:target]), Symbol(action[:kind]), Symbol(action[:source]))
-        end
+        remove_slot(definition,
+            gene_of(action[:target]), Symbol(action[:kind]), gene_of(action[:source]))
     elseif t === :change_link_kind
-        if haskey(action, :linkId)
-            # Frontend sends only `linkId` + new `kind`. Parse the existing
-            # link id to recover source/target/old-kind.
-            (; from, target, kind) = _parse_link_id(String(action[:linkId]))
-            change_slot_kind(definition, target, kind, Symbol(action[:kind]), from)
-        else
-            change_slot_kind(definition,
-                Symbol(action[:target]),
-                Symbol(action[:oldKind]), Symbol(action[:newKind]),
-                Symbol(action[:source]))
-        end
+        change_slot_kind(definition,
+            gene_of(action[:target]),
+            Symbol(action[:oldKind]), Symbol(action[:newKind]),
+            gene_of(action[:source]))
     elseif t === :set_parameter
         Models.remake(definition,
             Dict{Symbol,Float64}(Symbol(action[:symbol]) => Float64(action[:value])))
@@ -298,27 +286,13 @@ function update_gene(f, definition::Definition, name::Symbol)
 end
 
 """
-Parse a frontend link id of the form `\${from_species}-\${kind}-\${to_species}-\${scope}`
-into the v1 slot key `(target_gene, kind, from_gene)`. Species ids carry a
-suffix like `.proteins` or `.active`; v1 slots store `from` as the bare gene
-name (per the v1 spec convention), so we strip the suffix on both ends.
-
-Assumes none of the components contain literal `-`, which is true for the
-canonical gene names and kinds.
+Normalise a link endpoint id to its owning gene. Endpoints arrive either
+as gene ids (`skn-1`, from a freshly drawn link) or species ids
+(`skn-1.proteins`, from an existing link). v1 slots key `from`/`target`
+by gene name, so we take everything before the first `.`. Splitting on
+`.` (not `-`) is safe because gene names may contain `-` but never `.`.
 """
-function _parse_link_id(link_id::String)
-    parts = split(link_id, '-')
-    length(parts) == 4 ||
-        error("malformed link id (expected `from-kind-to-scope`): $link_id")
-    from_species, kind_s, to_species, _ = parts
-    from_gene = first(split(from_species, '.'))
-    to_gene   = first(split(to_species, '.'))
-    return (
-        from   = Symbol(from_gene),
-        target = Symbol(to_gene),
-        kind   = Symbol(kind_s),
-    )
-end
+gene_of(endpoint)::Symbol = Symbol(first(split(string(endpoint), '.')))
 
 """
 Look up a slot by `(kind, from)`. Returns the slot or `nothing`.

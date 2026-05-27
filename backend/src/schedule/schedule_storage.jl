@@ -44,14 +44,14 @@ end
 # ============================================================================
 
 """Validate a schedule name (no path traversal)."""
-function _validate_name(name::String)
+function validate_name(name::String)
     contains(name, '/') && error("Invalid schedule name: $name")
     contains(name, '\\') && error("Invalid schedule name: $name")
     contains(name, "..") && error("Invalid schedule name: $name")
 end
 
 """Resolve directory for a given source."""
-function _source_dir(source::String)::String
+function source_dir(source::String)::String
     source == "examples" && return _examples_dir[]
     source == "user" && return _user_dir[]
     error("Invalid source: $source")
@@ -59,8 +59,8 @@ end
 
 """Get the file path for a schedule."""
 function get_schedule_path(name::String, source::String)::String
-    _validate_name(name)
-    joinpath(_source_dir(source), "$(name).schedule.json")
+    validate_name(name)
+    joinpath(source_dir(source), "$(name).schedule.json")
 end
 
 # ============================================================================
@@ -68,7 +68,7 @@ end
 # ============================================================================
 
 """List schedule names from a single directory, prefixed with source."""
-function _list_from_dir(dir::String, source::String)::Vector{String}
+function list_from_dir(dir::String, source::String)::Vector{String}
     isdir(dir) || return String[]
     names = String[]
     for file in readdir(dir)
@@ -83,8 +83,8 @@ end
 """List all available schedule keys in format "source/name"."""
 function list_all_schedules()::Vector{String}
     schedules = vcat(
-        _list_from_dir(_examples_dir[], "examples"),
-        _list_from_dir(_user_dir[], "user"),
+        list_from_dir(_examples_dir[], "examples"),
+        list_from_dir(_user_dir[], "user"),
     )
     sort!(unique!(schedules))
 end

@@ -180,7 +180,7 @@ include("network_extraction.jl")
 # ============================================================================
 
 """Parse a spec string into a GRSSchedule."""
-function _parse_schedule(spec_string::String)::GRSSchedule
+function parse_schedule(spec_string::String)::GRSSchedule
     spec = JSON.parse(spec_string, dicttype=Dict{Symbol, Any})
     bindings = spec_bindings(spec)
     specification = Specifications.Specification(spec; bound = Set(keys(bindings)))
@@ -232,7 +232,7 @@ function cache_entry(spec_string::AbstractString)::SpecCacheEntry
             return existing
         end
         entry = SpecCacheEntry(
-            _parse_schedule(String(spec_string)),
+            parse_schedule(String(spec_string)),
             nothing, nothing, nothing,
             Dict{String, V1.Definition}(),
         )
@@ -292,14 +292,14 @@ function fill_schedule_data!(entry::SpecCacheEntry, spec_string::String, name::S
     data = nothing
     try
         spec = JSON.parse(spec_string, dicttype=Dict{Symbol, Any})
-        append!(msgs, _validate_spec(spec))
+        append!(msgs, validate_spec(spec))
         if !any(m -> m.type == "error", msgs)
             @info "Generating schedule visualisation" name source
             vis_start = time()
-            segments, genes, gene_colours = _collect_segments(entry.grs_schedule)
-            merge!(gene_colours, _extract_spec_gene_colours(spec))
-            merged = _merge_contiguous_segments(segments)
-            structure = _build_structure_tree(entry.grs_schedule)
+            segments, genes, gene_colours = collect_segments(entry.grs_schedule)
+            merge!(gene_colours, extract_spec_gene_colours(spec))
+            merged = merge_contiguous_segments(segments)
+            structure = build_structure_tree(entry.grs_schedule)
             data = ScheduleData(; segments=merged, structure, genes, gene_colours)
             @info "Schedule visualisation generated" name segments=length(merged) genes=length(genes) elapsed=(time() - vis_start)
         end
@@ -353,7 +353,7 @@ function extract_union_network(spec_string::String, segments::Vector{TimelineSeg
     entry = cache_entry(spec_string)
     entry.union_network === nothing || return entry.union_network
 
-    model_paths = _unique_model_paths(segments)
+    model_paths = unique_model_paths(segments)
     per_model = Dict{String, Network}()
     parameters_by_model_path = Dict{String, Dict{String, Float64}}()
     for mp in model_paths
@@ -361,7 +361,7 @@ function extract_union_network(spec_string::String, segments::Vector{TimelineSeg
             edited = get(entry.edits, mp, nothing)
             if edited !== nothing
                 per_model[mp], parameters_by_model_path[mp] =
-                    _network_and_params_from_definition(edited; include_reactions)
+                    network_and_params_from_definition(edited; include_reactions)
             else
                 reified = Scheduling.reify(entry.grs_schedule, mp)
                 per_model[mp] = network_from_reified(reified; include_reactions)
@@ -391,13 +391,13 @@ and `.model` chains, returning the first `V1.Definition` we hit.
 Returns `nothing` if the path doesn't resolve to a v1 model (e.g. it's
 an `Instant`, a `Wait`, or some other model kind).
 """
-function _find_v1_definition(x)::Union{V1.Definition, Nothing}
+function find_v1_definition(x)::Union{V1.Definition, Nothing}
     x isa V1.Definition && return x
-    x isa Primitive && return _find_v1_definition(x.f!)
+    x isa Primitive && return find_v1_definition(x.f!)
     if x isa Models.Wrapped
-        from_def = _find_v1_definition(x.definition)
+        from_def = find_v1_definition(x.definition)
         from_def === nothing || return from_def
-        return _find_v1_definition(x.model)
+        return find_v1_definition(x.model)
     end
     return nothing
 end
@@ -408,7 +408,7 @@ from `Scheduling.reify` (e.g. an edited Definition). We need a `Wrapped`
 to drive `NetworkRepresentation.entity` species-level expansion, so this
 calls `V1.build` — the expensive part of the edit path.
 """
-function _network_and_params_from_definition(
+function network_and_params_from_definition(
     def::V1.Definition; include_reactions::Bool=true,
 )::Tuple{Network, Dict{String, Float64}}
     wrapped = V1.build(def)
@@ -440,7 +440,7 @@ function apply_edit_to_path!(
     current = get(entry.edits, model_path, nothing)
     if current === nothing
         reified = Scheduling.reify(entry.grs_schedule, model_path)
-        current = _find_v1_definition(reified)
+        current = find_v1_definition(reified)
         current === nothing &&
             error("no v1 Definition found at model path `$model_path` (got $(typeof(reified)))")
     end
@@ -451,7 +451,7 @@ function apply_edit_to_path!(
     return extract_union_network(spec_string, segments; include_reactions)
 end
 
-# Link identity is topological (see `_link_id`); the `parameters` slot list is
+# Link identity is topological (see `link_id`); the `parameters` slot list is
 # structural and identical across models, so we take it from whichever model
 # contributed each link first.
 function build_union(per_model::Dict{String, Network}, parameters_by_model_path::Dict{String, Dict{String, Float64}})::UnionNetwork
@@ -462,7 +462,7 @@ function build_union(per_model::Dict{String, Network}, parameters_by_model_path:
             all_nodes[string(n.name)] = n
         end
         for l in net.links
-            id = _link_id(l)
+            id = link_id(l)
             haskey(all_links, id) && continue
             all_links[id] = UnionLink(;
                 id, kind=l.kind, from=l.from, to=l.to,
@@ -476,7 +476,7 @@ function build_union(per_model::Dict{String, Network}, parameters_by_model_path:
     model_exclusions = Dict{String, ModelExclusions}()
     for (mp, net) in per_model
         model_node_names = Set(string(n.name) for n in net.nodes)
-        model_link_ids = Set(_link_id(l) for l in net.links)
+        model_link_ids = Set(link_id(l) for l in net.links)
         model_exclusions[mp] = ModelExclusions(
             nodes = collect(setdiff(union_node_names, model_node_names)),
             links = collect(setdiff(union_link_ids, model_link_ids)),
