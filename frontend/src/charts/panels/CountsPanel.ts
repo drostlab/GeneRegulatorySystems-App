@@ -7,6 +7,7 @@ import { CHART_FONT_SIZES, AXIS_THICKNESS_NARROW } from "../chartConstants"
 import { setupTimeAxis } from "../timeFormat"
 
 const SWEEP_DURATION_MS = 400
+const STROKE_THICKNESS = 2
 
 
 export class CountsPanel extends TimeseriesPanel {
@@ -111,7 +112,7 @@ export class CountsPanel extends TimeseriesPanel {
                     const lineSeries = new FastLineRenderableSeries(this.wasmContext, {
                         dataSeries: xySeries,
                         stroke: colour,
-                        strokeThickness: 1,
+                        strokeThickness: STROKE_THICKNESS,
                         isDigitalLine: true,
                         drawNaNAs: ELineDrawMode.DiscontinuousLine,
                         animation: new SweepAnimation({ duration: SWEEP_DURATION_MS })
@@ -166,7 +167,7 @@ export class CountsPanel extends TimeseriesPanel {
         const lineSeries = new FastLineRenderableSeries(this.wasmContext, {
             dataSeries: xySeries,
             stroke: colour,
-            strokeThickness: 1,
+            strokeThickness: STROKE_THICKNESS,
             isDigitalLine: true,
             drawNaNAs: ELineDrawMode.DiscontinuousLine
         })

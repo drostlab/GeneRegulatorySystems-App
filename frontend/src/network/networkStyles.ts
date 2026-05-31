@@ -404,53 +404,61 @@ export function buildStylesheet(isDark = false): any[] {
             } as any,
         },
         // ====================================================================
-        // Opacity matrix — must come LAST so these always win over base rules.
+        // Opacity / z-index matrix.
         //
-        // Priority (high → low):
-        //   1. .dimmed  → DIM_OPACITY  (selection dimming, unconditional)
-        //   2. .peripheral (not dimmed) → PERIPHERAL_OPACITY * 0.5
-        //   3. activation/repression (not dimmed, not peripheral) → mapData by `at`
+        // Cytoscape resolves conflicting properties by RULE ORDER — the last
+        // matching rule wins — NOT by CSS specificity. It also does NOT
+        // support `:not()` (such selectors are silently dropped, taking the
+        // whole rule with them). So the override hierarchy is expressed
+        // purely by ordering: each rule below overrides the earlier ones for
+        // the elements it matches.
+        //
+        //   1. affinity gradient (base)        — activation/repression, species-view
+        //   2. peripheral                      — overrides the gradient
+        //   3. species-view self-reg (visible) — boost opacity, pull above compounds
+        //   4. dimmed                          — selection dimming beats all the above
+        //   5. species-view self-reg + dimmed  — also drop z behind the compound
         // ====================================================================
         {
-            selector: 'edge[kind="activation"][at]:not(.dimmed):not(.peripheral), edge[kind="repression"][at]:not(.dimmed):not(.peripheral)',
+            selector: 'edge[kind="activation"][at], edge[kind="repression"][at]',
             style: {
                 'opacity': 'mapData(at, 0.1, 10, 1, 0.5)',
             } as any,
         },
         {
-            selector: 'edge.species-view[at]:not(.dimmed):not(.peripheral)',
+            // Species-view edges also match the activation/repression rule
+            // above; coming later, this lower-opacity gradient wins for them.
+            selector: 'edge.species-view[at]',
             style: {
                 'opacity': 'mapData(at, 0.1, 10, 0.35, 0.15)',
             } as any,
         },
         {
-            selector: 'edge.peripheral:not(.dimmed)',
+            selector: 'edge.peripheral',
             style: {
                 'opacity': PERIPHERAL_OPACITY * 0.5,
             } as any,
         },
+        // -- self-regulatory edges in species view: pull above compounds and
+        //    boost opacity so they aren't lost inside their own gene's box.
+        {
+            selector: 'edge.species-view.self-reg',
+            style: {
+                'z-index': 200,
+                'opacity': 1,
+            } as any,
+        },
+        // Selection dimming — comes after the gradient/peripheral/self-reg
+        // rules so it wins for any dimmed edge.
         {
             selector: 'edge.dimmed',
             style: {
                 'opacity': DIM_OPACITY,
             } as any,
         },
-        // -- self-regulatory edges in species view: pull above compounds and
-        //    boost opacity so they aren't lost inside their own gene's box.
-        //    Overrides the `.species-view` z-index: -1 and opacity matrix.
-        {
-            selector: 'edge.species-view.self-reg:not(.dimmed):not(.peripheral)',
-            style: {
-                'z-index': 200,
-                'opacity': 1,
-            } as any,
-        },
-        // When dimmed (gene unselected), match the dim opacity of every other
-        // regulatory edge and drop z so the line hides behind the compound.
-        // Both properties are set explicitly: relying on the lower-specificity
-        // `edge.dimmed` rule for opacity is unreliable because cytoscape's
-        // per-property cache can hold onto the self-reg `opacity: 1` from
-        // before the class flipped.
+        // Dimmed self-reg: also drop z behind the compound. After the
+        // `edge.dimmed` rule so it adds the z-index override without losing
+        // the dim opacity.
         {
             selector: 'edge.species-view.self-reg.dimmed',
             style: {
