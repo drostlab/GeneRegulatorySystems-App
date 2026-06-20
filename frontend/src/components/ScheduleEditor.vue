@@ -6,7 +6,7 @@
  * - Schedule selection dropdown (examples + user schedules)
  * - JSON editor (Monaco) for schedule source code
  * - Validation & error display
- * - Save/Load/Discard workflow
+ * - Always-on editing with save, new, and duplicate actions
  *
  * State:
  * - Component-only: Editor UI state (focused, loaded indicator)
@@ -17,7 +17,7 @@
  * - useMonacoEditor: Monaco editor lifecycle
  * - No direct API calls (all via store → scheduleService)
  */
-import { ref, reactive, onMounted, computed, watch, onBeforeUnmount} from 'vue'
+import { ref, reactive, onMounted, computed, watch, onBeforeUnmount } from 'vue'
 import { useScheduleStore } from '@/stores/scheduleStore'
 import { useSimulationStore } from '@/stores/simulationStore'
 import { useViewerStore } from '@/stores/viewerStore'
@@ -35,35 +35,41 @@ const simulationStore = useSimulationStore()
 const viewerStore = useViewerStore()
 
 const isLoading = computed(() => store.isLoading)
+const shortcutModifier = navigator.platform.toUpperCase().includes('MAC') ? '⌘' : 'Ctrl+'
 
 interface EditorState {
     currentName: string
-    isEditing: boolean
+    isNew: boolean
+    originalName: string
+    originalSource: string
 }
 
 const editor = reactive<EditorState>({
     currentName: '',
-    isEditing: false
+    isNew: false,
+    originalName: '',
+    originalSource: 'user'
 })
+const isSaving = ref(false)
+const editorContent = ref('')
 
 // Monaco editor 
-const { init: initMonaco, setValue: setCurrentJson, getContent: getCurrentJson, updateOptions: updateOptionsMonaco, highlightScope, clearScopeHighlight, dispose: disposeMonaco } = useMonacoEditor(
-    'schedule-editor-monaco'
+const { init: initMonaco, setValue: setCurrentJson, getContent: getCurrentJson, highlightScope, clearScopeHighlight, dispose: disposeMonaco } = useMonacoEditor(
+    'schedule-editor-monaco',
+    content => { editorContent.value = content }
 )
 
-watch(
-    () => editor.isEditing,
-    (isEditing) => {
-        updateOptionsMonaco({
-            readOnly: !isEditing,
-            cursorStyle: isEditing ? 'line' : 'hidden'
-        })
-    }
+const hasUnsavedChanges = computed(() =>
+    editor.isNew ||
+    editor.currentName !== store.schedule.name ||
+    editorContent.value !== store.schedule.spec
 )
 
 function resetEditor() {
-    editor.isEditing = false
     editor.currentName = store.schedule.name
+    editor.originalName = store.schedule.name
+    editor.originalSource = store.schedule.source
+    editor.isNew = false
     setCurrentJson(store.schedule.spec)
 }
 
@@ -125,40 +131,79 @@ watch (
     }
 )
 
-function startEdit() {
-    console.assert(!editor.isEditing, "startEdit called while editing")
-    editor.isEditing = true
+function uniqueScheduleName(base: string): string {
+    const existingNames = new Set(availableScheduleKeys.value.map(key => parseScheduleKey(key).name))
+    if (!existingNames.has(base)) return base
+    let suffix = 2
+    while (existingNames.has(`${base} ${suffix}`)) suffix++
+    return `${base} ${suffix}`
+}
+
+function scheduleSourceLabel(key: string): string {
+    if (!key) return ''
+    return `${parseScheduleKey(key).source}/`
 }
 
 async function saveEdit() {
+    if (isSaving.value || isLoading.value || !editor.currentName.trim()) return
+
     const currentJson = getCurrentJson()
-    
-    console.assert(editor.isEditing, "saveEdit called while not editing")
+    if (!hasUnsavedChanges.value) return
 
-    const hasChanges = editor.currentName !== store.schedule.name || currentJson !== store.schedule.spec
-    if (hasChanges) {
-        // Upload and use the response directly (already contains reified data)
-        const uploaded = await scheduleService.uploadSchedule(currentJson, editor.currentName)
+    isSaving.value = true
+    try {
+        const origin = editor.isNew ? undefined : {
+            name: editor.originalName,
+            source: editor.originalSource,
+        }
+        const uploaded = await scheduleService.uploadSchedule(currentJson, editor.currentName.trim(), origin)
         store.setSchedule(uploaded)
-    }
+        availableScheduleKeys.value = await scheduleService.fetchAvailableSchedules()
+        resetEditor()
 
-    // Update the schedule list
-    availableScheduleKeys.value = await scheduleService.fetchAvailableSchedules()
-
-    resetEditor()
-
-    // Auto-run simulation if enabled and schedule changed
-    if (hasChanges && simulationStore.autoRunOnSave) {
-        simulationStore.pendingAutoRun = true
+        if (simulationStore.autoRunOnSave) {
+            simulationStore.pendingAutoRun = true
+        }
+    } finally {
+        isSaving.value = false
     }
 }
 
-function cancelEdit() {
-    resetEditor()
+async function createNewSchedule() {
+    const name = uniqueScheduleName('untitled')
+    simulationStore.clearResult()
+    await store.loadScheduleBySpec('{\n}\n', name, 'user')
+    editor.isNew = true
+    editor.currentName = name
+    editor.originalName = ''
+    editor.originalSource = 'user'
 }
 
-function cancelScheduleNameEdit() {
-    editor.currentName = store.schedule.name
+async function duplicateSchedule() {
+    if (!store.schedule.spec) return
+    const name = uniqueScheduleName(`${store.schedule.name || 'untitled'} copy`)
+    simulationStore.clearResult()
+    await store.loadScheduleBySpec(getCurrentJson(), name, 'user')
+    editor.isNew = true
+    editor.currentName = name
+    editor.originalName = ''
+    editor.originalSource = 'user'
+}
+
+function handleEditorShortcut(event: KeyboardEvent) {
+    if (!(event.ctrlKey || event.metaKey)) return
+
+    const key = event.key.toLowerCase()
+    if (key === 's' && !event.shiftKey) {
+        event.preventDefault()
+        void saveEdit()
+    } else if (key === 'n' && !event.shiftKey) {
+        event.preventDefault()
+        if (!isLoading.value) void createNewSchedule()
+    } else if (key === 'd' && event.shiftKey) {
+        event.preventDefault()
+        if (!isLoading.value && store.schedule.spec) void duplicateSchedule()
+    }
 }
 
 // ============================================================================
@@ -193,13 +238,15 @@ onMounted(async () => {
         console.error('[ScheduleEditor] Failed to load schedules:', e)
     }
 
-    await initMonaco()
+    await initMonaco('', true)
     resetEditor()
+    window.addEventListener('keydown', handleEditorShortcut, true)
 })
 
-onBeforeUnmount(() =>
+onBeforeUnmount(() => {
+    window.removeEventListener('keydown', handleEditorShortcut, true)
     disposeMonaco()
-)
+})
 
 </script>
 
@@ -208,82 +255,83 @@ onBeforeUnmount(() =>
         <!-- Header -->
         <div class="card-header">
             <div class="card-header-row">
-                <!-- Schedule dropdown -->
-                <Select
-                    v-show="!editor.isEditing"
-                    :model-value="store.scheduleKey"
-                    :options="scheduleOptions"
-                    optionLabel="label"
-                    optionValue="value"
-                    placeholder="Select schedule"
-                    class="dropdown-small"
-                    @change="handleScheduleSelect"
-                    size="small"
-                    :disabled="isLoading"
-                    option-group-label="label"
-                    option-group-children="items"
-                >
-                    <template #option="slotProps">
-                        <div class="dropdown-option">{{ slotProps.option.label }}</div>
-                    </template>
-                    <template #value="slotProps">
-                        <div v-if="slotProps.value" class="dropdown-option">
-                            {{ slotProps.value }}
-                        </div>
-                        <span v-else class="dropdown-option">Select schedule</span>
-                    </template>
-                    <template #optiongroup="slotProps">
-                        <div class="dropdown-option-group">{{ slotProps.option.label }}</div>
-                    </template>
-                    <template #empty>
-                        <div class="dropdown-option">No available schedules</div>
-                    </template>
-                </Select>
+                <!-- A joined source/name control avoids showing the title twice. -->
+                <div class="schedule-title-control">
+                    <Select
+                        :model-value="store.scheduleKey"
+                        :options="scheduleOptions"
+                        optionLabel="label"
+                        optionValue="value"
+                        placeholder="Open"
+                        class="schedule-picker"
+                        @change="handleScheduleSelect"
+                        size="small"
+                        :disabled="isLoading"
+                        option-group-label="label"
+                        option-group-children="items"
+                        v-grs-tooltip="'Switch schedule'"
+                    >
+                        <template #option="slotProps">
+                            <div class="dropdown-option">{{ slotProps.option.label }}</div>
+                        </template>
+                        <template #value="slotProps">
+                            <div v-if="slotProps.value" class="schedule-source">
+                                <i class="pi pi-folder-open" />
+                                {{ scheduleSourceLabel(slotProps.value) }}
+                            </div>
+                            <span v-else class="schedule-source">
+                                <i class="pi pi-folder-open" />
+                                open
+                            </span>
+                        </template>
+                        <template #optiongroup="slotProps">
+                            <div class="dropdown-option-group">{{ slotProps.option.label }}</div>
+                        </template>
+                        <template #empty>
+                            <div class="dropdown-option">No available schedules</div>
+                        </template>
+                    </Select>
 
-                <!-- Schedule title during edit mode -->
-                <InputText
-                    v-show="editor.isEditing"
-                    v-model="editor.currentName"
-                    type="text"
-                    size="small"
-                    placeholder="Schedule name"
-                    class="input-small"
-                    @keyup.esc="cancelScheduleNameEdit"
-                />
+                    <InputText
+                        v-model="editor.currentName"
+                        type="text"
+                        size="small"
+                        placeholder="Schedule name"
+                        class="schedule-name-input"
+                        aria-label="Schedule name"
+                    />
+                </div>
 
-                <!-- Enter edit mode -->
+                <!-- Save in place (renaming a user schedule moves it). -->
                 <Button
-                    v-show="!editor.isEditing"
-                    icon="pi pi-pencil"
+                    icon="pi pi-save"
                     severity="secondary"
                     rounded
-                    v-grs-tooltip="'Edit'"
-                    @click="startEdit"
-                    size="small"
-                    :disabled="isLoading"
-                />
-
-                <!-- (try to) Save edited schedule -->
-                <Button
-                    v-show="editor.isEditing"
-                    icon="pi pi-check"
-                    severity="success"
-                    rounded
-                    v-grs-tooltip="'Save'"
+                    v-grs-tooltip="`Save (${shortcutModifier}S)`"
                     @click="saveEdit"
                     size="small"
+                    :loading="isSaving"
+                    :disabled="isLoading || isSaving || !editor.currentName.trim() || !hasUnsavedChanges"
+                />
+
+                <Button
+                    icon="pi pi-plus"
+                    severity="secondary"
+                    rounded
+                    v-grs-tooltip="`New schedule (${shortcutModifier}N)`"
+                    @click="createNewSchedule"
+                    size="small"
                     :disabled="isLoading"
                 />
 
-                <!-- Cancel editing -->
                 <Button
-                    v-show="editor.isEditing"
-                    icon="pi pi-times"
-                    severity="error"
+                    icon="pi pi-copy"
+                    severity="secondary"
                     rounded
-                    v-grs-tooltip="'Cancel'"
-                    @click="cancelEdit"
+                    v-grs-tooltip="`Duplicate schedule (${shortcutModifier}${shortcutModifier === '⌘' ? '⇧' : 'Shift+'}D)`"
+                    @click="duplicateSchedule"
                     size="small"
+                    :disabled="isLoading || !store.schedule.spec"
                 />
 
             </div>
@@ -291,10 +339,13 @@ onBeforeUnmount(() =>
 
         <!-- Editor -->
         <div class="editor-wrapper">
+            <div v-if="hasUnsavedChanges" class="unsaved-indicator" aria-live="polite">
+                <span class="unsaved-dot" />
+                Unsaved
+            </div>
             <div
                 id="schedule-editor-monaco"
                 class="editor-container"
-                :class="{ 'editor-editing': editor.isEditing }"
             ></div>
         </div>
 
@@ -398,6 +449,67 @@ onBeforeUnmount(() =>
 .editor-wrapper {
     flex: 1;
     overflow: hidden;
+    position: relative;
+}
+
+.schedule-title-control {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+}
+
+.schedule-picker {
+    width: 130px;
+    flex: 0 0 130px;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.schedule-source {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    white-space: nowrap;
+}
+
+.schedule-name-input {
+    flex: 1;
+    min-width: 120px;
+    font-size: var(--font-size-sm) !important;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    margin-left: -1px;
+}
+
+.schedule-name-input:focus {
+    position: relative;
+    z-index: 1;
+}
+
+.unsaved-indicator {
+    position: absolute;
+    z-index: 5;
+    top: var(--spacing-sm);
+    right: calc(var(--spacing-md) + 8px);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border: 1px solid var(--p-surface-border);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--p-surface-card) 92%, transparent);
+    box-shadow: var(--p-shadow-sm);
+    color: var(--p-text-muted-color);
+    font-size: var(--font-size-xs);
+    pointer-events: none;
+}
+
+.unsaved-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--p-primary-color);
 }
 
 .editor-container {
@@ -407,11 +519,6 @@ onBeforeUnmount(() =>
     background: var(--p-surface-ground);
     border: 2px solid transparent;
     transition: all 0.2s ease;
-}
-
-.editor-container.editor-editing {
-    border: 2px solid var(--p-primary-color);
-    background: var(--p-primary-50);
 }
 
 /* Monaco scope highlight — must be global (decorations are injected outside Vue's scoped context) */

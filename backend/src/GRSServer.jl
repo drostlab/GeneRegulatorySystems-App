@@ -93,20 +93,37 @@ end
 @kwdef struct LoadScheduleRequest
     schedule_name::String
     schedule_spec::String
+    schedule_source::String = "snapshot"
 end
 # validate and generate visualization for schedule spec
 @post "/schedules/load" function(req, data::Json{LoadScheduleRequest})
-    return ScheduleVisualization.reify_schedule(data.payload.schedule_spec, name=data.payload.schedule_name)::ScheduleVisualization.ReifiedSchedule
+    return ScheduleVisualization.reify_schedule(
+        data.payload.schedule_spec;
+        name=data.payload.schedule_name,
+        source=data.payload.schedule_source,
+    )::ScheduleVisualization.ReifiedSchedule
 end
 
 @kwdef struct UploadScheduleRequest
     schedule_name::String
     schedule_spec::String
+    original_name::Union{String, Nothing} = nothing
+    original_source::Union{String, Nothing} = nothing
 end
 # upload and save schedule to user storage
 @post "/schedules/upload" function(req, data::Json{UploadScheduleRequest})
-    ScheduleStorage.save_user_schedule(data.payload.schedule_name, data.payload.schedule_spec)
-    return ScheduleVisualization.reify_schedule(data.payload.schedule_spec, name=data.payload.schedule_name, source="user")::ScheduleVisualization.ReifiedSchedule
+    payload = data.payload
+    ScheduleStorage.save_user_schedule(payload.schedule_name, payload.schedule_spec)
+
+    # A renamed user schedule is a move, not a copy. Bundled examples are
+    # read-only, so saving one still creates a user-owned version.
+    if payload.original_source == "user" &&
+       !isnothing(payload.original_name) &&
+       payload.original_name != payload.schedule_name
+        ScheduleStorage.delete_user_schedule(payload.original_name)
+    end
+
+    return ScheduleVisualization.reify_schedule(payload.schedule_spec, name=payload.schedule_name, source="user")::ScheduleVisualization.ReifiedSchedule
 end
 
 # extract network for a stored schedule by model_path
