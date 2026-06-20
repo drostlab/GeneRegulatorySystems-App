@@ -29,7 +29,14 @@ export const useViewerStore = defineStore('viewer', () => {
     /** Maximum concurrently visible execution-path rows in the timeline. */
     const maxTimelinePaths = ref<number>(20)
     /** Whether hovering timeline segments highlights the corresponding JSON in the editor. */
-    const editorHighlightEnabled = ref<boolean>(true)
+    const editorHighlightEnabled = ref<boolean>(false)
+    /**
+     * Whether gene nodes are dynamically resized by their simulation protein
+     * counts. Disabled by default — when off, DynamicsSync skips its watcher
+     * and the expensive proteinCountsAtTimepoint/maxProteinCounts computeds
+     * are never evaluated.
+     */
+    const resizeByExpressionEnabled = ref<boolean>(false)
 
     /** Segments filtered by both pathFilter and channelFilter. */
     const filteredSegments = computed(() => {
@@ -222,6 +229,7 @@ export const useViewerStore = defineStore('viewer', () => {
         maxRenderedGenes,
         maxTimelinePaths,
         editorHighlightEnabled,
+        resizeByExpressionEnabled,
         filteredSegments,
         filteredPaths,
         hoveredExecutionPath,

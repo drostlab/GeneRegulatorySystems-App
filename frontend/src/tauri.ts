@@ -347,15 +347,15 @@ export async function setupAppMenu(): Promise<void> {
         text: 'Export',
         items: [
             await MenuItem.new({
-                text: 'Schedule spec (JSON)',
+                text: 'Schedule Spec (JSON)',
                 action: () => { void emit('menu:export-schedule-json') },
             }),
             await MenuItem.new({
-                text: 'Network diagram (SVG)',
+                text: 'Network Diagram (SVG)',
                 action: () => { void emit('menu:export-network-svg') },
             }),
             await MenuItem.new({
-                text: 'Simulation chart (PNG)',
+                text: 'Simulation Chart (PNG)',
                 action: () => { void emit('menu:export-simulation-png') },
             }),
         ],
@@ -389,6 +389,16 @@ export async function setupAppMenu(): Promise<void> {
         },
     })
 
+    const resizeByExpressionItem = await CheckMenuItem.new({
+        id: 'toggle-resize-by-expression',
+        text: 'Resize Genes by Expression',
+        checked: viewerStore.resizeByExpressionEnabled,
+        action: async () => {
+            viewerStore.resizeByExpressionEnabled = !viewerStore.resizeByExpressionEnabled
+            await resizeByExpressionItem.setChecked(viewerStore.resizeByExpressionEnabled)
+        },
+    })
+
     const editMenu = await Submenu.new({
         text: 'Edit',
         items: [
@@ -405,18 +415,20 @@ export async function setupAppMenu(): Promise<void> {
     const viewMenu = await Submenu.new({
         text: 'View',
         items: [
-            await MenuItem.new({
-                text: 'Show Diagnostic Logs',
-                accelerator: 'CmdOrCtrl+Shift+L',
-                action: () => useLogStore().showDrawer(),
-            }),
             editorHighlightItem,
+            resizeByExpressionItem,
         ],
     })
 
     const advancedMenu = await Submenu.new({
         text: 'Advanced',
         items: [
+            await MenuItem.new({
+                text: 'Show Diagnostic Logs',
+                accelerator: 'CmdOrCtrl+Shift+L',
+                action: () => useLogStore().showDrawer(),
+            }),
+            await PredefinedMenuItem.new({ item: 'Separator' }),
             await MenuItem.new({
                 text: 'Reset Julia Environment…',
                 action: () => { void invoke('reset_julia_environment_interactive') },
