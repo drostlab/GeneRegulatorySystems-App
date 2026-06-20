@@ -4,7 +4,7 @@ import { PATH_DIM_OPACITY, type BasePanelOptions } from "./BasePanel"
 import type { TimeseriesData, TimeseriesMetadata } from "@/types/simulation"
 import { restructureTimeseriesByPathAndGene } from "@/types/simulation"
 import { getGeneFromSpeciesName } from "@/types/schedule"
-import { CHART_FONT_SIZES, AXIS_THICKNESS } from "../chartConstants"
+import { CHART_FONT_SIZES, AXIS_THICKNESS, STREAMING_FIFO_CAPACITY } from "../chartConstants"
 import { withOpacity } from "@/utils/colorUtils"
 import { setupTimeAxis } from "../timeFormat"
 
@@ -125,7 +125,6 @@ export class PromoterPanel extends TimeseriesPanel {
         }
 
         // Add or update series
-        let created = 0
         this.surface.suspendUpdates()
         for (const [path, geneData] of Object.entries(dataByPath)) {
             const yRange = this.pathYRanges.get(path)
@@ -165,16 +164,14 @@ export class PromoterPanel extends TimeseriesPanel {
                         fillY1: colour,
                         strokeY1: colour,
                         drawNaNAs: ELineDrawMode.DiscontinuousLine,
-                        resamplingMode: EResamplingMode.Auto,
+                        resamplingMode: EResamplingMode.None,
                         animation: new SweepAnimation({ duration: SWEEP_DURATION_MS })
                     })
                     this.surface.renderableSeries.add(bandSeries)
-                    created++
                 }
             })
         }
         this.surface.resumeUpdates()
-        console.debug(`[PromoterPanel] setData: created=${created} reused=${incomingKeys.size - created} total=${this.surface.renderableSeries.size()}`)
     }
 
     appendStreamingData(timeseries: TimeseriesData): void {
@@ -290,6 +287,7 @@ export class PromoterPanel extends TimeseriesPanel {
         const xyyData = new XyyDataSeries(this.wasmContext, {
             isSorted: true,
             containsNaN: true,
+            fifoCapacity: STREAMING_FIFO_CAPACITY,  // bound live WASM memory (trailing window)
             dataSeriesName: key
         })
         this.seriesMap.set(key, xyyData)
@@ -301,7 +299,7 @@ export class PromoterPanel extends TimeseriesPanel {
             fillY1: colour,
             strokeY1: colour,
             drawNaNAs: ELineDrawMode.DiscontinuousLine,
-            resamplingMode: EResamplingMode.Auto
+            resamplingMode: EResamplingMode.None
         })
         this.surface.renderableSeries.add(bandSeries)
         return xyyData

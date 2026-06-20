@@ -17,14 +17,14 @@ import ProgressBar from 'primevue/progressbar'
 import OverlayPanel from 'primevue/overlaypanel'
 import Checkbox from 'primevue/checkbox'
 import * as simulationService from '@/services/simulationService'
-import { MainChart } from '@/charts/MainChart'
+import { MainChart, type Viewport } from '@/charts/MainChart'
 import { useStreamingController } from '@/composables/useStreamingController'
 import { useTheme } from '@/composables/useTheme'
 import { buildClientPhaseSpace, recolourPhaseSpace } from '@/charts/phaseSpaceBuilder'
 import { GREEN, RED } from '@/config/theme'
 import { contrastTextColour } from '@/utils/colorUtils'
 import type { TimeseriesData } from '@/types/simulation'
-import { extractPaths, extractChannels, matchesPathPrefix } from '@/types/schedule'
+import { extractPaths, extractChannels, matchesPathPrefix, getTimeExtent } from '@/types/schedule'
 
 const simulationStore = useSimulationStore()
 const scheduleStore = useScheduleStore()
@@ -365,16 +365,33 @@ watch(
     { deep: true }
 )
 
-/** Push current simulation data to chart, filtered by selected genes/paths. */
-function refreshSimulationData(): void {
+/**
+ * Push screen-resolution data to the chart for a finished result, filtered by
+ * selected genes/paths. Decimation happens server-side (the pyramid), so the
+ * client only ever holds ~viewport-resolution data per series.
+ *
+ * Called with no argument for a full refresh (gene/path selection change) — fits
+ * both axes over the schedule's full time extent. Called from `onViewportChange`
+ * with a `vp` on zoom/pan — re-queries at the new window and preserves the range.
+ */
+async function refreshSimulationData(vp?: Viewport): Promise<void> {
     if (!simulationStore.isLoaded || simulationStore.isSimulationRunning) return
     const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
     if (genes.length === 0 && viewerStore.selectedOtherSpecies.length === 0) return
     const paths = viewerStore.selectedPaths ?? viewerStore.filteredPaths
     const pathArray = paths ? [...paths] : null
-    const visibleData = simulationStore.getTimeseries(genes, pathArray, viewerStore.selectedOtherSpecies)
-    if (visibleData) {
-        chart.setSimulationData(visibleData)
+
+    // Window: the user's current view (zoom/pan) or, on a full refresh, the
+    // schedule's whole time extent.
+    const extent = getTimeExtent(scheduleStore.segments)
+    const window = vp ?? chart.getViewport() ?? { t0: extent.min, t1: extent.max, widthPx: 1500 }
+
+    const data = await simulationStore.fetchViewport(
+        genes, viewerStore.selectedOtherSpecies, pathArray,
+        window.t0, window.t1, window.widthPx,
+    )
+    if (data) {
+        chart.setSimulationData(data, { fitAxes: vp === undefined })
     }
 }
 
@@ -447,6 +464,10 @@ onMounted(async () => {
     chart.onTimepointChange((timepoint: number) => {
         viewerStore.setTimepoint(timepoint)
     })
+
+    // Adaptive rendering: on zoom/pan, re-query the server pyramid at the new
+    // window/resolution and swap the data in place (keeps the user's range).
+    chart.onViewportChange((vp) => { refreshSimulationData(vp) })
 
     chart.onSelectionChange((selectedGenes: string[]) => {
         // Skip deselect when this fires in the same event as a segment click

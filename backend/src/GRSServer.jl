@@ -22,6 +22,7 @@ include("simulation/streaming_sink.jl")
 include("schedule/schedule_storage.jl")
 include("schedule/schedule_visualisation.jl")
 include("simulation/simulation.jl")
+include("simulation/viewport.jl")
 include("simulation/timeseries_summary.jl")
 include("phase_space.jl")
 
@@ -32,6 +33,7 @@ using .GapTracking
 using .ScheduleStorage
 using .StreamingSink
 using .Simulation
+using .Viewport
 using .SimulationControl
 using .ScheduleVisualization
 using .PhaseSpace
@@ -207,6 +209,34 @@ end
         out[string(sp)] = Dict("time" => s.time, "mean" => s.mean, "se" => s.se)
     end
     return Dict("summary" => out)
+end
+
+@kwdef struct ViewportRequest
+    species::Vector{String}
+    paths::Union{Vector{String}, Nothing} = nothing  # nothing = all paths of each species
+    t0::Float64
+    t1::Float64
+    width_px::Int = 1000
+end
+# adaptive viewport query: ≲2·width_px decimated OHLC-step points per (species, path)
+@post "/simulations/{id}/timeseries/viewport" function(req, id::String, data::Json{ViewportRequest})
+    result = Simulation.load_result(id)
+    isnothing(result) && return HTTP.Response(404, "Result not found")
+    p = data.payload
+
+    timeseries = Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}()
+    for sp_str in p.species
+        sp = Symbol(sp_str)
+        paths = isnothing(p.paths) ? Viewport.paths_for(result.path, sp) : p.paths
+        series_map = Dict{String, Vector{Tuple{Float64, Int}}}()
+        for path in paths
+            series = Viewport.query_species(result.path, sp, path, p.t0, p.t1, p.width_px)
+            isnothing(series) && continue
+            series_map[path] = series
+        end
+        isempty(series_map) || (timeseries[sp] = series_map)
+    end
+    return Simulation.SimulationData(; timeseries)
 end
 
 const ws_client = Ref{Union{Nothing, HTTP.WebSocket}}(nothing)

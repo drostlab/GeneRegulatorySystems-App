@@ -1,5 +1,22 @@
 # Handoff: adaptive (multi-resolution) timeseries rendering
 
+> **STATUS (2026-06-20): phase 1 implemented.** Backend pyramid
+> (`backend/src/simulation/viewport.jl`, OHLC time-binned, lazy per-species,
+> in-memory cached) + `POST /simulations/{id}/timeseries/viewport` (returns the
+> same `SimulationData` shape, ≲2×width_px points). Frontend: `fetchViewport`
+> service/store, `MainChart.onViewportChange`/`getViewport` (debounced 150ms) wired
+> in `TrackViewer.refreshSimulationData`, `setSimulationData(…, {fitAxes})` preserves
+> zoom; live runs bounded via `STREAMING_FIFO_CAPACITY`. Verified on a 256MB run:
+> 55× reduction on a 107k-pt series, bound holds, sub-ms cached queries; cold
+> per-species build ≈5s (dominated by the Arrow scan, not binning).
+>
+> **DECISIONS (2026-06-20):** (1) **Keep `step`/`skip` as the source-side storage
+> lever** — the pyramid decouples *display* resolution only; we do NOT force
+> `record=true` globally (would blow up disk on snapshot-only cel_full). The
+> `step→skip` coupling is GRS core (`scheduling.jl:156-173`); to get full events
+> you must author schedules without `step`. (2) **GapTracker→Catenation cleanup is
+> a separate follow-up commit** (not done here; this commit is additive only).
+
 You're picking up **phase 1** of the TrackViewer redesign (full context:
 `docs/trackviewer-redesign.md`). Scope is **only** adaptive subsampling of
 trajectory data — do not touch the schedule timeline or panel layout yet.

@@ -93,3 +93,32 @@ export async function fetchTimeseriesForSpecies(
     )
     return response.timeseries
 }
+
+export interface ViewportQuery {
+    species: string[]
+    /** Execution paths to include; null = all paths of each species. */
+    paths?: string[] | null
+    t0: number
+    t1: number
+    /** Target horizontal resolution; the server returns ≲2·width_px points per series. */
+    width_px: number
+}
+
+/**
+ * Adaptive viewport query against a finished result's multi-resolution pyramid.
+ * Returns ≲2·width_px decimated OHLC-step points per (species, path) for [t0, t1].
+ */
+export async function fetchViewport(
+    resultId: string,
+    query: ViewportQuery,
+): Promise<TimeseriesData> {
+    const response = await apiFetchJson<{ timeseries: TimeseriesData }>(
+        `/simulations/${resultId}/timeseries/viewport`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(query),
+        },
+    )
+    return response.timeseries
+}

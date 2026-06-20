@@ -3,7 +3,7 @@ import { TimeseriesPanel } from "./TimeseriesPanel"
 import type { BasePanelOptions } from "./BasePanel"
 import type { TimeseriesData } from "@/types/simulation"
 import { getGeneFromSpeciesName } from "@/types/schedule"
-import { CHART_FONT_SIZES, AXIS_THICKNESS_NARROW } from "../chartConstants"
+import { CHART_FONT_SIZES, AXIS_THICKNESS_NARROW, STREAMING_FIFO_CAPACITY } from "../chartConstants"
 import { setupTimeAxis } from "../timeFormat"
 
 const SWEEP_DURATION_MS = 400
@@ -63,10 +63,6 @@ export class CountsPanel extends TimeseriesPanel {
 
         // Build set of keys that should exist after this call
         const incomingKeys = new Set<string>()
-        const speciesList = Object.keys(timeseries)
-        const firstSpeciesPathSample = speciesList[0] ? Object.keys(timeseries[speciesList[0]]!).slice(0, 5) : []
-        const totalPaths = speciesList[0] ? Object.keys(timeseries[speciesList[0]]!).length : 0
-        console.debug(`[CountsPanel] setData input: ${speciesList.length} species, ${totalPaths} paths each. Sample paths:`, firstSpeciesPathSample)
         for (const [species, pathData] of Object.entries(timeseries)) {
             for (const path of Object.keys(pathData)) {
                 const label = getGeneFromSpeciesName(species) ?? species
@@ -82,7 +78,6 @@ export class CountsPanel extends TimeseriesPanel {
         }
 
         // Add or update series
-        let created = 0
         this.surface.suspendUpdates()
         for (const [species, pathData] of Object.entries(timeseries)) {
             for (const [path, series] of Object.entries(pathData)) {
@@ -117,12 +112,10 @@ export class CountsPanel extends TimeseriesPanel {
                         animation: new SweepAnimation({ duration: SWEEP_DURATION_MS })
                     })
                     this.surface.renderableSeries.add(lineSeries)
-                    created++
                 }
             }
         }
         this.surface.resumeUpdates()
-        console.debug(`[CountsPanel] setData: created=${created} reused=${incomingKeys.size - created} total=${this.surface.renderableSeries.size()}`)
     }
 
     appendStreamingData(timeseries: TimeseriesData): void {
@@ -159,6 +152,7 @@ export class CountsPanel extends TimeseriesPanel {
         const xySeries = new XyDataSeries(this.wasmContext, {
             isSorted: true,
             containsNaN: true,
+            fifoCapacity: STREAMING_FIFO_CAPACITY,  // bound live WASM memory (trailing window)
             dataSeriesName: key
         })
         this.seriesMap.set(key, xySeries)

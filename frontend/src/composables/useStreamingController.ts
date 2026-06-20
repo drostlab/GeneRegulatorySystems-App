@@ -39,6 +39,14 @@ export function useStreamingController(chart: MainChart) {
     let active = false
     let watchers: WatchStopHandle[] = []
 
+    /**
+     * Execution path currently being streamed. Branches run sequentially in
+     * wall-clock, so only one is live at a time; when it changes (a branch
+     * switch), we clear the live series and start fresh for the new active path.
+     * The finished branch is already on disk and reachable via the viewport query.
+     */
+    let activePath: string | null = null
+
     // ---- Adaptive speed tracking ----
 
     /** EMA smoothing factor for inter-batch interval. */
@@ -67,6 +75,36 @@ export function useStreamingController(chart: MainChart) {
     const animator = new StreamingAnimator((update: RangeUpdate) => {
         chart.setStreamingRanges(update.xMin, update.xMax, update.yRanges)
     })
+
+    // ---- Active-branch tracking ----
+
+    /** The execution path carrying the latest data in a delta (the live branch). */
+    function _dominantPath(delta: TimeseriesData): string | null {
+        let best: string | null = null
+        let bestTime = -Infinity
+        for (const species in delta) {
+            for (const path in delta[species]!) {
+                for (const pt of delta[species]![path]!) {
+                    if (pt[1] !== -1 && pt[0] > bestTime) {
+                        bestTime = pt[0]
+                        best = path
+                    }
+                }
+            }
+        }
+        return best
+    }
+
+    /** Keep only the active path's series, so the live view shows a single branch. */
+    function _filterToActivePath(delta: TimeseriesData): TimeseriesData {
+        if (activePath === null) return delta
+        const out: StreamingBuffer = {}
+        for (const species in delta) {
+            const points = delta[species]![activePath]
+            if (points) out[species] = { [activePath]: points }
+        }
+        return out
+    }
 
     // ---- Buffer management ----
 
@@ -131,8 +169,13 @@ export function useStreamingController(chart: MainChart) {
         if (active) return
         active = true
         buffer = {}
+        activePath = null
         lastBatchTime = null
         batchIntervalEma = null
+
+        // Lock the viewport while streaming — the animator owns the range, and
+        // user zoom/pan would fight it. Re-enabled on stop().
+        chart.setZoomEnabled(false)
 
         animator.start()
 
@@ -142,7 +185,21 @@ export function useStreamingController(chart: MainChart) {
             (delta) => {
                 if (!delta) return
                 _updateAdaptiveSpeed(performance.now())
-                const maxTime = _mergeIntoBuffer(delta)
+
+                // Detect a branch switch: the active path changed. Clear the live
+                // series so only the new active branch is shown (no multi-branch
+                // pollution); the previous branch is already flushed to Arrow.
+                const incoming = _dominantPath(delta)
+                if (incoming !== null && incoming !== activePath) {
+                    if (activePath !== null) {
+                        chart.resetLiveSeries()
+                        buffer = {}
+                    }
+                    activePath = incoming
+                }
+
+                const branchDelta = _filterToActivePath(delta)
+                const maxTime = _mergeIntoBuffer(branchDelta)
                 if (maxTime > -Infinity) {
                     animator.setTargetX(maxTime)
                 }
@@ -180,8 +237,12 @@ export function useStreamingController(chart: MainChart) {
 
         // Discard buffer — full data will be loaded via HTTP
         buffer = {}
+        activePath = null
 
         animator.stop()
+
+        // Restore user zoom/pan now that the run is finished.
+        chart.setZoomEnabled(true)
 
         // Tear down watchers
         watchers.forEach(w => w())

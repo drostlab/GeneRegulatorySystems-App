@@ -184,6 +184,33 @@ export const useSimulationStore = defineStore(
             ) as TimeseriesData
         }
 
+        /**
+         * Fetch screen-resolution data for a finished result via the server pyramid.
+         * View-scoped (not merged into the cache): returns ≲2·width_px points per
+         * (species, path) for the window [t0, t1]. Resolves species from gene ids +
+         * direct other-species names.
+         */
+        async function fetchViewport(
+            genes: string[],
+            otherSpecies: string[],
+            paths: string[] | null,
+            t0: number,
+            t1: number,
+            widthPx: number,
+        ): Promise<TimeseriesData | null> {
+            const resultId = currentResultId.value
+            if (!resultId) return null
+            const scheduleStore = useScheduleStore()
+            const species = [
+                ...genes.flatMap(g => scheduleStore.getSpeciesForGeneId(g)),
+                ...otherSpecies,
+            ]
+            if (species.length === 0) return {}
+            return simulationService.fetchViewport(resultId, {
+                species, paths, t0, t1, width_px: widthPx,
+            })
+        }
+
         // =====================================================================
         // STREAMING (WS)
         // =====================================================================
@@ -461,6 +488,7 @@ export const useSimulationStore = defineStore(
             streamingDelta,
             fetchedGenes,
             getTimeseries,
+            fetchViewport,
             fetchGeneTimeseries,
             fetchOtherSpeciesTimeseries,
             autoRunOnSave,

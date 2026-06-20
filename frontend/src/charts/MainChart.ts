@@ -24,6 +24,13 @@ import type { PhaseSpaceResult } from "@/types/simulation"
 import { type SpeciesType } from "@/types/schedule"
 import { useScheduleStore } from "@/stores/scheduleStore"
 
+/** Visible time window + pixel width driving adaptive (pyramid) data requests. */
+export interface Viewport {
+    t0: number
+    t1: number
+    widthPx: number
+}
+
 export type SelectionChangeCallback = (selectedGenes: string[]) => void
 export type SegmentClickCallback = (segmentId: number, modelPath: string) => void
 export type HoverChangeCallback = (modelPath: string | null, executionPath: string | null) => void
@@ -243,6 +250,25 @@ export class MainChart {
         this.timeCursorModifier?.onSubChartVisibilityChanged()
     }
 
+    /**
+     * Enable/disable user zoom & pan across all panels. Disabled during live
+     * streaming so the viewport stays put (the animator drives the range); the
+     * full pyramid-backed zoom/pan is available once the run finishes.
+     */
+    setZoomEnabled(enabled: boolean): void {
+        for (const { panel } of this.tracks) {
+            panel.surface.chartModifiers.asArray().forEach(m => {
+                if (
+                    m instanceof ZoomPanModifier ||
+                    m instanceof MouseWheelZoomModifier ||
+                    m instanceof ZoomExtentsModifier
+                ) {
+                    m.isEnabled = enabled
+                }
+            })
+        }
+    }
+
     /** Zoom all visible panels to fit their data on both axes. */
     zoomExtentsAll(): void {
         for (const { panel } of this.tracks) {
@@ -308,7 +334,59 @@ export class MainChart {
         this.timeCursorModifier.applyColorTheme(isDark)
     }
 
-    setSimulationData(timeseries: TimeseriesData): void {
+    // ------------------------------------------------------------------
+    // Adaptive viewport (server-side decimation)
+    // ------------------------------------------------------------------
+
+    private viewportChangeCallback?: (vp: Viewport) => void
+    private viewportDebounce?: ReturnType<typeof setTimeout>
+
+    /**
+     * Current visible time window + pixel width of the timeseries area, used to
+     * request screen-resolution data from the server pyramid. Reads the shared
+     * (synced) x-axis of the first visible timeseries panel.
+     */
+    getViewport(): Viewport | null {
+        for (const { panel } of this.getTimeseriesPanels()) {
+            if (!panel.isVisible) continue
+            const xAxis = panel.surface.xAxes.get(0)
+            if (!xAxis) continue
+            const range = xAxis.visibleRange
+            const widthPx = Math.max(1, Math.round(panel.surface.seriesViewRect.width))
+            if (!Number.isFinite(range.min) || !Number.isFinite(range.max) || range.max <= range.min) continue
+            return { t0: range.min, t1: range.max, widthPx }
+        }
+        return null
+    }
+
+    /**
+     * Fire `cb` (debounced) whenever the user zooms/pans the timeseries x-axis, so
+     * the caller can re-query the pyramid at the new resolution. Wired to every
+     * timeseries panel's x-axis since AxisSyncModifier keeps them in lock-step.
+     */
+    onViewportChange(cb: (vp: Viewport) => void): void {
+        this.viewportChangeCallback = cb
+        for (const { panel } of this.getTimeseriesPanels()) {
+            const xAxis = panel.surface.xAxes.get(0)
+            xAxis?.visibleRangeChanged.subscribe(() => this._scheduleViewportChange())
+        }
+    }
+
+    private _scheduleViewportChange(): void {
+        if (!this.viewportChangeCallback) return
+        if (this.viewportDebounce) clearTimeout(this.viewportDebounce)
+        this.viewportDebounce = setTimeout(() => {
+            const vp = this.getViewport()
+            if (vp) this.viewportChangeCallback!(vp)
+        }, 150)
+    }
+
+    /**
+     * Replace the rendered timeseries. By default fits both axes (initial load);
+     * pass `fitAxes: false` for adaptive viewport refreshes, which keep the user's
+     * current zoom/pan and only swap the data at the new resolution.
+     */
+    setSimulationData(timeseries: TimeseriesData, { fitAxes = true }: { fitAxes?: boolean } = {}): void {
         const scheduleStore = useScheduleStore()
         const timeseriesPanels = this.getTimeseriesPanels()
 
@@ -329,10 +407,12 @@ export class MainChart {
                 start: 'set-data-start',
                 detail: { pointCount, totalSeries },
             })
-            // Only zoom if the panel has data to avoid NaN range errors
+            // Fit axes only on a fresh load; viewport refreshes preserve the
+            // user's zoom/pan (the x-range *is* the query that produced this data).
+            // y is still re-fit so spikes surfaced at the new resolution stay framed.
             if (panel.surface.renderableSeries.asArray().length > 0) {
                 panel.surface.zoomExtentsY()
-                panel.surface.zoomExtentsX()
+                if (fitAxes) panel.surface.zoomExtentsX()
             }
         })
 
@@ -357,6 +437,15 @@ export class MainChart {
         this.tracks.forEach(({ panel }) => {
             panel.setTimeExtent(metadata.time_extent.min, metadata.time_extent.max)
         })
+    }
+
+    /**
+     * Clear only the live (streaming) series from the timeseries panels, leaving
+     * selection, cursor and phase space intact. Called on a branch switch so the
+     * live view follows a single active branch without accumulating stale series.
+     */
+    resetLiveSeries(): void {
+        this.getTimeseriesPanels().forEach(({ panel }) => panel.clearData())
     }
 
     clearSimulationData(): void {
