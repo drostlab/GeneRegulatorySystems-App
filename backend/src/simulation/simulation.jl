@@ -15,12 +15,9 @@ import Tables
 
 import ..StreamingSink
 import ..ScheduleStorage
-import ..SimulationControl: SimulationController, check_pause!, send_progress, send_timeseries, send_status
-import ..GapTracking: GapTracker, register_episode!, check_gap, check_synthetic_start
+import ..SimulationControl: SimulationController
 import GeneRegulatorySystems.Models
 import GeneRegulatorySystems.Models.Scheduling
-import HTTP
-import HTTP: send
 
 # Re-export SimulationFrame from StreamingSink
 export SimulationFrame, SimulationData, SimulationResult, SimulationController
@@ -188,7 +185,7 @@ end
 """
     run_simulation(result, schedule; controller=nothing, segments=nothing)
 
-Execute a simulation, stream progress/timeseries via WS, and write results to disk.
+Execute a simulation, publish its in-process live tail, and write results to disk.
 
 If `segments` is provided (from reify_schedule), per-segment progress tracking is enabled.
 """
@@ -214,12 +211,22 @@ function run_simulation(result::SimulationResult, schedule::Models.Model;
     # recording per-episode.  Passing it in the top-level context would leak
     # `record = true` into step-based (skip) episodes, causing the model to
     # save every stochastic event even for snapshot-only schedules.
-    @info "[Simulation] Executing schedule" id=result.id
-    schedule(state, Inf; trace = sink)
+    try
+        @info "[Simulation] Executing schedule" id=result.id
+        schedule(state, Inf; trace = sink)
 
-    # Flush remaining buffered events and stream frames
-    @info "[Simulation] Flushing events" id=result.id
-    StreamingSink.flush!(sink)
+        @info "[Simulation] Flushing events" id=result.id
+        StreamingSink.flush!(sink)
+    catch
+        # Preserve every complete episode accumulated before an error or
+        # cooperative cancellation, then let the lifecycle owner set status.
+        try
+            StreamingSink.flush!(sink)
+        catch flush_error
+            @error "[Simulation] Failed to flush partial result" id=result.id exception=flush_error
+        end
+        rethrow()
+    end
 
     # Count frames from Arrow files
     @info "[Simulation] Counting frames" id=result.id
@@ -235,10 +242,6 @@ function run_simulation(result::SimulationResult, schedule::Models.Model;
         current_time = result.max_time
     )
 
-    # Notify WebSocket client of completion via controller
-    if !isnothing(controller)
-        send_status(controller, "completed")
-    end
     @info "[Simulation] Completed successfully" id=result.id
 end
 
@@ -479,13 +482,20 @@ function _load_events_as_timeseries(
         end
     end
 
-    # Build GapTracker from index data
-    tracker = GapTracker()
+    # Snapshot-style schedules emit a non-output run followed by an instant
+    # output episode. Preserve the existing per-path predecessor semantics
+    # inline; live rendering no longer reconstructs gaps at all.
+    run_predecessors = Dict{String, Dict{Float64, Float64}}()
     for ep_i in keys(i_to_path)
         f = get(i_to_from, ep_i, NaN)
         t = get(i_to_max_time, ep_i, NaN)
         (isnan(f) || isnan(t)) && continue
-        register_episode!(tracker, i_to_path[ep_i], f, t)
+        if f < t
+            predecessors = get!(run_predecessors, i_to_path[ep_i]) do
+                Dict{Float64, Float64}()
+            end
+            predecessors[t] = f
+        end
     end
 
     # Sort per-episode data, inject endpoint, flatten to path.
@@ -511,17 +521,22 @@ function _load_events_as_timeseries(
             for (ep_from, ep_to, points) in eps
                 sort!(points; by = first)
 
-                # Gap detection via shared tracker
-                (insert_gap, gap_t_start, gap_t_end) = check_gap(tracker, path, ep_from, prev_end)
-                if insert_gap
-                    push!(path_series, (gap_t_start, Int64(-1)))
-                    push!(path_series, (gap_t_end, Int64(-1)))
+                predecessor_from = get(
+                    get(run_predecessors, path, Dict{Float64, Float64}()),
+                    ep_from,
+                    NaN,
+                )
+                gap_start = isnan(predecessor_from) ? ep_from : predecessor_from
+                if !isnan(prev_end) && gap_start > prev_end + 1e-9
+                    push!(path_series, (prev_end + 1e-9, Int64(-1)))
+                    push!(path_series, (gap_start - 1e-9, Int64(-1)))
                 end
 
-                # Synthetic start-point via shared tracker
-                (insert_start, start_t) = check_synthetic_start(tracker, path, ep_from, prev_end)
-                if insert_start && !isempty(points) && start_t < first(points[1]) - 1e-9
-                    pushfirst!(points, (start_t, points[1][2]))
+                # Duplicate the first snapshot back to its bridging run start.
+                if isnan(prev_end) && !isnan(predecessor_from) &&
+                   predecessor_from < ep_from - 1e-9 && !isempty(points) &&
+                   predecessor_from < first(points)[1] - 1e-9
+                    pushfirst!(points, (predecessor_from, first(points)[2]))
                 end
 
                 # Inject endpoint at scheduled segment boundary

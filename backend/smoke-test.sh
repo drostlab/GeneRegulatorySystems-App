@@ -40,7 +40,7 @@ ok() {
 # ------------------------------------------------------------------
 
 echo "Starting Julia backend on port ${PORT} ..."
-julia --project="${SCRIPT_DIR}" "${SCRIPT_DIR}/run.jl" 127.0.0.1 "${PORT}" &
+julia --threads=auto --project="${SCRIPT_DIR}" "${SCRIPT_DIR}/run.jl" 127.0.0.1 "${PORT}" &
 SERVER_PID=$!
 
 # ------------------------------------------------------------------

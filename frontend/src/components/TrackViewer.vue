@@ -18,7 +18,6 @@ import OverlayPanel from 'primevue/overlaypanel'
 import Checkbox from 'primevue/checkbox'
 import * as simulationService from '@/services/simulationService'
 import { MainChart, type Viewport } from '@/charts/MainChart'
-import { useStreamingController } from '@/composables/useStreamingController'
 import { useTheme } from '@/composables/useTheme'
 import { buildClientPhaseSpace, recolourPhaseSpace } from '@/charts/phaseSpaceBuilder'
 import { GREEN, RED } from '@/config/theme'
@@ -44,14 +43,19 @@ const previousGeneSelection = ref<string[] | null>(null)
 const showPhaseSpace = ref(false)
 const pathSuggestions = ref<string[]>([])
 const channelSuggestions = ref<string[]>([])
+const isFinalizingSimulation = ref(false)
 
 const chart = new MainChart()
-const streaming = useStreamingController(chart)
+let livePollGeneration = 0
+let livePollTimer: ReturnType<typeof setTimeout> | null = null
+let phasePollTimer: ReturnType<typeof setTimeout> | null = null
 
 const OTHER_SPECIES_COLOUR = '#9e9e9e'
 
 const isScheduleLoading = computed(() => scheduleStore.isLoading)
-const isSimulationBusy = computed(() => simulationStore.isSimulationRunning || simulationStore.isLoadingResult)
+const isSimulationBusy = computed(() =>
+    simulationStore.isSimulationRunning || simulationStore.isLoadingResult || isFinalizingSimulation.value
+)
 const isUiDisabled = computed(() => isScheduleLoading.value || isSimulationBusy.value)
 
 /** Progress percentage for the progress bar (0-100). */
@@ -67,8 +71,9 @@ const resultError = ref<string | null>(null)
 
 /** Determine which loading overlay to show with priority (only one shown at a time). */
 const activeLoadingState = computed(() => {
-    // Priority order: schedule > timeseries > result > preparing
+    // Priority order: schedule > final result > timeseries > result > preparing
     if (isScheduleLoading.value) return 'schedule'
+    if (isFinalizingSimulation.value) return 'finalizing'
     if (isFirstTimeseriesFetch.value) return 'timeseries'
     if (simulationStore.isLoadingResult) return 'result'
     if (simulationStore.isPreparingSimulation) return 'preparing'
@@ -321,11 +326,8 @@ watch(
         if (!simulationStore.isLoaded || genes.length === 0) return
         const capped = genes.slice(0, viewerStore.maxRenderedGenes)
 
-        // During streaming, only update WS subscription (HTTP fetch deferred to completion)
-        if (simulationStore.isSimulationRunning) {
-            simulationStore.updateStreamSubscription(capped, viewerStore.selectedOtherSpecies)
-            return
-        }
+        // The next live poll atomically reconciles this selection.
+        if (simulationStore.isSimulationRunning) return
 
         await simulationStore.fetchGeneTimeseries(capped)
         refreshSimulationData()
@@ -353,11 +355,7 @@ watch(
     async (species) => {
         if (!simulationStore.isLoaded || species.length === 0) return
 
-        if (simulationStore.isSimulationRunning) {
-            const capped = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
-            simulationStore.updateStreamSubscription(capped, species)
-            return
-        }
+        if (simulationStore.isSimulationRunning) return
 
         await simulationStore.fetchOtherSpeciesTimeseries(species)
         refreshSimulationData()
@@ -374,7 +372,7 @@ watch(
  * both axes over the schedule's full time extent. Called from `onViewportChange`
  * with a `vp` on zoom/pan — re-queries at the new window and preserves the range.
  */
-async function refreshSimulationData(vp?: Viewport): Promise<void> {
+async function refreshSimulationData(vp?: Viewport, fullExtent = false): Promise<void> {
     if (!simulationStore.isLoaded || simulationStore.isSimulationRunning) return
     const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
     if (genes.length === 0 && viewerStore.selectedOtherSpecies.length === 0) return
@@ -384,7 +382,9 @@ async function refreshSimulationData(vp?: Viewport): Promise<void> {
     // Window: the user's current view (zoom/pan) or, on a full refresh, the
     // schedule's whole time extent.
     const extent = getTimeExtent(scheduleStore.segments)
-    const window = vp ?? chart.getViewport() ?? { t0: extent.min, t1: extent.max, widthPx: 1500 }
+    const window = fullExtent
+        ? { t0: extent.min, t1: extent.max, widthPx: 1500 }
+        : vp ?? chart.getViewport() ?? { t0: extent.min, t1: extent.max, widthPx: 1500 }
 
     const data = await simulationStore.fetchViewport(
         genes, viewerStore.selectedOtherSpecies, pathArray,
@@ -555,7 +555,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-    streaming.dispose()
+    stopLivePolling()
     chart.dispose()
     window.removeEventListener('keydown', handleEscapeKey)
 })
@@ -566,7 +566,7 @@ async function loadResult(event: SelectChangeEvent) {
     if (simulationStore.isSimulationRunning) {
         simulationStore.cancelSimulation()
     }
-    streaming.stop()
+    stopLivePolling()
     simulationStore.clearResult()
     chart.clearSimulationData()
     showPhaseSpace.value = false
@@ -595,13 +595,96 @@ async function loadResult(event: SelectChangeEvent) {
     }
 }
 
+function selectedLiveSpecies(): string[] {
+    const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
+    return [
+        ...genes.flatMap(gene => scheduleStore.getSpeciesForGeneId(gene)),
+        ...viewerStore.selectedOtherSpecies,
+    ]
+}
+
+function stopLivePolling(): void {
+    livePollGeneration++
+    if (livePollTimer !== null) clearTimeout(livePollTimer)
+    if (phasePollTimer !== null) clearTimeout(phasePollTimer)
+    livePollTimer = null
+    phasePollTimer = null
+    isFinalizingSimulation.value = false
+    chart.setZoomEnabled(true)
+}
+
+function pollPhaseSpace(resultId: string, generation: number): void {
+    const poll = async () => {
+        if (generation !== livePollGeneration || simulationStore.currentResultId !== resultId) return
+        try {
+            const ready = await simulationStore.loadPhaseSpaceWhenReady(resultId)
+            if (ready) return
+        } catch (error) {
+            console.warn('[TrackViewer] Phase-space poll failed:', error)
+        }
+        phasePollTimer = setTimeout(poll, 1000)
+    }
+    void poll()
+}
+
+function startLivePolling(resultId: string): void {
+    stopLivePolling()
+    const generation = ++livePollGeneration
+    chart.setZoomEnabled(false)
+
+    const poll = async () => {
+        if (generation !== livePollGeneration || simulationStore.currentResultId !== resultId) return
+        try {
+            const snapshot = await simulationService.fetchLive(resultId, selectedLiveSpecies())
+            if (generation !== livePollGeneration) return
+            simulationStore.applyLiveSnapshot(snapshot)
+
+            if (snapshot.status === 'running' || snapshot.status === 'paused' || snapshot.status === 'cancelling') {
+                chart.setLiveSnapshot(snapshot.series, snapshot.window_start, snapshot.current_time)
+                if (snapshot.current_time > 0) viewerStore.setTimepoint(snapshot.current_time)
+                livePollTimer = setTimeout(poll, snapshot.status === 'paused' ? 500 : 250)
+                return
+            }
+
+            chart.setZoomEnabled(true)
+            livePollTimer = null
+            if (snapshot.status === 'completed') {
+                isFinalizingSimulation.value = true
+                try {
+                    await loadResults()
+                    await refreshSimulationData(undefined, true)
+                } finally {
+                    isFinalizingSimulation.value = false
+                }
+                pollPhaseSpace(resultId, generation)
+            } else if (snapshot.error) {
+                await loadResults()
+                resultError.value = snapshot.error
+            } else {
+                await loadResults()
+            }
+        } catch (error) {
+            if (generation !== livePollGeneration) return
+            console.warn('[TrackViewer] Live poll failed:', error)
+            livePollTimer = setTimeout(poll, 1000)
+        }
+    }
+
+    void poll()
+}
+
 async function runSimulation() {
     chart.clearSimulationData()
     showPhaseSpace.value = false
-    streaming.stop()
-    streaming.start()
-    // runSimulation returns immediately (async server-side), then WS streams data
-    simulationStore.runSimulation().then(() => loadResults())
+    stopLivePolling()
+    resultError.value = null
+    try {
+        const result = await simulationStore.runSimulation()
+        await loadResults()
+        startLivePolling(result.id)
+    } catch (error) {
+        resultError.value = error instanceof Error ? error.message : String(error)
+    }
 }
 
 function pauseSimulation() {
@@ -624,7 +707,7 @@ function clearSimulation() {
     if (simulationStore.isSimulationRunning) {
         simulationStore.cancelSimulation()
     }
-    streaming.stop()
+    stopLivePolling()
     chart.clearSimulationData()
     chart.hidePhaseSpace()
     showPhaseSpace.value = false
@@ -1000,6 +1083,7 @@ defineExpose({
                 <ProgressSpinner style="width: 50px; height: 50px" stroke-width="3" />
                 <div class="loading-text">
                     <span v-if="activeLoadingState === 'schedule'">Loading schedule...</span>
+                    <span v-else-if="activeLoadingState === 'finalizing'">Loading completed simulation...</span>
                     <span v-else-if="activeLoadingState === 'timeseries'">Loading timeseries...</span>
                     <span v-else-if="activeLoadingState === 'result'">Loading result...</span>
                     <span v-else-if="activeLoadingState === 'preparing'">Preparing simulation...</span>

@@ -3,7 +3,7 @@ import { TimeseriesPanel } from "./TimeseriesPanel"
 import type { BasePanelOptions } from "./BasePanel"
 import type { TimeseriesData } from "@/types/simulation"
 import { getGeneFromSpeciesName } from "@/types/schedule"
-import { CHART_FONT_SIZES, AXIS_THICKNESS_NARROW, STREAMING_FIFO_CAPACITY } from "../chartConstants"
+import { CHART_FONT_SIZES, AXIS_THICKNESS_NARROW } from "../chartConstants"
 import { setupTimeAxis } from "../timeFormat"
 
 const SWEEP_DURATION_MS = 400
@@ -116,56 +116,6 @@ export class CountsPanel extends TimeseriesPanel {
             }
         }
         this.surface.resumeUpdates()
-    }
-
-    appendStreamingData(timeseries: TimeseriesData): void {
-        if (!this.metadata) return
-
-        this.surface.suspendUpdates()
-        for (const [species, pathData] of Object.entries(timeseries)) {
-            for (const [path, points] of Object.entries(pathData)) {
-                const label = getGeneFromSpeciesName(species) ?? species
-                const key = `${label}:${path}`
-
-                let xySeries = this.seriesMap.get(key)
-                if (!xySeries) {
-                    xySeries = this._createStreamingSeries(key, label)
-                }
-
-                const len = points.length
-                const time = new Float64Array(len)
-                const counts = new Float64Array(len)
-                for (let i = 0; i < len; i++) {
-                    time[i] = points[i]![0]
-                    // -1 is the gap marker between non-contiguous episodes
-                    counts[i] = points[i]![1] === -1 ? NaN : points[i]![1]
-                }
-                xySeries.appendRange(time as unknown as number[], counts as unknown as number[])
-            }
-        }
-        this.surface.resumeUpdates()
-    }
-
-    /** Create a new XyDataSeries + FastLineRenderableSeries for a streaming key. */
-    private _createStreamingSeries(key: string, label: string): XyDataSeries {
-        const colour = this.metadata!.gene_colours[label] ?? this.theme.chart.fallbackSeries
-        const xySeries = new XyDataSeries(this.wasmContext, {
-            isSorted: true,
-            containsNaN: true,
-            fifoCapacity: STREAMING_FIFO_CAPACITY,  // bound live WASM memory (trailing window)
-            dataSeriesName: key
-        })
-        this.seriesMap.set(key, xySeries)
-
-        const lineSeries = new FastLineRenderableSeries(this.wasmContext, {
-            dataSeries: xySeries,
-            stroke: colour,
-            strokeThickness: 1,
-            isDigitalLine: true,
-            drawNaNAs: ELineDrawMode.DiscontinuousLine
-        })
-        this.surface.renderableSeries.add(lineSeries)
-        return xySeries
     }
 
     /** Remove a renderable series (and its data series) by key. */

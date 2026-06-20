@@ -10,7 +10,19 @@ export interface TimeseriesMetadata {
     segment_paths: Record<string, string>
 }
 
-export type SimulationStatus = 'running' | 'paused' | 'completed' | 'error'
+export type SimulationStatus = 'running' | 'paused' | 'cancelling' | 'cancelled' | 'completed' | 'error'
+
+export interface LiveSimulationSnapshot {
+    status: SimulationStatus
+    current_time: number
+    window_start: number
+    frame_count: number
+    total_progress: number
+    active_lineage: string
+    active_path: string
+    series: TimeseriesData
+    error?: string | null
+}
 
 /**
  * Unified simulation result. Timeseries data is always loaded lazily

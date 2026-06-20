@@ -4,14 +4,14 @@
  * Responsibilities:
  * - Fetch stored simulation results (without timeseries)
  * - Load a single simulation result by ID
- * - Start a simulation run (async, returns immediately; progress via WS)
+ * - Start a simulation run and poll its bounded in-process live tail
  * - Fetch timeseries data for specific species (lazy per-gene loading)
  *
  * Used by: simulationStore
  */
 
 import { apiFetch, apiFetchJson } from '@/utils/api'
-import type { PhaseSpaceResult, SimulationResult, TimeseriesData } from '@/types'
+import type { LiveSimulationSnapshot, PhaseSpaceResult, SimulationResult, TimeseriesData } from '@/types'
 
 /** Normalise a result from HTTP (which may lack total_progress). */
 function normaliseResult(r: SimulationResult): SimulationResult {
@@ -43,7 +43,7 @@ export async function loadResult(resultId: string): Promise<SimulationResult> {
 /**
  * Start a simulation run.
  * The server spawns the simulation async and returns immediately with status=running.
- * Progress and timeseries arrive via WebSocket.
+ * Progress and live timeseries are read through `fetchLive`.
  */
 export async function runSimulation(scheduleName: string, scheduleJson: string, maxTime: number, subscribedSpecies: string[] = []): Promise<SimulationResult> {
     const result = await apiFetchJson<SimulationResult>('/simulations/run', {
@@ -63,6 +63,23 @@ export async function runSimulation(scheduleName: string, scheduleJson: string, 
 
     return normaliseResult(result)
 }
+
+/** Reconcile the desired live species and fetch one consistent live snapshot. */
+export async function fetchLive(resultId: string, species: string[]): Promise<LiveSimulationSnapshot> {
+    return apiFetchJson<LiveSimulationSnapshot>(`/simulations/${resultId}/live`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ species }),
+    })
+}
+
+async function postControl(resultId: string, action: 'pause' | 'resume' | 'cancel'): Promise<void> {
+    await apiFetch(`/simulations/${resultId}/${action}`, { method: 'POST' })
+}
+
+export const pauseSimulation = (resultId: string) => postControl(resultId, 'pause')
+export const resumeSimulation = (resultId: string) => postControl(resultId, 'resume')
+export const cancelSimulation = (resultId: string) => postControl(resultId, 'cancel')
 
 /**
  * Fetch phase-space embedding for a simulation result.

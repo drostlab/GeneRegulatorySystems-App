@@ -41,11 +41,4 @@ export abstract class TimeseriesPanel extends BasePanel {
 
     abstract setData(timeseries: TimeseriesData): void
 
-    /**
-     * Append incremental streaming data to existing series.
-     * Implementations should use appendRange for efficiency.
-     *
-     * @param timeseries - Incremental data points from the current time window
-     */
-    abstract appendStreamingData(timeseries: TimeseriesData): void
 }

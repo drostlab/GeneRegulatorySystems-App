@@ -3,8 +3,7 @@ import { TimeseriesPanel } from "./TimeseriesPanel"
 import { PATH_DIM_OPACITY, type BasePanelOptions } from "./BasePanel"
 import type { TimeseriesData, TimeseriesMetadata } from "@/types/simulation"
 import { restructureTimeseriesByPathAndGene } from "@/types/simulation"
-import { getGeneFromSpeciesName } from "@/types/schedule"
-import { CHART_FONT_SIZES, AXIS_THICKNESS, STREAMING_FIFO_CAPACITY } from "../chartConstants"
+import { CHART_FONT_SIZES, AXIS_THICKNESS } from "../chartConstants"
 import { withOpacity } from "@/utils/colorUtils"
 import { setupTimeAxis } from "../timeFormat"
 
@@ -174,49 +173,6 @@ export class PromoterPanel extends TimeseriesPanel {
         this.surface.resumeUpdates()
     }
 
-    appendStreamingData(timeseries: TimeseriesData): void {
-        if (!this.metadata) return
-
-        this.surface.suspendUpdates()
-        for (const [species, pathData] of Object.entries(timeseries)) {
-            for (const [path, points] of Object.entries(pathData)) {
-                const label = getGeneFromSpeciesName(species) ?? species
-                const key = `${label}:${path}`
-
-                const params = this.bandParams.get(key)
-                if (!params) {
-                    continue
-                }
-
-                let xyyData = this.seriesMap.get(key)
-                if (!xyyData) {
-                    xyyData = this._createStreamingSeries(key, label)
-                }
-
-                const { yCenter, bandHeight } = params
-
-                // Cross-batch step fix: prepend the last state from the existing series
-                // so _buildBandArrays can generate the step-duplicate at the boundary.
-                let batchPoints: Array<[number, number]> = points
-                const n = xyyData.count()
-                if (n > 0 && points.length > 0 && points[0]![1] !== -1) {
-                    const lastY = xyyData.getNativeYValues().get(n - 1)
-                    // NaN means the last point was a gap marker -- skip step-dup
-                    if (!isNaN(lastY)) {
-                        const lastState = Math.abs(lastY - yCenter) > 0.01 ? 1 : 0
-                        batchPoints = [[points[0]![0], lastState], ...points]
-                    }
-                }
-
-                const { xData, yTop, yBottom } = this._buildBandArrays(batchPoints, yCenter, bandHeight)
-                if (xData.length > 0) {
-                    xyyData.appendRange(xData, yTop, yBottom)
-                }
-            }
-        }
-        this.surface.resumeUpdates()
-    }
-
     /**
      * Convert raw timeseries points into digital band arrays.
      * For each transition, we duplicate the point at the new time with the old state
@@ -278,31 +234,6 @@ export class PromoterPanel extends TimeseriesPanel {
             rs.strokeY1 = rs.fillY1
             rs.stroke = rs.fillY1
         }
-    }
-
-    /** Create a new XyyDataSeries + FastBandRenderableSeries for streaming. */
-    private _createStreamingSeries(key: string, label: string): XyyDataSeries {
-        const colour = this.metadata!.gene_colours[label] ?? this.theme.chart.fallbackSeries
-        this.keyColourMap.set(key, colour)
-        const xyyData = new XyyDataSeries(this.wasmContext, {
-            isSorted: true,
-            containsNaN: true,
-            fifoCapacity: STREAMING_FIFO_CAPACITY,  // bound live WASM memory (trailing window)
-            dataSeriesName: key
-        })
-        this.seriesMap.set(key, xyyData)
-
-        const bandSeries = new FastBandRenderableSeries(this.wasmContext, {
-            dataSeries: xyyData,
-            stroke: colour,
-            strokeThickness: 0.0,
-            fillY1: colour,
-            strokeY1: colour,
-            drawNaNAs: ELineDrawMode.DiscontinuousLine,
-            resamplingMode: EResamplingMode.None
-        })
-        this.surface.renderableSeries.add(bandSeries)
-        return xyyData
     }
 
     /** Remove a renderable series (and its data series) by key. */
