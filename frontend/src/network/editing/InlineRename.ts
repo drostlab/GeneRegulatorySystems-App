@@ -1,39 +1,52 @@
 /**
- * GeneRename - inline rename overlay for gene compounds.
+ * InlineRename - inline rename overlay for any labelled node.
  *
  * The overlay is a DOM input positioned over the cytoscape label. While
- * active we add the `.renaming` class to the gene node, which the
- * stylesheet uses to hide the canvas label (text-opacity: 0); the DOM
- * input is the only label visible.
+ * active we add the `.renaming` class to the node, which the stylesheet uses
+ * to hide the canvas label (text-opacity: 0); the DOM input is the only label
+ * visible. Originally gene-specific (hence the gene-flavoured docs in
+ * `networkStyles`), it now drives both gene-compound and reaction-node
+ * renaming — the caller supplies the per-target `initialValue`, label
+ * typography, collision `validate`, and `onCommit` via the start config.
  *
- * Typography (font family, size) and compound margin come from the shared
- * `GENE_LABEL_STYLE` so the overlay tracks the canvas label exactly.
  * Positioning derives from `renderedBoundingBox({ includeLabels })` —
- * subtracting the no-labels bbox from the with-labels bbox reveals the
- * label region in rendered space, which is robust to `text-valign` choice
- * and zoom.
+ * subtracting the no-labels bbox from the with-labels bbox reveals the label
+ * region in rendered space, which is robust to `text-valign` choice (label
+ * above a compound, below a node, or centred on a dot) and to zoom.
  *
- * Validation: rename collisions check against the current set of gene
- * names. Invalid input gets a red border and is not committed; the input
+ * Validation: invalid input gets a red border and is not committed; the input
  * stays open so the user can fix it.
  */
 import type { Core } from 'cytoscape'
 import { createInlineInput } from './inlineEdit'
 import { getTheme } from '@/config/theme'
-import { GENE_LABEL_STYLE } from '../networkStyles'
 
-export type GeneRenameHandler = (geneId: string, newName: string) => void
-export type GeneNameLookup = () => Set<string>
+/** Typography for the overlay input, in cytoscape model units (scaled by zoom). */
+export interface RenameLabelStyle {
+    fontFamily: string
+    /** Font size in model units — matches the canvas label so the input tracks it. */
+    fontSize: number
+}
 
-export class GeneRename {
+/** Per-invocation configuration for a rename. */
+export interface InlineRenameConfig {
+    /** Cytoscape id of the node whose label is being edited. */
+    nodeId: string
+    /** Value the input opens with (the clean current name, no decorations). */
+    initialValue: string
+    labelStyle: RenameLabelStyle
+    /** Returns true if `newName` is an acceptable commit (collisions, etc.). */
+    validate: (newName: string) => boolean
+    /** Called with the trimmed new name once it validates and differs. */
+    onCommit: (newName: string) => void
+}
+
+export class InlineRename {
     private cy: Core | null = null
     private isDark = false
-    private handler: GeneRenameHandler | null = null
-    /** Caller-provided lookup for collision validation; defaults to empty. */
-    private geneNameLookup: GeneNameLookup = () => new Set()
 
     private active: {
-        geneId: string
+        config: InlineRenameConfig
         ele: any
         container: HTMLDivElement
         input: HTMLInputElement
@@ -42,15 +55,6 @@ export class GeneRename {
     } | null = null
     private onViewportChange: (() => void) | null = null
     private pendingFrame: number | null = null
-
-    set onRename(cb: GeneRenameHandler | null) {
-        this.handler = cb
-    }
-
-    /** Provide the set of taken gene names for collision validation. */
-    setGeneNameLookup(lookup: GeneNameLookup): void {
-        this.geneNameLookup = lookup
-    }
 
     attach(cy: Core, isDark = false): void {
         this.cy = cy
@@ -62,9 +66,9 @@ export class GeneRename {
         if (this.active) this.applyInputTheme(this.active.input)
     }
 
-    start(geneId: string): void {
+    start(config: InlineRenameConfig): void {
         if (!this.cy) return
-        const ele = this.cy.getElementById(geneId)
+        const ele = this.cy.getElementById(config.nodeId)
         if (!ele || ele.empty()) return
         this.cancel()
 
@@ -88,12 +92,12 @@ export class GeneRename {
             willChange: 'transform',
         } as Partial<CSSStyleDeclaration>)
 
-        const initial = String(ele.data('label') ?? geneId)
+        const initial = config.initialValue
         const handle = createInlineInput({
             initialValue: initial,
             onCommit: (raw) => {
                 const newName = raw.trim()
-                if (!this.validate(newName, geneId)) {
+                if (!config.validate(newName)) {
                     // Keep input visible; re-arm so the next Enter/blur is
                     // a fresh commit attempt instead of a no-op. Without
                     // this, `createInlineInput`'s single-fire guard leaves
@@ -104,7 +108,7 @@ export class GeneRename {
                 }
                 this.cleanup()
                 if (newName && newName !== initial) {
-                    this.handler?.(geneId, newName)
+                    config.onCommit(newName)
                 }
             },
             onCancel: () => this.cleanup(),
@@ -116,7 +120,7 @@ export class GeneRename {
         host.appendChild(container)
 
         this.active = {
-            geneId, ele, container, input,
+            config, ele, container, input,
             dispose: handle.dispose,
             rearm: handle.rearm,
         }
@@ -164,12 +168,6 @@ export class GeneRename {
         }
     }
 
-    private validate(newName: string, currentId: string): boolean {
-        if (!newName) return false
-        if (newName === currentId) return true
-        return !this.geneNameLookup().has(newName)
-    }
-
     private flashInvalid(): void {
         if (!this.active) return
         const t = getTheme(this.isDark)
@@ -213,7 +211,7 @@ export class GeneRename {
         }
 
         const zoom = this.cy.zoom()
-        this.active.container.style.fontSize = `${GENE_LABEL_STYLE.fontSize * zoom}px`
+        this.active.container.style.fontSize = `${this.active.config.labelStyle.fontSize * zoom}px`
         this.active.container.style.transform =
             `translate3d(${cx.toFixed(1)}px, ${cy.toFixed(1)}px, 0) translate(-50%, -50%)`
     }
@@ -229,7 +227,7 @@ export class GeneRename {
             borderBottom: `2px solid ${this.borderColour()}`,
             background: 'transparent',
             color: this.borderColour(),
-            fontFamily: GENE_LABEL_STYLE.fontFamily,
+            fontFamily: this.active?.config.labelStyle.fontFamily ?? 'inherit',
             fontWeight: 'normal',
             fontSize: 'inherit',
             outline: 'none',

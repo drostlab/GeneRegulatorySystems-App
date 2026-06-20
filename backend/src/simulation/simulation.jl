@@ -209,13 +209,16 @@ function run_simulation(result::SimulationResult, schedule::Models.Model;
 
     state = Models.FlatState()
 
-    # Execute schedule with sink as trace callback
-    # Note: do NOT pass `record = true` here -- the Primitive scheduler controls
-    # recording per-episode.  Passing it in the top-level context would leak
-    # `record = true` into step-based (skip) episodes, causing the model to
-    # save every stochastic event even for snapshot-only schedules.
+    # Execute schedule with sink as trace callback.
+    #
+    # `dense = true` makes JumpModel record every stochastic event so the sink's
+    # `each_event` iteration yields full trajectories — what our timeseries
+    # plots need. It is safe to set globally: the scheduler forces `dense=false`
+    # for step-based (skip) episodes, so discrete-sampling schedules still emit
+    # one sample per step rather than the whole trajectory. (See the Slice vs
+    # skip branches in GRS.jl scheduling.jl.)
     @info "[Simulation] Executing schedule" id=result.id
-    schedule(state, Inf; trace = sink)
+    schedule(state, Inf; trace = sink, dense = true)
 
     # Flush remaining buffered events and stream frames
     @info "[Simulation] Flushing events" id=result.id

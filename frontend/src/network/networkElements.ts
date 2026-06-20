@@ -12,6 +12,7 @@
 import type { UnionNetwork, Node, Link } from '@/types/network'
 import { MODEL_NODE_KINDS, MACHINERY_SPECIES, linkId } from '@/types/network'
 import { getEdgeColour, shouldShowEdgeLabel } from './networkStyles'
+import { reactionNameFromRate, isReverseRate } from './editing/reactionName'
 import { getTheme } from '@/config/theme'
 import { lighten, darken, contrastTextColour } from '@/utils/colorUtils'
 import logging from '@/utils/logging'
@@ -251,10 +252,11 @@ function buildNodeElement(
         ? String(node.properties.species_type)
         : node.name
 
-    // Parent colour for reaction label backgrounds (lightened/darkened per theme)
+    // Parent colour for reaction label backgrounds (lightened/darkened per theme).
+    // Undefined for orphan reactions so the stylesheet fallback applies instead.
     const parentColour = node.parent && node.parent in geneColours
         ? (isDark ? darken(geneColours[node.parent]!, 0.3) : lighten(geneColours[node.parent]!, 0.7))
-        : colour
+        : undefined
 
     // Compound-parent (gene in species view) bg colour: same lighten/darken
     // function as `parentColour`, but applied to the gene's own colour. Used
@@ -268,8 +270,8 @@ function buildNodeElement(
     // For reaction nodes the backend's `rate` is the full canonical
     // parameter symbol. The canvas label wants a short readable form:
     //   cascade:    `gene_1.processing`     -> `processing`
-    //   aux fwd:    `reaction.0.k⁺`         -> `rxn 0`
-    //   aux rev:    `reaction.0.k⁻`         -> `rxn 0 ←`
+    //   aux fwd:    `reaction.rxn-1.k⁺`     -> `rxn-1`
+    //   aux rev:    `reaction.rxn-1.k₋`     -> `rxn-1 ←`
     const rate = node.properties?.rate
     const rateName = typeof rate === 'string' ? shortReactionLabel(rate) : rate
 
@@ -372,7 +374,10 @@ function getNodeColour(node: Node, geneColours: Record<string, string>): string 
  * @param link - the backend link
  */
 function formatLinkLabel(link: Link): string {
+    // `reversible` is a styling flag on reagent edges (drives bidirectional
+    // arrows), not a value to print — keep it out of the visible label.
     const entries = Object.entries(link.properties ?? {})
+        .filter(([key]) => key !== 'reversible')
     if (entries.length === 0) return ''
 
     if (entries.length === 1) {
@@ -392,17 +397,19 @@ function formatLinkLabel(link: Link): string {
  * Compact reaction-node label derived from the rate parameter symbol.
  *
  *   cascade:        `gene_1.processing`     -> `processing`
- *   aux forward:    `reaction.0.k⁺`         -> `rxn 0`
- *   aux reverse:    `reaction.0.k⁻`         -> `rxn 0 ←`
+ *   aux forward:    `reaction.rxn-1.k⁺`     -> `rxn-1`
+ *   aux reverse:    `reaction.rxn-1.k₋`     -> `rxn-1 ←`
  *
- * Forward/reverse aux reactions share an index but produce two distinct
- * Catalyst reactions, so the reverse one gets an arrow to disambiguate.
+ * Auxiliary reactions carry their declared name (defaulting to `rxn-<i>`).
+ * Forward/reverse rates share a name but produce two distinct Catalyst
+ * reactions, so the reverse one gets an arrow to disambiguate. Reaction
+ * names never contain `.`, so the name is everything between the
+ * `reaction.` prefix and the trailing rate field.
  */
 function shortReactionLabel(symbol: string): string {
-    const aux = symbol.match(/^reaction\.(\d+)\.(.+)$/)
-    if (aux) {
-        const reverse = aux[2] === 'k⁻' || aux[2] === 'k_minus' || aux[2] === 'k-'
-        return reverse ? `rxn ${aux[1]} ←` : `rxn ${aux[1]}`
+    const name = reactionNameFromRate(symbol)
+    if (name !== null) {
+        return isReverseRate(symbol) ? `${name} ←` : name
     }
     return symbol.split('.').pop() ?? symbol
 }

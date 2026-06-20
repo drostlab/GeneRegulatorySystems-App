@@ -294,7 +294,9 @@ end
     reified = ScheduleVisualization.reify_schedule(spec, name=data.payload.schedule_name)
     ScheduleVisualization.is_valid(reified) || return HTTP.Response(400, "Invalid schedule: $(ScheduleVisualization.get_error_messages(reified))")
 
-    model = ScheduleVisualization.cache_entry(spec).grs_schedule
+    # Fold in any user edits accumulated against this spec (keyed by spec
+    # hash in the spec cache). With no edits this is the original schedule.
+    model = ScheduleVisualization.edited_schedule(spec)
     gene_colours = reified.data.gene_colours
     timeline_segments = reified.data.segments
 

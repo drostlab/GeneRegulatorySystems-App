@@ -6,22 +6,34 @@
  *   - cxttap on the canvas background        -> { kind: 'background' }
  *   - cxttap on a regulatory edge (act/rep/  -> { kind: 'reg-edge', id, linkKind }
  *     proteolysis)
+ *   - cxttap on a renameable auxiliary        -> { kind: 'reaction', id, reactionName }
+ *     reaction node (has a `reaction.<name>.k…` rate)
+ *   - cxttap on a species node               -> { kind: 'species', id }
+ *     (in species view; lets the user seed/connect auxiliary reactions)
  *   - cxttap on any node inside (or being)   -> { kind: 'gene', id }
  *     a gene compound — we walk up `.parent()` so right-clicking the
- *     species/reactions inside a gene still surfaces the gene's menu
+ *     gene compound (or a cascade reaction) still surfaces the gene's menu
  *   - anything else                          -> ignored
  *
  * The handler receives the original `MouseEvent` (with `clientX/Y`) for
  * positioning a PrimeVue `ContextMenu`.
  */
 import type { Core } from 'cytoscape'
+import { reactionNameFromRate } from './reactionName'
+import type { ReagentRole } from './actions'
 
 export type ContextTarget =
     /** `position` is in cytoscape model space (where the user right-clicked). */
     | { kind: 'background', position: { x: number, y: number } }
     | { kind: 'gene', id: string }
+    /** `id` is the structural node id; `reactionName` the declared name to rename. */
+    | { kind: 'reaction', id: string, reactionName: string }
+    /** A species node — `id` is its species id (e.g. `A.proteins`, `polymerases`). */
+    | { kind: 'species', id: string }
     /** `source`/`target` are the edge's endpoint ids (species-level). */
     | { kind: 'reg-edge', id: string, linkKind: string, source: string, target: string }
+    /** A substrate/product edge of an auxiliary reaction — disconnectable. */
+    | { kind: 'reagent-edge', reactionName: string, species: string, role: ReagentRole }
 
 const REGULATORY_EDGE_KINDS = new Set(['activation', 'repression', 'proteolysis'])
 
@@ -74,23 +86,62 @@ export class ContextDispatch {
 
         if (typeof t.isEdge === 'function' && t.isEdge()) {
             const linkKind = String(t.data('kind') ?? '')
-            if (!REGULATORY_EDGE_KINDS.has(linkKind)) return null
-            return {
-                kind: 'reg-edge',
-                id: String(t.id()),
-                linkKind,
-                source: String(t.data('source')),
-                target: String(t.data('target')),
+            if (REGULATORY_EDGE_KINDS.has(linkKind)) {
+                return {
+                    kind: 'reg-edge',
+                    id: String(t.id()),
+                    linkKind,
+                    source: String(t.data('source')),
+                    target: String(t.data('target')),
+                }
             }
+            if (linkKind === 'substrate' || linkKind === 'product') {
+                return this.resolveReagentEdge(t, linkKind)
+            }
+            return null
         }
 
         if (typeof t.isNode === 'function' && t.isNode()) {
+            // A renameable auxiliary reaction takes precedence over its gene
+            // ancestor: its rate symbol carries an editable declared name.
+            if (t.data('kind') === 'reaction') {
+                const reactionName = reactionNameFromRate(t.data('rate'))
+                if (reactionName !== null) {
+                    return { kind: 'reaction', id: String(t.id()), reactionName }
+                }
+            }
+            // Species nodes get their own menu (seed/connect auxiliary
+            // reactions) rather than deferring to their gene compound.
+            if (t.data('kind') === 'species') {
+                return { kind: 'species', id: String(t.id()) }
+            }
             const gene = findGeneAncestor(t)
             if (gene) return { kind: 'gene', id: String(gene.id()) }
             return null
         }
 
         return null
+    }
+
+    /**
+     * Resolve a substrate/product edge to a disconnectable reagent of an
+     * auxiliary reaction. A substrate edge runs species→reaction (role
+     * `from`); a product edge runs reaction→species (role `to`). Returns null
+     * if the reaction endpoint isn't a renameable auxiliary reaction (cascade
+     * edges aren't editable).
+     */
+    private resolveReagentEdge(edge: any, linkKind: string): ContextTarget | null {
+        if (!this.cy) return null
+        const source = String(edge.data('source'))
+        const target = String(edge.data('target'))
+        const role: ReagentRole = linkKind === 'substrate' ? 'from' : 'to'
+        const species = linkKind === 'substrate' ? source : target
+        const reactionNodeId = linkKind === 'substrate' ? target : source
+        const reactionName = reactionNameFromRate(
+            this.cy.getElementById(reactionNodeId).data('rate'),
+        )
+        if (reactionName === null) return null
+        return { kind: 'reagent-edge', reactionName, species, role }
     }
 }
 

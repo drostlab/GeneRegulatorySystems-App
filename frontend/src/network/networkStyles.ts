@@ -29,7 +29,7 @@ const FONT_FAMILY = 'Montserrat'
 /**
  * Shared gene-label typography. Single source of truth for both the canvas
  * stylesheet (`node.gene` rules below) and the DOM overlay used by
- * GeneRename so the inline rename input is pixel-faithful to the label it
+ * InlineRename so the inline rename input is pixel-faithful to the label it
  * replaces.
  *
  *   compoundMarginY  -- matches the `text-margin-y` applied to compound
@@ -40,6 +40,25 @@ export const GENE_LABEL_STYLE = {
     fontFamily: FONT_FAMILY,
     fontSize: 16,
     compoundMarginY: -8,
+}
+
+/**
+ * Reaction-node label typography, shared by the `node.reaction` stylesheet
+ * rule and the InlineRename overlay so a reaction rename input matches its
+ * (small, centred) canvas label.
+ */
+export const REACTION_LABEL_STYLE = {
+    fontFamily: FONT_FAMILY,
+    fontSize: 2.1,
+}
+
+/**
+ * Stoichiometry label typography on substrate/product edges, shared by those
+ * edge rules and the InlineEdgeNumber overlay used to edit the number.
+ */
+export const STOICH_LABEL_STYLE = {
+    fontFamily: FONT_FAMILY,
+    fontSize: 1.3,
 }
 
 /** Edge colours re-exported from theme for backward compat. */
@@ -215,10 +234,11 @@ export function buildStylesheet(isDark = false): any[] {
                 'shape': 'ellipse',
                 'width': REACTION_SIZE,
                 'height': REACTION_SIZE,
-                'font-size': 1.8,
+                'font-size': REACTION_LABEL_STYLE.fontSize,
                 'text-valign': 'center' as any,
                 'text-background-opacity': 0.8,
                 'text-background-padding': '0.2px',
+                'text-background-color': t.network.reactionBg,
                 'background-color': t.network.reactionBg,
                 'background-opacity': 0,
                 'color': t.network.edgeLabelText,
@@ -355,7 +375,7 @@ export function buildStylesheet(isDark = false): any[] {
                 'width': 0.5,
                 'line-color': t.network.speciesEdgeColour,
                 'target-arrow-color': t.network.speciesEdgeColour,
-                'font-size': 1.3,
+                'font-size': STOICH_LABEL_STYLE.fontSize,
                 'arrow-scale': 0.15,
                 'curve-style': 'unbundled-bezier',
                 'control-point-step-size': 4,
@@ -370,13 +390,30 @@ export function buildStylesheet(isDark = false): any[] {
                 'width': 0.5,
                 'line-color': t.network.speciesEdgeColour,
                 'target-arrow-color': t.network.speciesEdgeColour,
-                'font-size': 1.3,
+                'font-size': STOICH_LABEL_STYLE.fontSize,
                 'arrow-scale': 0.2,
                 'curve-style': 'unbundled-bezier',
                 'control-point-step-size': 4,
                 'text-margin-y': -1,
                 'text-background-opacity': 0,
                 'color': t.network.speciesEdgeLabelText,
+            } as any,
+        },
+        // -- reversible auxiliary reaction edges: a second (source) arrowhead
+        //    makes the substrate/product edge read as bidirectional (⇌). The
+        //    `reversible` flag is stamped on the reagent links by the backend.
+        {
+            selector: 'edge[kind="substrate"][?reversible]',
+            style: {
+                'source-arrow-shape': 'triangle',
+                'source-arrow-color': t.network.speciesEdgeColour,
+            } as any,
+        },
+        {
+            selector: 'edge[kind="product"][?reversible]',
+            style: {
+                'source-arrow-shape': 'triangle',
+                'source-arrow-color': t.network.speciesEdgeColour,
             } as any,
         },
         // -- peripheral Kronecker edges: barely visible, nearly inert in physics --
@@ -469,8 +506,8 @@ export function buildStylesheet(isDark = false): any[] {
         // ====================================================================
         // Editing overlays
         // ====================================================================
-        // Hide the canvas label of a gene currently being renamed — the DOM
-        // overlay (GeneRename) replaces it pixel-faithfully.
+        // Hide the canvas label of a node currently being renamed (gene or
+        // reaction) — the DOM overlay (InlineRename) replaces it faithfully.
         {
             selector: 'node.renaming',
             style: { 'text-opacity': 0 } as any,

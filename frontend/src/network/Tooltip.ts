@@ -9,6 +9,7 @@
  */
 import type { Core, EventHandler } from 'cytoscape'
 import { showGrsTooltip, moveGrsTooltip, hideGrsTooltip } from '@/utils/grsTooltip'
+import { reactionNameFromRate, isReverseRate } from './editing/reactionName'
 
 export class Tooltip {
     private cy: Core | null = null
@@ -153,22 +154,21 @@ export function createEdgeTooltip(lookup: ParameterValueLookup): Tooltip {
 /**
  * Derive a friendly reaction name from its `rate` parameter symbol.
  * Cascade reactions have symbols like `gene_1.mrna_decay`; auxiliary
- * reactions have `reaction.<i>.<field>`. Falls back to the raw symbol if
+ * reactions have `reaction.<name>.<field>` where `<name>` is the reaction's
+ * declared name (defaulting to `rxn-<i>`). Falls back to the raw symbol if
  * the shape is unfamiliar.
  */
 function reactionNameFromSymbol(symbol: string | undefined): string | null {
     if (!symbol) return null
+    // auxiliary: reaction.<name>.<field>  →  "<name>" or "<name> (reverse)".
+    const name = reactionNameFromRate(symbol)
+    if (name !== null) {
+        return isReverseRate(symbol) ? `${name} (reverse)` : name
+    }
     const parts = symbol.split('.')
     if (parts.length === 2) {
         // cascade: gene.kind  →  "kind on gene"
         return `${parts[1]} on ${parts[0]}`
-    }
-    if (parts.length >= 3 && parts[0] === 'reaction') {
-        // auxiliary: reaction.<i>.<field>  →  "reaction <i>" or
-        // "reaction <i> (reverse)" when the field is the reverse rate.
-        const field = parts[parts.length - 1]
-        const reverse = field === 'k⁻' || field === 'k_minus' || field === 'k-'
-        return reverse ? `reaction ${parts[1]} (reverse)` : `reaction ${parts[1]}`
     }
     return symbol
 }

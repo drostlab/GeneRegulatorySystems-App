@@ -2,6 +2,7 @@
 import { ref, onMounted, watch, onBeforeUnmount, computed } from 'vue'
 import { useScheduleStore } from '@/stores/scheduleStore'
 import { useViewerStore } from '@/stores/viewerStore'
+import { useSimulationStore } from '@/stores/simulationStore'
 import { NetworkView } from '@/network/NetworkView'
 import type { Core } from 'cytoscape'
 import type { ContextTarget } from '@/network/editing/ContextDispatch'
@@ -16,6 +17,7 @@ const containerRef = ref<HTMLDivElement>()
 const contextMenuRef = ref<InstanceType<typeof ContextMenu>>()
 const scheduleStore = useScheduleStore()
 const viewerStore = useViewerStore()
+const simulationStore = useSimulationStore()
 const networkView = new NetworkView()
 const { isDark, onThemeChange } = useTheme()
 const isDetailVisible = ref(false)
@@ -67,7 +69,15 @@ function emit(raw: RawEditAction): void {
         // Replacing scheduleStore.unionNetwork triggers the existing watch
         // that calls networkView.setNetwork, which now preserves positions
         // for any node id present in both the old and new graphs.
-        onSuccess: (network) => { scheduleStore.unionNetwork = network },
+        onSuccess: (network) => {
+            scheduleStore.unionNetwork = network
+            // Mirror ScheduleEditor's save behaviour: when auto-run is enabled,
+            // a successful edit kicks off a fresh simulation (TrackViewer watches
+            // pendingAutoRun). The backend picks up the cached edits for this spec.
+            if (simulationStore.autoRunOnSave) {
+                simulationStore.pendingAutoRun = true
+            }
+        },
         onError: (msg) => console.warn('[edit]', msg),
     })
 }
@@ -139,6 +149,54 @@ const geneMenuItems = (geneId: string) => [
     },
 ]
 
+const reactionMenuItems = (nodeId: string, reactionName: string) => [
+    {
+        label: 'Rename reaction',
+        command: () => networkView.startReactionRename(nodeId),
+    },
+    {
+        label: 'Add reagent',
+        items: [
+            {
+                label: 'input (pick a species)',
+                command: () => networkView.startReagentConnection(reactionName, 'from'),
+            },
+            {
+                label: 'output (pick a species)',
+                command: () => networkView.startReagentConnection(reactionName, 'to'),
+            },
+        ],
+    },
+    { separator: true },
+    {
+        label: 'Delete reaction',
+        command: () => emit({ type: 'delete_reaction', reactionName }),
+    },
+]
+
+const reagentEdgeMenuItems = (reactionName: string, species: string, role: 'from' | 'to') => [
+    {
+        label: 'Remove connection',
+        command: () => emit({ type: 'remove_reagent', reactionName, species, role }),
+    },
+]
+
+const speciesMenuItems = (speciesId: string) => [
+    {
+        label: 'New reaction',
+        items: [
+            {
+                label: 'with this as input',
+                command: () => emit({ type: 'add_reaction', species: speciesId, role: 'from' }),
+            },
+            {
+                label: 'with this as output',
+                command: () => emit({ type: 'add_reaction', species: speciesId, role: 'to' }),
+            },
+        ],
+    },
+]
+
 const regEdgeMenuItems = (source: string, target: string, currentKind: LinkKind) => [
     {
         label: 'Change kind',
@@ -163,6 +221,11 @@ const contextMenuItems = computed(() => {
     const tgt = contextTarget.value
     if (!tgt || tgt.kind === 'background') return backgroundMenuItems.value
     if (tgt.kind === 'gene') return geneMenuItems(tgt.id)
+    if (tgt.kind === 'reaction') return reactionMenuItems(tgt.id, tgt.reactionName)
+    if (tgt.kind === 'species') return speciesMenuItems(tgt.id)
+    if (tgt.kind === 'reagent-edge') {
+        return reagentEdgeMenuItems(tgt.reactionName, tgt.species, tgt.role)
+    }
     if (tgt.kind === 'reg-edge') {
         return regEdgeMenuItems(tgt.source, tgt.target, tgt.linkKind as LinkKind)
     }

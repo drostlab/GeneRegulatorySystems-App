@@ -18,7 +18,7 @@ import { SharedTimeCursorModifier } from "./modifiers/SharedTimeCursorModifier"
 import { PanelGroup } from "./layout/PanelGroup"
 import { ChartLayout, type GroupNode, type LayoutNode } from "./layout/ChartLayout"
 import { collectPathYRanges } from "./layout/rectangleLayout"
-import { getPathTimeRanges, getSegmentBoundaryTimes } from "@/types/schedule"
+import { getPathTimeRanges } from "@/types/schedule"
 import type { StructureNode, TimelineSegment, TimeseriesData, TimeseriesMetadata } from "@/types"
 import type { PhaseSpaceResult } from "@/types/simulation"
 import { type SpeciesType } from "@/types/schedule"
@@ -349,12 +349,10 @@ export class MainChart {
         promoterPanel.setPathYRanges(pathYRanges)
 
         const pathTimeRanges = getPathTimeRanges(segments)
-        const boundaryTimes = getSegmentBoundaryTimes(segments)
         const timeseriesPanels = this.getTimeseriesPanels()
         timeseriesPanels.forEach(({ panel }) => {
             panel.setMetadata(metadata)
             panel.setPathTimeRanges(pathTimeRanges)
-            panel.setSegmentBoundaries(boundaryTimes)
         })
         this.tracks.forEach(({ panel }) => {
             panel.setTimeExtent(metadata.time_extent.min, metadata.time_extent.max)

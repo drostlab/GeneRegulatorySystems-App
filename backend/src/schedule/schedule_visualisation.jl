@@ -30,7 +30,7 @@ using ..V1Editing
 export Network, UnionNetwork, ModelExclusions, TimelineSegment, ScheduleData, StructureNode
 export ReifiedSchedule, ValidationMessage
 export reify_schedule, extract_network_for_model_path, extract_union_network, is_valid, get_error_messages
-export gene_colours_from_spec, clear_spec_cache, apply_edit_to_path!
+export gene_colours_from_spec, clear_spec_cache, apply_edit_to_path!, edited_schedule
 
 # ============================================================================
 # Schema Types
@@ -449,6 +449,37 @@ function apply_edit_to_path!(
     entry.edits[model_path] = new_def
     entry.union_network = nothing  # invalidate so the next call rebuilds
     return extract_union_network(spec_string, segments; include_reactions)
+end
+
+"""
+    edited_schedule(spec_string) -> GRSSchedule
+
+Return an executable schedule with the user's accumulated edits folded in.
+
+The edits cache (`entry.edits`) holds, per `model_path`, a `V1.Definition`
+that supersedes whatever the original spec produces there. We splice each
+one back into the Specification tree at its `model_path` — the same path
+grammar `Scheduling.reify` and `Specifications.set` share — by rendering
+the edited Definition to its `{regulation/v1}` spec node via
+`representation` and rebuilding the node as a `Specification`.
+
+When there are no edits this is the unmodified `grs_schedule`. The result
+is *not* memoised on the entry: it is a per-run view derived from the
+current edit set, so subsequent edits don't see a stale schedule.
+"""
+function edited_schedule(spec_string::String)::GRSSchedule
+    entry = cache_entry(spec_string)
+    isempty(entry.edits) && return entry.grs_schedule
+
+    base = entry.grs_schedule
+    bound = Set(keys(base.bindings))
+    spec = base.specification
+    for (model_path, def) in entry.edits
+        node = Specifications.Specification(V1.representation(def); bound)
+        spec = Specifications.set(spec, model_path, node)
+    end
+    @info "Built edited schedule for simulation" edits=length(entry.edits)
+    return GRSSchedule(; specification = spec, base.bindings)
 end
 
 # Link identity is topological (see `link_id`); the `parameters` slot list is

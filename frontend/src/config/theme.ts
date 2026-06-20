@@ -140,7 +140,6 @@ export interface ThemeMode {
             hover:    { stroke: string; text: string }
             selected: { fill: string; stroke: string; text: string }
         }
-        segmentBoundary: string
     }
     /** Network diagram. */
     network: {
@@ -196,18 +195,17 @@ const light: ThemeMode = {
             hover:    { stroke: GREY[400], text: GREY[700] },
             selected: { fill: RED[200], stroke: GREY[300], text: GREY[900] },
         },
-        segmentBoundary: GREY[400],
     },
     network: {
-        reactionBg:           GREY[300],
-        highlightBorder:      GREY[950],
-        edgeLabelText:        GREY[900],
-        speciesEdgeLabelText: GREY[700],
-        speciesEdgeColour:    GREY[350],
-        edgeLabelBg:          GREY[0],
-        dotGrid:              GREY[300],
-        nodeFallback:         GREY[400],
-        geneLabelText:        GREY[950],
+        reactionBg:              GREY[300],
+        highlightBorder:         GREY[950],
+        edgeLabelText:           GREY[900],
+        speciesEdgeLabelText:    GREY[700],
+        speciesEdgeColour:       GREY[350],
+        edgeLabelBg:             GREY[0],
+        dotGrid:                 GREY[300],
+        nodeFallback:            GREY[400],
+        geneLabelText:           GREY[950],
     },
     phaseSpace: {
         trajectoryLine:       GREY[300],
@@ -245,18 +243,17 @@ const dark: ThemeMode = {
             hover:    { stroke: GREY[400], text: GREY[200] },
             selected: { fill: RED[950], stroke: RED[900], text: GREY[50] },
         },
-        segmentBoundary: GREY[700],
     },
     network: {
-        reactionBg:           GREY[500],
-        highlightBorder:      GREY[950],
-        edgeLabelText:        GREY[100],
-        speciesEdgeLabelText: GREY[200],
-        speciesEdgeColour:    GREY[500],
-        edgeLabelBg:          GREY[800],
-        dotGrid:              GREY[800],
-        nodeFallback:         GREY[500],
-        geneLabelText:        GREY[100],
+        reactionBg:              GREY[400],
+        highlightBorder:         GREY[950],
+        edgeLabelText:           GREY[100],
+        speciesEdgeLabelText:    GREY[200],
+        speciesEdgeColour:       GREY[500],
+        edgeLabelBg:             GREY[800],
+        dotGrid:                 GREY[800],
+        nodeFallback:            GREY[500],
+        geneLabelText:           GREY[100],
     },
     phaseSpace: {
         trajectoryLine:       GREY[600],

@@ -13,6 +13,12 @@
 
 export type LinkKind = 'activation' | 'repression' | 'proteolysis'
 
+/**
+ * Which side of a reaction a reagent sits on: `from` = substrate (input),
+ * `to` = product (output). Matches the `Reagents` fields in the V1 spec.
+ */
+export type ReagentRole = 'from' | 'to'
+
 export interface Position {
     x: number
     y: number
@@ -22,6 +28,18 @@ export interface Position {
 export type RawEditAction =
     | { type: 'set_parameter', symbol: string, value: number }
     | { type: 'rename_gene', geneId: string, newName: string }
+    // `reactionName` is the reaction's current declared name (extracted from
+    // its rate symbol `reaction.<name>.k⁺`), not the structural cytoscape id.
+    | { type: 'rename_reaction', reactionName: string, newName: string }
+    | { type: 'delete_reaction', reactionName: string }
+    // Create a new auxiliary reaction seeded with `species` as its sole reagent
+    // on side `role` (substrate when 'from', product when 'to').
+    | { type: 'add_reaction', species: string, role: ReagentRole }
+    // Connect / disconnect a species to/from an existing reaction on side `role`.
+    | { type: 'add_reagent', reactionName: string, species: string, role: ReagentRole }
+    | { type: 'remove_reagent', reactionName: string, species: string, role: ReagentRole }
+    // Set a reagent's stoichiometry; `value` of 0 removes the connection.
+    | { type: 'set_stoichiometry', reactionName: string, species: string, role: ReagentRole, value: number }
     | { type: 'delete_gene', geneId: string }
     | { type: 'create_gene', name: string, position: Position }
     // For link actions, `source` / `target` are endpoint ids as they appear

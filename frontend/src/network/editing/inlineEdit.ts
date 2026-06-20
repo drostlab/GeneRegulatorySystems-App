@@ -1,7 +1,7 @@
 /**
  * inlineEdit - shared input wiring for in-canvas text edits.
  *
- * Used by InlineParameters (parameter chips) and GeneRename (label overlay).
+ * Used by InlineParameters (parameter chips) and InlineRename (label overlay).
  * Handles the parts that are identical across call sites:
  *   - Enter commits, Escape cancels, blur commits (single-fire so Enter+blur
  *     doesn't fire commit twice)

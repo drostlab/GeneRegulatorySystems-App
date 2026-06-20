@@ -21,7 +21,7 @@ import fcose from 'cytoscape-fcose'
 import svgExporter from 'cytoscape-svg'
 
 import { getGeneViewElements } from './networkElements'
-import { buildStylesheet } from './networkStyles'
+import { buildStylesheet, GENE_LABEL_STYLE, REACTION_LABEL_STYLE } from './networkStyles'
 import { getTheme } from '@/config/theme'
 import { AdaptiveZoom } from './AdaptiveZoom'
 import { ModelFilter } from './ModelFilter'
@@ -33,15 +33,19 @@ import {
     InlineParameters,
     type ParameterValueLookup,
 } from './editing/InlineParameters'
-import type { RawEditActionHandler, LinkKind } from './editing/actions'
-import type { GeneNameLookup } from './editing/GeneRename'
+import type { RawEditActionHandler, LinkKind, ReagentRole } from './editing/actions'
 import {
     ContextDispatch,
     type ContextMenuHandler,
 } from './editing/ContextDispatch'
 import { EdgeCreation } from './editing/EdgeCreation'
-import { GeneRename } from './editing/GeneRename'
+import { InlineRename } from './editing/InlineRename'
+import { InlineEdgeNumber } from './editing/InlineEdgeNumber'
+import { reactionNameFromRate } from './editing/reactionName'
 import { saveFile } from '@/utils/saveFile'
+
+/** Supplies the current set of taken gene names for rename collision checks. */
+export type GeneNameLookup = () => Set<string>
 
 cytoscape.use(fcose)
 cytoscape.use(svgExporter)
@@ -71,7 +75,13 @@ export class NetworkView {
     private inlineParameters = new InlineParameters()
     private contextDispatch = new ContextDispatch()
     private edgeCreation = new EdgeCreation()
-    private geneRename = new GeneRename()
+    private inlineRename = new InlineRename()
+    private inlineEdgeNumber = new InlineEdgeNumber()
+
+    /** Stored so rename overlays (gene/reaction) can emit through one channel. */
+    private editHandler: RawEditActionHandler | null = null
+    /** Current taken gene names, for rename collision validation. */
+    private geneNameLookup: GeneNameLookup = () => new Set()
 
     /**
      * Looks up a parameter's current value for the active model.
@@ -163,14 +173,14 @@ export class NetworkView {
         this.edgeCreation.onEdgeComplete = handler
             ? (source, target, kind) => handler({ type: 'create_link', source, target, kind })
             : null
-        this.geneRename.onRename = handler
-            ? (geneId, newName) => handler({ type: 'rename_gene', geneId, newName })
-            : null
+        // Rename overlays (gene + reaction) emit through the stored handler;
+        // see startGeneRename / startReactionRename.
+        this.editHandler = handler
     }
 
     /** Supply gene-name lookup for in-flight rename collision validation. */
     setGeneNameLookup(lookup: GeneNameLookup): void {
-        this.geneRename.setGeneNameLookup(lookup)
+        this.geneNameLookup = lookup
     }
 
     /** The active cytoscape instance, or null before `setNetwork`. */
@@ -254,7 +264,8 @@ export class NetworkView {
         this.applyContainerBackground()
         this.adaptiveZoom.applyTheme(isDark)
         this.inlineParameters.applyTheme(isDark)
-        this.geneRename.applyTheme(isDark)
+        this.inlineRename.applyTheme(isDark)
+        this.inlineEdgeNumber.applyTheme(isDark)
         if (this.cy) {
             this.cy.style(buildStylesheet(isDark))
         }
@@ -267,7 +278,100 @@ export class NetworkView {
 
     /** Begin inline rename of a gene compound. */
     startGeneRename(geneId: string): void {
-        this.geneRename.start(geneId)
+        this.inlineRename.start({
+            nodeId: geneId,
+            initialValue: geneId,
+            labelStyle: GENE_LABEL_STYLE,
+            validate: (newName) =>
+                !!newName && (newName === geneId || !this.geneNameLookup().has(newName)),
+            onCommit: (newName) =>
+                this.editHandler?.({ type: 'rename_gene', geneId, newName }),
+        })
+    }
+
+    /**
+     * Begin inline rename of an auxiliary reaction. `nodeId` is the reaction
+     * node's structural cytoscape id; its declared name (the editable value)
+     * comes from the rate symbol. No-op for non-renameable reactions.
+     */
+    startReactionRename(nodeId: string): void {
+        if (!this.cy) return
+        const ele = this.cy.getElementById(nodeId)
+        if (!ele || ele.empty()) return
+        const reactionName = reactionNameFromRate(ele.data('rate'))
+        if (reactionName === null) return
+
+        // Other reaction names in the graph, for collision validation.
+        const taken = new Set(
+            this.cy.nodes('[kind = "reaction"]')
+                .map((n) => reactionNameFromRate(n.data('rate')))
+                .filter((s): s is string => s !== null && s !== reactionName),
+        )
+
+        this.inlineRename.start({
+            nodeId,
+            initialValue: reactionName,
+            labelStyle: REACTION_LABEL_STYLE,
+            validate: (newName) => !!newName && !taken.has(newName),
+            onCommit: (newName) =>
+                this.editHandler?.({ type: 'rename_reaction', reactionName, newName }),
+        })
+    }
+
+    /**
+     * Arm a one-shot "pick a species" mode to connect a reagent to reaction
+     * `reactionName` on side `role`. The next tap on a species node emits an
+     * `add_reagent`; a tap on anything else (or Escape) cancels.
+     */
+    startReagentConnection(reactionName: string, role: ReagentRole): void {
+        if (!this.cy) return
+        const cy = this.cy
+        const container = cy.container()
+        if (container) container.style.cursor = 'crosshair'
+
+        const cleanup = () => {
+            if (container) container.style.cursor = ''
+            cy.off('tap', onTap)
+            document.removeEventListener('keydown', onKey)
+        }
+        const onTap = (evt: any) => {
+            const t = evt.target
+            cleanup()
+            if (t !== cy && typeof t.isNode === 'function' && t.isNode()
+                && t.data('kind') === 'species') {
+                this.editHandler?.({
+                    type: 'add_reagent', reactionName, species: String(t.id()), role,
+                })
+            }
+        }
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') cleanup() }
+        cy.on('tap', onTap)
+        document.addEventListener('keydown', onKey)
+    }
+
+    /**
+     * Open the inline stoichiometry editor on a substrate/product edge of an
+     * auxiliary reaction. No-op for cascade edges (reaction endpoint has no
+     * editable name). Commit emits `set_stoichiometry`.
+     */
+    private startStoichiometryEdit(edge: any): void {
+        if (!this.cy) return
+        const linkKind = String(edge.data('kind'))
+        const role: ReagentRole = linkKind === 'substrate' ? 'from' : 'to'
+        const species = String(linkKind === 'substrate' ? edge.data('source') : edge.data('target'))
+        const reactionNodeId = String(linkKind === 'substrate' ? edge.data('target') : edge.data('source'))
+        const reactionName = reactionNameFromRate(
+            this.cy.getElementById(reactionNodeId).data('rate'),
+        )
+        if (reactionName === null) return
+        const current = Number(edge.data('stoichiometry') ?? 1)
+
+        this.inlineEdgeNumber.start({
+            edgeId: String(edge.id()),
+            initialValue: current,
+            onCommit: (value) =>
+                this.editHandler?.({ type: 'set_stoichiometry', reactionName, species, role, value }),
+        })
     }
 
     /** Toggle between gene and species views manually. */
@@ -444,7 +548,11 @@ export class NetworkView {
 
             this.contextDispatch.attach(this.cy)
             this.edgeCreation.attach(this.cy)
-            this.geneRename.attach(this.cy, this.isDark)
+            this.inlineRename.attach(this.cy, this.isDark)
+            this.inlineEdgeNumber.attach(this.cy, this.isDark)
+            this.cy.on('tap', 'edge[kind="substrate"], edge[kind="product"]', (evt) => {
+                this.startStoichiometryEdit(evt.target)
+            })
 
             // When detail visibility changes (zoom or toggle), sync externally
             this.adaptiveZoom.onDetailChange = (visible: boolean) => {
@@ -475,7 +583,8 @@ export class NetworkView {
         this.inlineParameters.destroy()
         this.contextDispatch.destroy()
         this.edgeCreation.destroy()
-        this.geneRename.destroy()
+        this.inlineRename.destroy()
+        this.inlineEdgeNumber.destroy()
     }
 
     private destroyCytoscape(): void {
