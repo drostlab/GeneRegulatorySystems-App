@@ -257,8 +257,8 @@ function reify_schedule(spec_string::String; name::String="", source::String="sn
     entry = try
         cache_entry(spec_string)
     catch e
-        @error "Schedule parse failed" exception=e
-        msgs = [ValidationMessage(type="error", content="Failed to process schedule: $(string(e))")]
+        @error "Schedule parse failed" exception=(e, catch_backtrace())
+        msgs = [ValidationMessage(type="error", content=schedule_error_message(e))]
         return ReifiedSchedule(; name, source, spec=spec_string, data=nothing, validationMessages=msgs)
     end
 
@@ -293,8 +293,8 @@ function fill_schedule_data!(entry::SpecCacheEntry, spec_string::String, name::S
             @info "Schedule visualisation generated" name segments=length(merged) genes=length(genes) elapsed=(time() - vis_start)
         end
     catch e
-        push!(msgs, ValidationMessage(type="error", content="Failed to process schedule: $(string(e))"))
-        @error "Schedule processing failed" exception=e
+        push!(msgs, ValidationMessage(type="error", content=schedule_error_message(e)))
+        @error "Schedule processing failed" exception=(e, catch_backtrace())
     end
     entry.schedule_data = data
     entry.validation_messages = msgs
