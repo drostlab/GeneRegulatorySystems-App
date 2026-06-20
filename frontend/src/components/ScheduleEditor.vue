@@ -302,37 +302,39 @@ onBeforeUnmount(() => {
                     />
                 </div>
 
-                <!-- Save in place (renaming a user schedule moves it). -->
-                <Button
-                    icon="pi pi-save"
-                    severity="secondary"
-                    rounded
-                    v-grs-tooltip="`Save (${shortcutModifier}S)`"
-                    @click="saveEdit"
-                    size="small"
-                    :loading="isSaving"
-                    :disabled="isLoading || isSaving || !editor.currentName.trim() || !hasUnsavedChanges"
-                />
+                <div class="schedule-actions">
+                    <!-- Save in place (renaming a user schedule moves it). -->
+                    <Button
+                        icon="pi pi-save"
+                        severity="secondary"
+                        rounded
+                        v-grs-tooltip="`Save (${shortcutModifier}S)`"
+                        @click="saveEdit"
+                        size="small"
+                        :loading="isSaving"
+                        :disabled="isLoading || isSaving || !editor.currentName.trim() || !hasUnsavedChanges"
+                    />
 
-                <Button
-                    icon="pi pi-plus"
-                    severity="secondary"
-                    rounded
-                    v-grs-tooltip="`New schedule (${shortcutModifier}N)`"
-                    @click="createNewSchedule"
-                    size="small"
-                    :disabled="isLoading"
-                />
+                    <Button
+                        icon="pi pi-plus"
+                        severity="secondary"
+                        rounded
+                        v-grs-tooltip="`New schedule (${shortcutModifier}N)`"
+                        @click="createNewSchedule"
+                        size="small"
+                        :disabled="isLoading"
+                    />
 
-                <Button
-                    icon="pi pi-copy"
-                    severity="secondary"
-                    rounded
-                    v-grs-tooltip="`Duplicate schedule (${shortcutModifier}${shortcutModifier === '⌘' ? '⇧' : 'Shift+'}D)`"
-                    @click="duplicateSchedule"
-                    size="small"
-                    :disabled="isLoading || !store.schedule.spec"
-                />
+                    <Button
+                        icon="pi pi-copy"
+                        severity="secondary"
+                        rounded
+                        v-grs-tooltip="`Duplicate schedule (${shortcutModifier}${shortcutModifier === '⌘' ? '⇧' : 'Shift+'}D)`"
+                        @click="duplicateSchedule"
+                        size="small"
+                        :disabled="isLoading || !store.schedule.spec"
+                    />
+                </div>
 
             </div>
         </div>
@@ -409,6 +411,11 @@ onBeforeUnmount(() => {
     height: 100%;
     background: var(--p-surface-ground);
     position: relative;
+    container-type: inline-size;
+}
+
+.card-header-row {
+    flex-wrap: wrap;
 }
 
 /* Validation area */
@@ -454,7 +461,7 @@ onBeforeUnmount(() => {
 
 .schedule-title-control {
     display: flex;
-    flex: 1;
+    flex: 1 1 190px;
     min-width: 0;
 }
 
@@ -475,11 +482,30 @@ onBeforeUnmount(() => {
 
 .schedule-name-input {
     flex: 1;
-    min-width: 120px;
+    min-width: 0;
     font-size: var(--font-size-sm) !important;
     border-top-left-radius: 0;
     border-bottom-left-radius: 0;
     margin-left: -1px;
+}
+
+.schedule-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--spacing-lg);
+    margin-left: auto;
+}
+
+@container (max-width: 400px) {
+    .schedule-title-control {
+        flex-basis: 100%;
+    }
+
+    .schedule-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
 }
 
 .schedule-name-input:focus {

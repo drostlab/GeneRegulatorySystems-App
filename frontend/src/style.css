@@ -76,6 +76,23 @@ html, body, #app {
    Component Patterns
    ======================================================================== */
 
+/* Desktop-editor selection model: application chrome is not text-selectable.
+   Opt copyable/readable surfaces back in explicitly. */
+.app-shell {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.app-shell input,
+.app-shell textarea,
+.app-shell [contenteditable="true"],
+.app-shell .monaco-editor,
+.app-shell .selectable-text,
+.app-shell .validation-area {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* Common header/panel styling */
 .card-header {
   display: flex;

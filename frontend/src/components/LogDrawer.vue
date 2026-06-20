@@ -61,7 +61,7 @@ watch(() => store.lines.length, async () => {
                 />
             </div>
         </div>
-        <div ref="scrollContainer" class="log-content">
+        <div ref="scrollContainer" class="log-content selectable-text">
             <div
                 v-for="(line, i) in filteredLines"
                 :key="i"

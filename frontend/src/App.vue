@@ -41,7 +41,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <div style="display: flex; flex-direction: column; width: 100vw; height: 100vh">
+    <div class="app-shell" style="display: flex; flex-direction: column; width: 100vw; height: 100vh">
         <div class="top-right-controls">
             <Button
                 :icon="isDark ? 'pi pi-moon' : 'pi pi-sun'"
