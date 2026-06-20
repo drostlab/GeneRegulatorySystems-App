@@ -9,7 +9,7 @@
  *
  * Filters out model-level container nodes and machinery species.
  */
-import type { UnionNetwork, Node, Link } from '@/types/network'
+import type { UnionNetwork, Node, Link, HiddenReagent } from '@/types/network'
 import { MODEL_NODE_KINDS, MACHINERY_SPECIES, linkId } from '@/types/network'
 import { getEdgeColour, shouldShowEdgeLabel } from './networkStyles'
 import { getTheme } from '@/config/theme'
@@ -24,15 +24,6 @@ const DETAIL_KINDS = new Set(['species', 'reaction'])
 // ============================================================================
 // Public API
 // ============================================================================
-
-/** A reaction participant that has no node in the graph (machinery species). */
-export interface HiddenReagent {
-    /** Species name, e.g. `polymerases`. */
-    species: string
-    /** Stoichiometric coefficient. */
-    stoichiometry: number
-    role: 'substrate' | 'product'
-}
 
 /**
  * Map of reaction node id → its machinery (polymerase/ribosome/proteasome)

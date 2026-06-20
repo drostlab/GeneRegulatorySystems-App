@@ -48,6 +48,19 @@ export interface Network {
     links: Link[]
 }
 
+/**
+ * A reaction participant that has no node drawn in the graph — i.e. a
+ * machinery species (polymerase/ribosome/proteasome). Used to fold these
+ * back into reaction tooltips, which otherwise only see drawn edges.
+ */
+export interface HiddenReagent {
+    /** Species name, e.g. `polymerases`. */
+    species: string
+    /** Stoichiometric coefficient. */
+    stoichiometry: number
+    role: 'substrate' | 'product'
+}
+
 /** Nodes and links absent from a specific model (relative to the union). */
 export interface ModelExclusions {
     nodes: string[]

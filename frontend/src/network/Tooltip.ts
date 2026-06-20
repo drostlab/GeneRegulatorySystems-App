@@ -84,7 +84,7 @@ export class Tooltip {
     }
 }
 
-import type { Parameter } from '@/types/network'
+import type { Parameter, HiddenReagent } from '@/types/network'
 
 /**
  * Resolve parameter values for the currently active model.
@@ -179,13 +179,6 @@ function formatStoichiometry(value: unknown): string {
     return `${value} `
 }
 
-/** A reagent participating in a reaction that has no node drawn in the graph. */
-export interface HiddenReagent {
-    species: string
-    stoichiometry: number
-    role: 'substrate' | 'product'
-}
-
 /** Resolve the machinery (un-drawn) reagents for a reaction node id. */
 export type HiddenReagentLookup = (reactionId: string) => HiddenReagent[] | undefined
 
@@ -217,7 +210,7 @@ function formatReactionEquation(node: any, hiddenLookup: HiddenReagentLookup): s
     const rhs = products.length ? products.join(' + ') : '∅'
     const reversible = node.connectedEdges('[kind = "substrate"], [kind = "product"]')
         .some((e: any) => Boolean(e.data('reversible')))
-    const arrow = reversible ? '⇌' : '→'
+    const arrow = reversible ? '⇌' : '⭢'
     return [`  ${lhs} ${arrow} ${rhs}`]
 }
 

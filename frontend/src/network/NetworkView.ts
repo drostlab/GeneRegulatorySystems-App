@@ -13,14 +13,14 @@
  */
 import type { Core } from 'cytoscape'
 import type { Ref } from 'vue'
-import type { Parameter, UnionNetwork } from '@/types/network'
+import type { Parameter, UnionNetwork, HiddenReagent } from '@/types/network'
 import cytoscape from 'cytoscape'
 // @ts-ignore
 import fcose from 'cytoscape-fcose'
 // @ts-ignore
 import svgExporter from 'cytoscape-svg'
 
-import { getGeneViewElements, buildHiddenReagentsMap, type HiddenReagent } from './networkElements'
+import { getGeneViewElements, buildHiddenReagentsMap } from './networkElements'
 import { buildStylesheet } from './networkStyles'
 import { getTheme } from '@/config/theme'
 import { AdaptiveZoom } from './AdaptiveZoom'
