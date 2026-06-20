@@ -1,6 +1,6 @@
 name = "GRSServer"
 uuid = "86ab0978-0466-42e7-a2ae-38e617ed6ea3"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["nifets <stefanmanol@gmail.com>", "lmshk "]
 
 [deps]
