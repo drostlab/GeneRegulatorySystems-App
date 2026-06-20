@@ -325,11 +325,13 @@ function network_from_reified(reified; include_reactions::Bool=true)::Network
     return Network(; nodes, links)
 end
 
-# `Scheduling.reify` returns a `Primitive` leaf whose model lives in `.f!`;
-# `Models.parameters` has no method for `Primitive`, so unwrap before calling.
+# `NetworkRepresentation.parameter_defaults` unwraps the reified model
+# (Primitive → Wrapped → Definition) via the same dispatch ladder as
+# `entity`, then reads its v1 parameter defaults. Non-v1 models yield an
+# empty dict (no chips).
 function params_from_reified(reified)::Dict{String, Float64}
-    target = reified isa Primitive ? reified.f! : reified
-    return Dict(string(k) => Float64(v) for (k, v) in Models.parameters(target))
+    return Dict(string(k) => Float64(v)
+                for (k, v) in NetworkRepresentation.parameter_defaults(reified))
 end
 
 """

@@ -185,13 +185,20 @@ export function buildStylesheet(isDark = false): any[] {
                 'label': 'data(rateName)',
                 'font-size': 1.8,
                 'text-valign': 'center' as any,
-                'text-background-color': 'data(parentColour)',
+                // Default label background; parented reactions override with
+                // their gene tint below. Orphan reactions (no parentColour)
+                // keep this fallback instead of an undefined `data()` mapper.
+                'text-background-color': t.network.reactionBg,
                 'text-background-opacity': 0.8,
                 'text-background-padding': '0.2px',
                 'background-color': t.network.reactionBg,
                 'background-opacity': 0,
                 'color': t.network.edgeLabelText,
             } as any,
+        },
+        {
+            selector: 'node.reaction[parentColour]',
+            style: { 'text-background-color': 'data(parentColour)' } as any,
         },
         // -- excluded (hidden by ModelFilter) --
         {
@@ -322,6 +329,23 @@ export function buildStylesheet(isDark = false): any[] {
                 'text-margin-y': -1,
                 'text-background-opacity': 0,
                 'color': t.network.speciesEdgeLabelText,
+            } as any,
+        },
+        // -- reversible auxiliary reaction edges: a second (source) arrowhead
+        //    makes the substrate/product edge read as bidirectional (⇌). The
+        //    `reversible` flag is stamped on the reagent links by the backend.
+        {
+            selector: 'edge[kind="substrate"][?reversible]',
+            style: {
+                'source-arrow-shape': 'triangle',
+                'source-arrow-color': t.network.speciesEdgeColour,
+            } as any,
+        },
+        {
+            selector: 'edge[kind="product"][?reversible]',
+            style: {
+                'source-arrow-shape': 'triangle',
+                'source-arrow-color': t.network.speciesEdgeColour,
             } as any,
         },
         // -- peripheral Kronecker edges: barely visible, nearly inert in physics --

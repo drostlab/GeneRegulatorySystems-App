@@ -251,10 +251,11 @@ function buildNodeElement(
         ? String(node.properties.species_type)
         : node.name
 
-    // Parent colour for reaction label backgrounds (lightened/darkened per theme)
+    // Parent colour for reaction label backgrounds (lightened/darkened per theme).
+    // Undefined for orphan reactions so the stylesheet fallback applies instead.
     const parentColour = node.parent && node.parent in geneColours
         ? (isDark ? darken(geneColours[node.parent]!, 0.3) : lighten(geneColours[node.parent]!, 0.7))
-        : colour
+        : undefined
 
     // Compound-parent (gene in species view) bg colour: same lighten/darken
     // function as `parentColour`, but applied to the gene's own colour. Used
@@ -372,7 +373,10 @@ function getNodeColour(node: Node, geneColours: Record<string, string>): string 
  * @param link - the backend link
  */
 function formatLinkLabel(link: Link): string {
+    // `reversible` is a styling flag on reagent edges (drives bidirectional
+    // arrows), not a value to print — keep it out of the visible label.
     const entries = Object.entries(link.properties ?? {})
+        .filter(([key]) => key !== 'reversible')
     if (entries.length === 0) return ''
 
     if (entries.length === 1) {

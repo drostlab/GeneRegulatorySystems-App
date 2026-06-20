@@ -248,7 +248,7 @@ const dark: ThemeMode = {
         segmentBoundary: GREY[700],
     },
     network: {
-        reactionBg:           GREY[500],
+        reactionBg:           GREY[400],
         highlightBorder:      GREY[950],
         edgeLabelText:        GREY[100],
         speciesEdgeLabelText: GREY[200],
