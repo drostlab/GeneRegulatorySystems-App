@@ -83,6 +83,9 @@ export class InlineParameters {
     private lookup: ParameterValueLookup = () => undefined
     private handler: ParameterChangeHandler | null = null
 
+    /** Disabled for now — parameter editing is not yet wired to persist. */
+    private editable = false
+
     private onAdd: ((evt: any) => void) | null = null
     private onRemove: ((evt: any) => void) | null = null
     private onViewportChange: (() => void) | null = null
@@ -346,6 +349,7 @@ export class InlineParameters {
         chip.addEventListener('mousedown', e => e.stopPropagation())
         chip.addEventListener('click', e => {
             e.stopPropagation()
+            if (!this.editable) return
             this.beginEdit(chip)
         })
 
