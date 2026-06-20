@@ -50,7 +50,9 @@ jobs:
         run: npm ci
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
 
       - name: Build Tauri app
         working-directory: tauri-app
