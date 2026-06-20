@@ -173,10 +173,41 @@ function reactionNameFromSymbol(symbol: string | undefined): string | null {
     return symbol
 }
 
+/** Format a stoichiometry coefficient, omitting `1 ×` for readability. */
+function formatStoichiometry(value: unknown): string {
+    if (typeof value !== 'number' || value === 1) return ''
+    return `${value} `
+}
+
+/**
+ * Reaction equation lines, e.g. `2 gene_1.mrna → protein_x`, derived from
+ * the reaction node's connected `substrate`/`product` edges.
+ */
+function formatReactionEquation(node: any): string[] {
+    const substrates = node.connectedEdges('[kind = "substrate"]')
+        .map((e: any) => `${formatStoichiometry(e.data('stoichiometry'))}${geneOf(String(e.data('source')))}${speciesSuffix(String(e.data('source')))}`)
+    const products = node.connectedEdges('[kind = "product"]')
+        .map((e: any) => `${formatStoichiometry(e.data('stoichiometry'))}${geneOf(String(e.data('target')))}${speciesSuffix(String(e.data('target')))}`)
+    if (substrates.length === 0 && products.length === 0) return []
+    const lhs = substrates.length ? substrates.join(' + ') : '∅'
+    const rhs = products.length ? products.join(' + ') : '∅'
+    const reversible = node.connectedEdges('[kind = "substrate"], [kind = "product"]')
+        .some((e: any) => Boolean(e.data('reversible')))
+    const arrow = reversible ? '⇌' : '→'
+    return [`  ${lhs} ${arrow} ${rhs}`]
+}
+
+/** The `.proteins`/`.active`/... suffix of a species id, if any. */
+function speciesSuffix(speciesId: string): string {
+    const i = speciesId.indexOf('.')
+    return i === -1 ? '' : speciesId.slice(i)
+}
+
 /**
  * Node tooltip:
  * - Gene nodes show just the name.
- * - Reaction nodes show a derived friendly name (e.g. `mrna_decay on gene_1`)
+ * - Reaction nodes show a derived friendly name (e.g. `mrna_decay on gene_1`),
+ *   the reagent equation (reagents, products and their stoichiometries),
  *   plus rate value resolved against the active model.
  * - Other nodes (species etc.) show the name.
  */
@@ -193,6 +224,7 @@ export function createNodeTooltip(lookup: ParameterValueLookup): Tooltip {
             if (kind === 'reaction') {
                 const symbol = params?.[0]?.symbol
                 header = reactionNameFromSymbol(symbol) ?? id
+                lines.unshift(...formatReactionEquation(node))
             } else if (kind === 'gene') {
                 header = `gene ${id}`
             } else {

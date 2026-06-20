@@ -331,23 +331,6 @@ export function buildStylesheet(isDark = false): any[] {
                 'color': t.network.speciesEdgeLabelText,
             } as any,
         },
-        // -- reversible auxiliary reaction edges: a second (source) arrowhead
-        //    makes the substrate/product edge read as bidirectional (⇌). The
-        //    `reversible` flag is stamped on the reagent links by the backend.
-        {
-            selector: 'edge[kind="substrate"][?reversible]',
-            style: {
-                'source-arrow-shape': 'triangle',
-                'source-arrow-color': t.network.speciesEdgeColour,
-            } as any,
-        },
-        {
-            selector: 'edge[kind="product"][?reversible]',
-            style: {
-                'source-arrow-shape': 'triangle',
-                'source-arrow-color': t.network.speciesEdgeColour,
-            } as any,
-        },
         // -- peripheral Kronecker edges: barely visible, nearly inert in physics --
         {
             selector: 'edge.peripheral',
