@@ -15,6 +15,24 @@ using GeneRegulatorySystems.Specifications
 # TODO: move each method to the model module it belongs to
 
 
+"""
+    Parameter
+
+An editable kinetic parameter associated with a network element.
+
+- `name`: human-readable label shown in the UI (e.g. `"at"`, `"k"`, `"rate"`).
+- `symbol`: canonical model-parameter symbol produced by
+  [`parameter_name`](@ref) (e.g. `"gene_1.repression.gene_3.at"`,
+  `"gene_1.transcription"`).
+
+Values are not stored here — they are looked up per active model via the
+`parameters_by_model_path` map on the union network.
+"""
+@kwdef struct Parameter
+    name::String
+    symbol::String
+end
+
 # TODO: maybe we can represent reaction nodes as hyperlinks instead of nodes? think that would make more sense?
 """
     Link
@@ -24,12 +42,15 @@ Directed edge in the network graph.
 - `scope`: `:all` (visible at both zoom levels), `:gene` (zoomed-out only),
   `:species` (zoomed-in only). The frontend resolves endpoints to gene parents
   when zoomed out for `:all`-scoped edges.
+- `parameters`: editable kinetic parameters this link exposes (e.g. Hill `at`
+  and `k` for regulatory links). Values resolved per active model.
 """
 @kwdef struct Link
     kind::Symbol
     from::Symbol
     to::Symbol
     properties::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    parameters::Vector{Parameter} = Parameter[]
     scope::Symbol = :all
 end
 #kinds: substrate, product, activation, repression, proteolysis, produces, next, alternative
@@ -39,6 +60,7 @@ end
     kind::Symbol
     name::Symbol
     properties::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    parameters::Vector{Parameter} = Parameter[]
     nodes::Vector{Entity} = Entity[]
     links::Vector{Link} = Link[]
 end
@@ -86,7 +108,9 @@ entity(species::SpeciesId) = let comps = species_components(species.name)
     )
 end
 
-function entity(rs::ReactionSystem, filter_ids::Set{Symbol}; species_genes::Union{Nothing, Set{Symbol}}=nothing)
+function entity(rs::ReactionSystem, filter_ids::Set{Symbol};
+                species_genes::Union{Nothing, Set{Symbol}}=nothing,
+                aux_signatures::Set{String}=Set{String}())
     # Build species nodes, filtering by parent gene when species_genes given.
     # Parentless species (machinery: polymerases, ribosomes, proteasomes) are
     # always included so reactions that reference them aren't excluded.
@@ -128,8 +152,34 @@ function entity(rs::ReactionSystem, filter_ids::Set{Symbol}; species_genes::Unio
 
         rxn_name = _reaction_id(rxn)
         rxn_name in filter_ids && continue
+        # Auxiliary (user-declared) reactions are rendered from the spec by
+        # `auxiliary_reaction_entities`; skip the Catalyst-built duplicate
+        # (matched order-independently, both orientations) so they don't
+        # double up — upstream reactions are unnamed, so we can't recover
+        # their rate from the built system anyway.
+        reaction_signature(rxn) in aux_signatures && continue
 
-        push!(nodes, Entity(kind=:reaction, name=rxn_name, properties=Dict(:rate => Symbol(rxn.rate))))
+        # For cascade and auxiliary reactions `rxn.rate` is a single MTK
+        # parameter whose canonical name (e.g. `gene_1.transcription`,
+        # `reaction.0.k⁺`) is exactly what `Models.parameters` keys by.
+        # Regulatory reactions (e.g. V1's `active<->inactive` for non-unique
+        # genes) carry a composite rate expression where `normalize_name`
+        # would fail — keep the reaction node and its substrate/product edges
+        # but omit the editable rate parameter in that case.
+        props = Dict{Symbol, Any}()
+        params = Parameter[]
+        try
+            rate_sym = string(normalize_name(rxn.rate))
+            props[:rate] = Symbol(rate_sym)
+            push!(params, Parameter(name="rate", symbol=rate_sym))
+        catch
+            # Composite rate; no single parameter to expose.
+        end
+        push!(nodes, Entity(
+            kind=:reaction, name=rxn_name,
+            properties=props,
+            parameters=params,
+        ))
 
         append!(links,
             [Link(kind=:substrate, from=SpeciesId(s).name, to=rxn_name, properties=Dict(:stoichiometry => rxn.substoich[i]))
@@ -148,48 +198,80 @@ function entity(rs::ReactionSystem, filter_ids::Set{Symbol}; species_genes::Unio
 end
 
 """
-    _regulatory_reaction_ids(raw_links, gene_lookup) -> Set{Symbol}
+    _regulatory_reaction_ids(definition, raw_links) -> Set{Symbol}
 
 Derive the exact Catalyst reaction IDs that are implementation artifacts of
-explicit V1 regulatory links, so they can be excluded from the network graph.
+V1's regulation pipeline, so they can be excluded from the network graph
+(their rates are composite expressions, not single parameters, and don't
+correspond to "real" reaction nodes).
 
-Per link type:
-- activation/repression(to=B): basal deactivation + activation pair for B.
-  If B is `unique`, these are `[1]B.active->` / `->[1]B.active`.
-  If not, `[1]B.active->[1]B.inactive` / `[1]B.inactive->[1]B.active`.
-  Deduplicated by target (activation and repression share the same reactions).
-- proteolysis(from=A, to=B): `[1]A.proteins;[1]B.proteins->[1]A.proteins`.
-  Self-loop (A==B): `[2]A.proteins->[1]A.proteins`.
+- **Activation/deactivation pair**: V1 emits one per *gene*. For `unique`
+  genes the Catalyst IDs are `[1]B.active->` and `->[1]B.active` —
+  degenerate reactions into/out of nothing, filtered out. Non-unique
+  genes get real `[1]B.active->[1]B.inactive` and reverse reactions
+  between two species; those are NOT filtered (kept as reaction nodes
+  with substrate/product links). Their rates are composite expressions,
+  which `entity(::ReactionSystem)` handles by omitting the rate parameter.
+- **Proteolysis**: only emitted when a proteolysis link exists. IDs are
+  `[1]A.proteins;[1]B.proteins->[1]A.proteins` (cross-gene) or
+  `[2]A.proteins->[1]A.proteins` (self-loop).
 """
-function _regulatory_reaction_ids(raw_links, gene_lookup::Dict{Symbol})::Set{Symbol}
+function _regulatory_reaction_ids(definition::V1.Definition, raw_links)::Set{Symbol}
     ids = Set{Symbol}()
-    targets_seen = Set{Symbol}()
 
+    # For `unique` genes V1 emits degenerate `active->` and `->active`
+    # reactions (into/out of nothing) — filter these out. Non-unique genes
+    # get real `active<->inactive` transitions; those are kept as reaction
+    # nodes (`entity(::ReactionSystem)` tolerates their composite rates).
+    for g in definition.genes
+        g.unique || continue
+        to = g.name
+        push!(ids, Symbol("[1]$(to).active->"))
+        push!(ids, Symbol("->[1]$(to).active"))
+    end
+
+    # Proteolysis: one Catalyst reaction per declared link.
     for lnk in raw_links
-        to = lnk.to
-        from = lnk.from
+        lnk.kind == :proteolysis || continue
+        from, to = lnk.from, lnk.to
+        if from == to
+            push!(ids, Symbol("[2]$(to).proteins->[1]$(to).proteins"))
+        else
+            push!(ids, Symbol("[1]$(from).proteins;[1]$(to).proteins->[1]$(from).proteins"))
+        end
+    end
 
-        if lnk.kind in (:activation, :repression)
-            to in targets_seen && continue
-            push!(targets_seen, to)
-            target_gene = get(gene_lookup, to, nothing)
-            if target_gene !== nothing && target_gene.unique
-                push!(ids, Symbol("[1]$(to).active->"))
-                push!(ids, Symbol("->[1]$(to).active"))
-            else
-                push!(ids, Symbol("[1]$(to).active->[1]$(to).inactive"))
-                push!(ids, Symbol("[1]$(to).inactive->[1]$(to).active"))
-            end
+    ids
+end
 
-        elseif lnk.kind == :proteolysis
-            if from == to
-                push!(ids, Symbol("[2]$(to).proteins->[1]$(to).proteins"))
-            else
-                push!(ids, Symbol("[1]$(from).proteins;[1]$(to).proteins->[1]$(from).proteins"))
+"""
+    _attach_v1_transition_rates!(rs_network, definition)
+
+V1's non-unique `active<->inactive` reactions have composite (regulator-
+tempered) rates, so `entity(::ReactionSystem)` couldn't extract a single
+parameter symbol and left them without a `:rate` property. The base rate
+is a real per-gene MTK parameter (`<gene>.activation` / `<gene>.deactivation`),
+so we patch it in here — gives the reaction node a label and an editable
+parameter chip, just like cascade reactions.
+"""
+function _attach_v1_transition_rates!(rs_network::Entity, definition::V1.Definition)
+    for g in definition.genes
+        g.unique && continue
+        deact_id = Symbol("[1]$(g.name).active->[1]$(g.name).inactive")
+        act_id   = Symbol("[1]$(g.name).inactive->[1]$(g.name).active")
+        deact_rate = string(parameter_name(g.name, :deactivation))
+        act_rate   = string(parameter_name(g.name, :activation))
+        for node in rs_network.nodes
+            node.kind == :reaction || continue
+            if node.name == deact_id
+                node.properties[:rate] = Symbol(deact_rate)
+                push!(node.parameters, Parameter(name="rate", symbol=deact_rate))
+            elseif node.name == act_id
+                node.properties[:rate] = Symbol(act_rate)
+                push!(node.parameters, Parameter(name="rate", symbol=act_rate))
             end
         end
     end
-    ids
 end
 
 """
@@ -207,6 +289,18 @@ function _reaction_id(rxn::Reaction)::Symbol
         for (i, p) in enumerate(rxn.products)
     ]
     return Symbol(join(substrates, ";") * "->" * join(products, ";"))
+end
+
+"""
+Species that `rxn_name` leaves unchanged — present as *both* a substrate and a
+product (a catalyst, e.g. a signalling species shared across reactions). Such a
+species shouldn't pull a reaction into its gene: the reaction isn't "about" that
+gene, it's merely catalysed by one of its products.
+"""
+function catalyst_species(rxn_name::Symbol, links_by_to, links_by_from)::Set{Symbol}
+    substrates = Set(l.from for l in get(links_by_to, rxn_name, Link[]) if l.kind == :substrate)
+    products   = Set(l.to   for l in get(links_by_from, rxn_name, Link[]) if l.kind == :product)
+    intersect(substrates, products)
 end
 
 """
@@ -265,14 +359,20 @@ function _genes_from_reaction_network(rs_network::Entity)::Tuple{Vector{Entity},
         end
     end
 
-    # Assign reaction parents: single-gene if all connected species share one gene
+    # Assign reaction parents: single-gene if all connected species share one
+    # gene. Catalysts (species unchanged by the reaction) are excluded — they'd
+    # otherwise drag a reaction into a gene it only borrows a product from
+    # (e.g. a shared signalling species), see `catalyst_species`.
     for r in reaction_nodes
+        catalysts = catalyst_species(r.name, links_by_to, links_by_from)
         connected_parents = Set{Symbol}()
         for link in get(links_by_to, r.name, Link[])
+            link.from in catalysts && continue
             p = get(parent_dict, link.from, nothing)
             !isnothing(p) && push!(connected_parents, p)
         end
         for link in get(links_by_from, r.name, Link[])
+            link.to in catalysts && continue
             p = get(parent_dict, link.to, nothing)
             !isnothing(p) && push!(connected_parents, p)
         end
@@ -320,7 +420,7 @@ function _genes_from_reaction_network(rs_network::Entity)::Tuple{Vector{Entity},
     for s in species_nodes
         !isnothing(parent_dict[s.name]) && continue  # not orphan
 
-        # Find contributing genes via substrate parents of producing reactions
+        # Find contributing genes via substrate parents of producing reactions.
         contributing_genes = Set{Symbol}()
         for prod_link in get(links_by_to, s.name, Link[])
             prod_link.kind == :product || continue
@@ -328,6 +428,18 @@ function _genes_from_reaction_network(rs_network::Entity)::Tuple{Vector{Entity},
                 sub_link.kind == :substrate || continue
                 sub_parent = get(parent_dict, sub_link.from, nothing)
                 !isnothing(sub_parent) && push!(contributing_genes, sub_parent)
+            end
+        end
+        # `s` consumed by a reversible reaction is also produced by its reverse,
+        # so it connects to the genes on the reaction's *product* side too —
+        # otherwise only one side of a reversible interconversion gets a summary
+        # edge (e.g. REF active gets one, REF inactive doesn't).
+        for sub_link in get(links_by_from, s.name, Link[])
+            (sub_link.kind == :substrate && get(sub_link.properties, :reversible, false)) || continue
+            for prod_link in get(links_by_from, sub_link.to, Link[])
+                prod_link.kind == :product || continue
+                prod_parent = get(parent_dict, prod_link.to, nothing)
+                !isnothing(prod_parent) && push!(contributing_genes, prod_parent)
             end
         end
 
@@ -353,6 +465,21 @@ function _resolve_reg_endpoint(name::Symbol, gene_names::Set{Symbol}, suffix::St
     name in gene_names ? Symbol("$(name).$(suffix)") : name
 end
 
+"""
+    _regulatory_link_parameters(l) -> Vector{Parameter}
+
+Build the parameter list for a regulatory link from `Models.describe`. The
+property keys (`:at`, `:k`) are exactly the V1 parameter fields exposed by the
+link kind; the canonical symbol is `parameter_name(to, kind, from, field)`.
+"""
+function _regulatory_link_parameters(l)::Vector{Parameter}
+    [
+        Parameter(name=string(key),
+                  symbol=string(parameter_name(l.to, l.kind, l.from, key)))
+        for key in keys(l.properties)
+    ]
+end
+
 function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union{Bool, Set{Symbol}}=true)
     gene_names = Set{Symbol}(g.name for g in definition.genes)
 
@@ -367,29 +494,29 @@ function entity(definition::V1.Definition, f!::Wrapped; include_reactions::Union
             to_suffix = l.kind == :proteolysis ? "proteins" : "active"
             to_resolved = _resolve_reg_endpoint(l.to, gene_names, to_suffix)
             Link(; kind=l.kind, from=from_resolved, to=to_resolved,
-                  properties=l.properties, scope=:all)
+                  properties=l.properties,
+                  parameters=_regulatory_link_parameters(l),
+                  scope=:all)
         end
 
-        gene_lookup = Dict{Symbol, V1.Gene}(g.name => g for g in definition.genes)
-        filter_ids = _regulatory_reaction_ids(raw_links, gene_lookup)
+        filter_ids = _regulatory_reaction_ids(definition, raw_links)
         rs = f!.model.definition
-        rs_network = entity(rs, filter_ids)
+        rs_network = entity(rs, filter_ids;
+            aux_signatures=auxiliary_reaction_signatures(definition, gene_names))
+        _attach_v1_transition_rates!(rs_network, definition)
+        inject_auxiliary_reactions!(rs_network, definition, gene_names)
         gene_nodes, aux_nodes, aux_links, summary_links = _genes_from_reaction_network(rs_network)
-        gene_nodes = map(gene_nodes) do n
-            g = get(gene_lookup, n.name, nothing)
-            g === nothing && return n
-            Entity(kind=n.kind, name=n.name,
-                   properties=merge(n.properties, Dict(:base_rates => V1.representation(g.base_rates))),
-                   nodes=n.nodes, links=n.links)
-        end
         nodes = vcat(gene_nodes, aux_nodes)
         links = vcat(reg_links, aux_links, summary_links)
     elseif include_reactions === false
         # Kronecker/random-diff: no species, keep gene-level regulatory links
-        reg_links = [Link(; l..., scope=:all) for l in raw_links]
-        nodes = [Entity(kind=:gene, name=g.name,
-                        properties=Dict(:base_rates => V1.representation(g.base_rates)))
-                 for g in definition.genes]
+        reg_links = map(raw_links) do l
+            Link(; kind=l.kind, from=l.from, to=l.to,
+                  properties=l.properties,
+                  parameters=_regulatory_link_parameters(l),
+                  scope=:all)
+        end
+        nodes = [Entity(kind=:gene, name=g.name) for g in definition.genes]
         links = reg_links
     else
         # Partial: species detail only for genes in include_reactions::Set{Symbol}
@@ -419,37 +546,30 @@ function _entity_partial_species(
 )
     # Regulatory links: resolve endpoints to species only when both genes are included
     reg_links = map(raw_links) do l
+        params = _regulatory_link_parameters(l)
         if l.from ∈ species_gene_set && l.to ∈ species_gene_set
             from_resolved = _resolve_reg_endpoint(l.from, gene_names, "proteins")
             to_suffix = l.kind == :proteolysis ? "proteins" : "active"
             to_resolved = _resolve_reg_endpoint(l.to, gene_names, to_suffix)
             Link(; kind=l.kind, from=from_resolved, to=to_resolved,
-                  properties=l.properties, scope=:all)
+                  properties=l.properties, parameters=params, scope=:all)
         else
-            Link(; l..., scope=:all)
+            Link(; kind=l.kind, from=l.from, to=l.to,
+                  properties=l.properties, parameters=params, scope=:all)
         end
     end
 
     # Build filtered RS entity for included genes only
-    gene_lookup = Dict{Symbol, V1.Gene}(g.name => g for g in definition.genes)
-    filter_ids = _regulatory_reaction_ids(raw_links, gene_lookup)
+    filter_ids = _regulatory_reaction_ids(definition, raw_links)
     rs = f!.model.definition
-    rs_network = entity(rs, filter_ids; species_genes=species_gene_set)
+    rs_network = entity(rs, filter_ids; species_genes=species_gene_set,
+        aux_signatures=auxiliary_reaction_signatures(definition, gene_names))
+    inject_auxiliary_reactions!(rs_network, definition, gene_names)
     species_gene_nodes, aux_nodes, aux_links, summary_links = _genes_from_reaction_network(rs_network)
-
-    # Enrich included gene nodes with base_rates
-    species_gene_nodes = map(species_gene_nodes) do n
-        g = get(gene_lookup, n.name, nothing)
-        g === nothing && return n
-        Entity(kind=n.kind, name=n.name,
-               properties=merge(n.properties, Dict(:base_rates => V1.representation(g.base_rates))),
-               nodes=n.nodes, links=n.links)
-    end
 
     # Flat nodes for excluded genes
     flat_gene_nodes = [
-        Entity(kind=:gene, name=g.name,
-               properties=Dict(:base_rates => V1.representation(g.base_rates)))
+        Entity(kind=:gene, name=g.name)
         for g in definition.genes if g.name ∉ species_gene_set
     ]
 
@@ -632,16 +752,204 @@ end
 # ? maybe we should create nested entities here to tag with information from higher level models?
 entity(definition, f!::Wrapped; kw...) = entity(f!.model; kw...)
 
+# ============================================================================
+# Auxiliary (user-declared) reactions
+#
+# Upstream `GeneRegulatorySystems` reactions are unnamed, so the rate
+# parameter of a `definition.reactions` entry can't be recovered from the
+# Catalyst-built system (`normalize_name(rxn.rate)` fails → no rate chip,
+# ugly auto-id label). We therefore render these reactions directly from the
+# spec: one collapsed node per entry, identified by its 1-based index
+# (`reaction.<i>`), carrying its rate chip(s) and reagent links. The Catalyst
+# duplicates are filtered out via `auxiliary_reaction_ids`.
+# ============================================================================
+
+"""
+Map a reaction reagent key to its species-node id. A bare gene name resolves
+to that gene's protein species (`A` → `A.proteins`), mirroring V1's
+`species_reference`; explicit species ids pass through unchanged.
+"""
+resolve_reagent_species(key::Symbol, gene_names::Set{Symbol})::Symbol =
+    key in gene_names ? Symbol("$(key).proteins") : key
+
+# Order-independent signature of a reaction's reagents. The substrate and
+# product token-lists are each sorted, then the two lists are ordered
+# against each other so a reaction and its reverse collapse to one key —
+# `Reagents.counts` is an unordered Dict (so reagent order can't be matched
+# positionally), and reversible reactions emit a forward + reverse Catalyst
+# pair that must both be skipped.
+function reagent_signature(substrate_tokens::Vector{String}, product_tokens::Vector{String})::String
+    a, b = sort(substrate_tokens), sort(product_tokens)
+    string(min(a, b), "|", max(a, b))
+end
+
+reaction_signature(rxn::Reaction)::String = reagent_signature(
+    [string("[", rxn.substoich[i], "]", SpeciesId(s).name) for (i, s) in enumerate(rxn.substrates)],
+    [string("[", rxn.prodstoich[i], "]", SpeciesId(p).name) for (i, p) in enumerate(rxn.products)],
+)
+
+"""
+    auxiliary_reaction_signatures(definition, gene_names) -> Set{String}
+
+Reagent signatures (see [`reaction_signature`](@ref)) for each
+`definition.reactions` entry, so the Catalyst-built duplicates can be
+filtered out in favour of the spec-rendered nodes — robust to reagent order
+and to the reversible forward/reverse pair.
+"""
+function auxiliary_reaction_signatures(definition::V1.Definition, gene_names::Set{Symbol})::Set{String}
+    side(counts) = [string("[", st, "]", resolve_reagent_species(sp, gene_names))
+                    for (sp, st) in counts]
+    Set{String}(
+        reagent_signature(side(rxn.from.counts), side(rxn.to.counts))
+        for rxn in definition.reactions
+    )
+end
+
+"""
+    auxiliary_reaction_entities(definition, gene_names, present_species) -> (nodes, links)
+
+Render `definition.reactions` directly from the spec — one collapsed node per
+entry (forward + reverse share it), identified `reaction.<i>` by 1-based index
+so its rate chips (`reaction.<i>.k⁺`, plus `.k₋` when reversible) match
+[`parameter_defaults`](@ref). Reagent edges are restricted to species present
+in `present_species` (the partial views filter species); a reaction with no
+present reagents is dropped to avoid dangling edges.
+"""
+function auxiliary_reaction_entities(definition::V1.Definition, gene_names::Set{Symbol},
+                                     present_species::Set{Symbol})
+    nodes = Entity[]
+    links = Link[]
+    for (i, rxn) in enumerate(definition.reactions)
+        node_id = Symbol("reaction.$(i)")
+        reversible = rxn.k₋ > 0.0
+        rxn_links = Link[]
+        for (sp, stoich) in rxn.from.counts
+            species = resolve_reagent_species(sp, gene_names)
+            species in present_species || continue
+            push!(rxn_links, Link(kind=:substrate, from=species, to=node_id,
+                properties=Dict{Symbol, Any}(:stoichiometry => stoich, :reversible => reversible)))
+        end
+        for (sp, stoich) in rxn.to.counts
+            species = resolve_reagent_species(sp, gene_names)
+            species in present_species || continue
+            push!(rxn_links, Link(kind=:product, from=node_id, to=species,
+                properties=Dict{Symbol, Any}(:stoichiometry => stoich, :reversible => reversible)))
+        end
+        isempty(rxn_links) && continue
+        params = Parameter[Parameter(name="k⁺", symbol="reaction.$(i).k⁺")]
+        reversible && push!(params, Parameter(name="k₋", symbol="reaction.$(i).k₋"))
+        push!(nodes, Entity(
+            kind=:reaction, name=node_id,
+            properties=Dict{Symbol, Any}(
+                :rate => Symbol("reaction.$(i).k⁺"),
+                :reversible => reversible,
+            ),
+            parameters=params,
+        ))
+        append!(links, rxn_links)
+    end
+    (nodes, links)
+end
+
+"""
+Append the spec-rendered auxiliary reaction nodes/links onto `rs_network` in
+place, before gene partitioning runs (so they participate in orphan adoption
+and summary links). Reagent edges are restricted to species already present.
+"""
+function inject_auxiliary_reactions!(rs_network::Entity, definition::V1.Definition, gene_names::Set{Symbol})
+    present = Set{Symbol}(n.name for n in rs_network.nodes if n.kind == :species)
+    nodes, links = auxiliary_reaction_entities(definition, gene_names, present)
+    append!(rs_network.nodes, nodes)
+    append!(rs_network.links, links)
+    rs_network
+end
+
+# ============================================================================
+# Parameter names & defaults (vendored)
+#
+# The GeneRegulatorySystems fork once exposed `V1.parameter_name` and
+# `Models.parameters` for v1 models; both were later inlined away upstream
+# (fork commit b838b9c) and neither exists on `drostlab` master. We vendor
+# the convention here so the backend can pin plain upstream GRS while still
+# labelling reaction nodes / parameter chips with stable symbols.
+#
+# `parameter_defaults` resolves a reified model to its v1 Definition via the
+# same dispatch ladder as `entity` (Primitive → Wrapped → Definition), then
+# reads the Definition's parameter defaults. The strings are used purely for
+# display and are self-consistent with `parameter_name`; nothing here feeds
+# the simulation parameter system. Non-v1 models contribute no chips.
+# ============================================================================
+
+"""
+    parameter_name(gene, baserate) -> Symbol
+
+Symbol for a gene base-rate parameter, e.g.
+`parameter_name(:gene_1, :activation) == Symbol("gene_1.activation")`.
+"""
+parameter_name(gene::Symbol, baserate::Symbol) = Symbol("$(gene).$(baserate)")
+
+"""
+    parameter_name(to, kind, from, field) -> Symbol
+
+Symbol for a regulatory-slot parameter on the `kind` regulation of gene
+`to`, sourced from `from`, e.g.
+`parameter_name(:gene_1, :repression, :gene_3, :at)`.
+"""
+parameter_name(to::Symbol, kind::Symbol, from::Symbol, field::Symbol) =
+    Symbol("$(to).$(kind).$(from).$(field)")
+
+# Resolve a reified model to its parameter defaults, mirroring `entity`.
+parameter_defaults(f!::Primitive) = parameter_defaults(f!.f!)
+parameter_defaults(f!::Wrapped) = parameter_defaults(f!.definition, f!)
+parameter_defaults(definition::V1.Definition, ::Wrapped) = parameter_defaults(definition)
+parameter_defaults(::Any, f!::Wrapped) = parameter_defaults(f!.model)
+parameter_defaults(::Any) = Dict{Symbol, Float64}()
+
+"""
+    parameter_defaults(definition::V1.Definition) -> Dict{Symbol, Float64}
+
+Every parameter symbol in `definition` mapped to its default value: each
+gene's base rates and activation / repression / proteolysis slots, then the
+auxiliary reactions (keyed by 1-based index, since upstream reactions are
+unnamed). Keys match [`parameter_name`](@ref).
+"""
+function parameter_defaults(definition::V1.Definition)::Dict{Symbol, Float64}
+    result = Dict{Symbol, Float64}()
+    for g in definition.genes
+        for field in fieldnames(typeof(g.base_rates))
+            result[parameter_name(g.name, field)] = getfield(g.base_rates, field)
+        end
+        for slot in g.activation.slots
+            result[parameter_name(g.name, :activation, slot.from, :at)] = slot.at
+            result[parameter_name(g.name, :activation, slot.from, :k)]  = slot.k
+        end
+        for slot in g.repression.slots
+            result[parameter_name(g.name, :repression, slot.from, :at)] = slot.at
+            result[parameter_name(g.name, :repression, slot.from, :k)]  = slot.k
+        end
+        for slot in g.proteolysis.slots
+            result[parameter_name(g.name, :proteolysis, slot.from, :k)] = slot.k
+        end
+    end
+    for (i, rxn) in enumerate(definition.reactions)
+        result[Symbol("reaction.$(i).k⁺")] = rxn.k₊
+        result[Symbol("reaction.$(i).k₋")] = rxn.k₋
+    end
+    result
+end
+
 # flattened hierarchy for downstream use
 @kwdef struct Node
     kind::Symbol
     name::Symbol
     parent::Union{Symbol, Nothing} = nothing
     properties::Dict{Symbol, Any} = Dict{Symbol, Any}()
+    parameters::Vector{Parameter} = Parameter[]
 end
 
 Node(entity::Entity, parent::Union{Symbol, Nothing}=nothing) =
-    Node(kind=entity.kind, name=entity.name, parent=parent, properties=entity.properties)
+    Node(kind=entity.kind, name=entity.name, parent=parent,
+         properties=entity.properties, parameters=entity.parameters)
 
 function flatten(entity::Entity, parent::Union{Symbol, Nothing}=nothing)::Tuple{Vector{Node}, Vector{Link}}
     nodes = Node[Node(entity, parent)]

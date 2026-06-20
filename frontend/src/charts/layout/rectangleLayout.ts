@@ -3,6 +3,24 @@ import type { StructureNode, TimelineSegment } from '@/types/schedule'
 /** Default maximum concurrently visible execution-path rows in the timeline. */
 export const DEFAULT_MAX_TIMELINE_PATHS = 20
 
+interface Interval { from: number; to: number }
+
+/**
+ * Two-pointer scan over sorted interval lists. True iff any interval in `a`
+ * strictly overlaps any interval in `b` (touching boundaries don't count).
+ * O(n+m).
+ */
+function intervalsOverlap(a: Interval[], b: Interval[]): boolean {
+    let i = 0, j = 0
+    while (i < a.length && j < b.length) {
+        const ai = a[i]!, bj = b[j]!
+        if (ai.from < bj.to && bj.from < ai.to) return true
+        if (ai.to <= bj.from) i++
+        else j++
+    }
+    return false
+}
+
 export interface LayoutRectangle {
     segmentId: number
     executionPath: string
@@ -17,261 +35,208 @@ export interface LayoutRectangle {
 }
 
 export function layoutRectangles(
-    _structure: StructureNode,
+    structure: StructureNode,
     segments: TimelineSegment[],
     yMin: number,
     yMax: number,
-    maxPaths: number = DEFAULT_MAX_TIMELINE_PATHS
+    _maxPaths: number = DEFAULT_MAX_TIMELINE_PATHS
 ): LayoutRectangle[] {
-    const segmentsByPath = groupSegmentsByPath(segments)
-    const yRanges = computeYRanges(segmentsByPath, yMin, yMax, maxPaths)
+    const yRanges = computeYRangesFromStructure(structure, segments, yMin, yMax)
 
     const rectangles: LayoutRectangle[] = []
-    for (const [, segs] of segmentsByPath) {
-        const range = yRanges.get(segs[0]!.execution_path)
-        if (!range) continue  // path excluded by cap
-        const { yMin: rectYMin, yMax: rectYMax } = range
-        for (const seg of segs) {
-            rectangles.push({
-                segmentId: seg.id,
-                executionPath: seg.execution_path,
-                modelPath: seg.model_path,
-                label: seg.label,
-                channel: seg.channel,
-                x1: seg.from,
-                x2: seg.to,
-                y1: rectYMin,
-                y2: rectYMax,
-                isInstant: seg.from === seg.to
-            })
-        }
+    for (const seg of segments) {
+        const range = resolveYRange(seg.execution_path, yRanges)
+        if (!range) continue
+        rectangles.push({
+            segmentId: seg.id,
+            executionPath: seg.execution_path,
+            modelPath: seg.model_path,
+            label: seg.label,
+            channel: seg.channel,
+            x1: seg.from,
+            x2: seg.to,
+            y1: range.yMin,
+            y2: range.yMax,
+            isInstant: seg.from === seg.to,
+        })
     }
     return rectangles
 }
 
-function groupSegmentsByPath(segments: TimelineSegment[]): Map<string, TimelineSegment[]> {
-    const map = new Map<string, TimelineSegment[]>()
-    for (const seg of segments) {
-        const list = map.get(seg.execution_path)
-        if (list) {
-            list.push(seg)
-        } else {
-            map.set(seg.execution_path, [seg])
-        }
-    }
-    return map
-}
-
 /**
- * Compute y-ranges for all execution paths.
+ * Walk the structure tree and assign a y-range to every node.
  *
- * Duration paths (at least one segment with from !== to):
- *   1. Greedy interval-graph colouring assigns a stable band index to each path.
- *   2. The time axis is split into epochs at every segment-boundary event.
- *   3. Within each epoch, only the active paths are present; their band indices
- *      are remapped onto [0, n) so the active group fills the full [yMin, yMax].
- *   4. Each path's final y-range is the union of its remapped ranges across epochs.
+ * The structure tree's `:branch` / `:sequence` types are unreliable: a sequence
+ * containing branch descendants gets relabelled as :branch by the backend
+ * (`schedule_structure.jl`'s `_subtree_has_branch` taint). We instead derive
+ * the parent-child relationship from the temporal layout of the children:
  *
- * This means a stem path that runs alone before branching fills full height, while
- * the N branches that follow each get 1/N of the height — regardless of how many
- * bands exist globally.
+ * - children with disjoint time ranges → sequence (share parent's y-range,
+ *   parent rows = max of children).
+ * - children with overlapping time ranges → branch (split parent's y-range,
+ *   parent rows = sum of children).
  *
- * Instant-only paths:
- *   Matched to the duration path(s) with the longest common path-string prefix,
- *   then given the union of those paths' y-ranges. This places a branch-local
- *   instant inside its branch's band, and a stem instant across the full height.
+ * Instant children (from === to) have no time range and don't constrain the
+ * relationship; they're laid out using the same rule as their siblings.
  */
-function computeYRanges(
-    segmentsByPath: Map<string, TimelineSegment[]>,
+function computeYRangesFromStructure(
+    structure: StructureNode,
+    segments: TimelineSegment[],
     yMin: number,
     yMax: number,
-    maxPaths: number = DEFAULT_MAX_TIMELINE_PATHS
 ): Map<string, { yMin: number; yMax: number }> {
-    // Separate duration from instant-only paths
-    const durationPaths: string[] = []
-    const instantPaths: Array<{ path: string; t: number }> = []
-    const pathSpans = new Map<string, { from: number; to: number }>()
-
-    for (const [path, segs] of segmentsByPath) {
-        if (segs.every(s => s.from === s.to)) {
-            instantPaths.push({ path, t: segs[0]!.from })
-            continue
-        }
-        let from = Infinity
-        let to = -Infinity
-        for (const s of segs) {
-            if (s.from < from) from = s.from
-            if (s.to > to) to = s.to
-        }
-        pathSpans.set(path, { from, to })
-        durationPaths.push(path)
+    const segmentsByPath = new Map<string, TimelineSegment[]>()
+    for (const seg of segments) {
+        const list = segmentsByPath.get(seg.execution_path)
+        if (list) list.push(seg)
+        else segmentsByPath.set(seg.execution_path, [seg])
     }
 
-    // Stable ordering for greedy colouring: by earliest segment start, then path string
-    durationPaths.sort((a, b) => {
-        const sa = pathSpans.get(a)!
-        const sb = pathSpans.get(b)!
-        return sa.from - sb.from || a.localeCompare(b, undefined, { numeric: true })
-    })
+    const ranges = new Map<string, { yMin: number; yMax: number }>()
+    const rowCache = new Map<StructureNode, number>()
+    const intervalsCache = new Map<StructureNode, Interval[]>()
+    const parallelCache = new Map<StructureNode, boolean>()
 
-    // Cap to avoid overcrowded layout; excess paths are simply not rendered
-    if (durationPaths.length > maxPaths) {
-        durationPaths.length = maxPaths
-    }
-
-    // Greedy interval-graph colouring using actual segment-level overlap
-    const bandByPath = greedyBandAssign(durationPaths, segmentsByPath)
-
-    // Epoch boundaries: every from/to value of every individual segment
-    const eventSet = new Set<number>()
-    for (const path of durationPaths) {
-        for (const s of segmentsByPath.get(path)!) {
-            eventSet.add(s.from)
-            eventSet.add(s.to)
-        }
-    }
-    const events = [...eventSet].sort((a, b) => a - b)
-
-    // For each epoch, remap active bands onto [0, n) and union into each path's y-range
-    const yRanges = new Map<string, { yMin: number; yMax: number }>()
-
-    for (let i = 0; i < events.length - 1; i++) {
-        const tFrom = events[i]!
-        const tTo = events[i + 1]!
-
-        // A path is active in this epoch only if one of its actual segments covers it
-        const active = durationPaths.filter(p =>
-            segmentsByPath.get(p)!.some(s => s.from <= tFrom && tTo <= s.to)
-        )
-        if (active.length === 0) continue
-
-        const n = active.length
-        const bandH = (yMax - yMin) / n
-        // Sort active paths by their band index for a consistent top-to-bottom order
-        const sorted = active.slice().sort((a, b) => bandByPath.get(a)! - bandByPath.get(b)!)
-
-        sorted.forEach((path, pos) => {
-            const epochYMax = yMax - pos * bandH
-            const epochYMin = epochYMax - bandH
-            const existing = yRanges.get(path)
-            if (existing) {
-                existing.yMin = Math.min(existing.yMin, epochYMin)
-                existing.yMax = Math.max(existing.yMax, epochYMax)
-            } else {
-                yRanges.set(path, { yMin: epochYMin, yMax: epochYMax })
-            }
-        })
-    }
-
-    // Instant paths: match by longest common prefix among duration paths
-    for (const { path } of instantPaths) {
-        let bestLen = -1
-        const bestPaths: string[] = []
-        for (const durPath of durationPaths) {
-            const len = commonPrefixLength(path, durPath)
-            if (len > bestLen) {
-                bestLen = len
-                bestPaths.length = 0
-                bestPaths.push(durPath)
-            } else if (len === bestLen) {
-                bestPaths.push(durPath)
+    // Collect every durational interval in a node's subtree, sorted by `from`.
+    // Loops produce multiple disjoint intervals per child (e.g. dark runs
+    // during [0,60k] ∪ [65k,125k] ∪ …); collapsing to min/max would falsely
+    // make sequential-but-interleaved siblings look overlapping.
+    const nodeIntervals = (node: StructureNode): Interval[] => {
+        const cached = intervalsCache.get(node)
+        if (cached) return cached
+        const out: Interval[] = []
+        const segs = segmentsByPath.get(node.execution_path)
+        if (segs) {
+            for (const s of segs) {
+                if (s.from < s.to) out.push({ from: s.from, to: s.to })
             }
         }
-
-        let minY = yMax
-        let maxY = yMin
-        for (const p of bestPaths) {
-            const r = yRanges.get(p)
-            if (r) {
-                if (r.yMin < minY) minY = r.yMin
-                if (r.yMax > maxY) maxY = r.yMax
-            }
+        for (const c of node.children) {
+            for (const iv of nodeIntervals(c)) out.push(iv)
         }
-        yRanges.set(path, minY < maxY ? { yMin: minY, yMax: maxY } : { yMin, yMax })
+        out.sort((a, b) => a.from - b.from)
+        intervalsCache.set(node, out)
+        return out
     }
 
-    return yRanges
-}
-
-/** Returns true if any segment from segsA actually overlaps any segment from segsB. */
-function segmentsOverlap(segsA: TimelineSegment[], segsB: TimelineSegment[]): boolean {
-    for (const a of segsA) {
-        for (const b of segsB) {
-            if (a.from < b.to && b.from < a.to) return true
+    const childrenAreParallel = (node: StructureNode): boolean => {
+        if (node.children.length < 2) return false
+        const cached = parallelCache.get(node)
+        if (cached !== undefined) return cached
+        const perChild: Interval[][] = []
+        for (const c of node.children) {
+            const ivs = nodeIntervals(c)
+            if (ivs.length > 0) perChild.push(ivs)
         }
-    }
-    return false
-}
-
-/**
- * Greedy interval-graph colouring using actual segment overlap.
- * Two paths are in conflict only if at least one segment from each genuinely overlaps.
- */
-function greedyBandAssign(
-    orderedPaths: string[],
-    segsByPath: Map<string, TimelineSegment[]>
-): Map<string, number> {
-    // bandMembers[b] = list of paths already assigned to band b
-    const bandMembers: string[][] = []
-    const bandByPath = new Map<string, number>()
-    for (const path of orderedPaths) {
-        const segs = segsByPath.get(path)!
-        let assigned = -1
-        for (let b = 0; b < bandMembers.length; b++) {
-            const conflicts = bandMembers[b]!.some(other =>
-                segmentsOverlap(segs, segsByPath.get(other)!)
-            )
-            if (!conflicts) {
-                assigned = b
-                break
+        let parallel = false
+        outer: for (let i = 0; i < perChild.length; i++) {
+            for (let j = i + 1; j < perChild.length; j++) {
+                if (intervalsOverlap(perChild[i]!, perChild[j]!)) {
+                    parallel = true
+                    break outer
+                }
             }
         }
-        if (assigned === -1) {
-            assigned = bandMembers.length
-            bandMembers.push([path])
+        parallelCache.set(node, parallel)
+        return parallel
+    }
+
+    /** A node is "instant" if its entire subtree contains no durational segment. */
+    const isInstant = (node: StructureNode): boolean => nodeIntervals(node).length === 0
+
+    const rowsNeeded = (node: StructureNode): number => {
+        if (rowCache.has(node)) return rowCache.get(node)!
+        let n: number
+        if (node.type === 'leaf' || node.children.length === 0) {
+            n = isInstant(node) ? 0 : 1
+        } else if (childrenAreParallel(node)) {
+            n = node.children.reduce((acc, c) => acc + rowsNeeded(c), 0)
         } else {
-            bandMembers[assigned]!.push(path)
+            n = node.children.reduce((acc, c) => Math.max(acc, rowsNeeded(c)), 0)
         }
-        bandByPath.set(path, assigned)
+        rowCache.set(node, n)
+        return n
     }
-    return bandByPath
-}
 
-function commonPrefixLength(a: string, b: string): number {
-    let i = 0
-    while (i < a.length && i < b.length && a[i] === b[i]) i++
-    return i
+    const assign = (node: StructureNode, lo: number, hi: number) => {
+        ranges.set(node.execution_path, { yMin: lo, yMax: hi })
+        if (node.type === 'leaf' || node.children.length === 0) return
+
+        if (childrenAreParallel(node)) {
+            // Allocate rows only to non-instant children. Instants borrow the
+            // y-range of the nearest non-instant sibling (next preferred).
+            const nonInstantTotal = node.children.reduce((acc, c) => acc + rowsNeeded(c), 0) || 1
+            const rowH = (hi - lo) / nonInstantTotal
+            const allocated = new Map<StructureNode, { lo: number; hi: number }>()
+            let top = hi
+            for (const child of node.children) {
+                const childRows = rowsNeeded(child)
+                if (childRows === 0) continue
+                const childH = childRows * rowH
+                allocated.set(child, { lo: top - childH, hi: top })
+                top -= childH
+            }
+            for (let i = 0; i < node.children.length; i++) {
+                const child = node.children[i]!
+                const own = allocated.get(child)
+                if (own) {
+                    assign(child, own.lo, own.hi)
+                    continue
+                }
+                // Instant child: borrow from next non-instant, then previous, then parent.
+                let borrow: { lo: number; hi: number } | undefined
+                for (let j = i + 1; j < node.children.length && !borrow; j++) {
+                    borrow = allocated.get(node.children[j]!)
+                }
+                for (let j = i - 1; j >= 0 && !borrow; j--) {
+                    borrow = allocated.get(node.children[j]!)
+                }
+                if (!borrow) borrow = { lo, hi }
+                assign(child, borrow.lo, borrow.hi)
+            }
+        } else {
+            for (const child of node.children) {
+                assign(child, lo, hi)
+            }
+        }
+    }
+
+    assign(structure, yMin, yMax)
+    return ranges
 }
 
 /**
- * Returns the y-range for every execution path, using the same interval-colouring
- * logic as layoutRectangles when segments are available. Falls back to a uniform
- * split over all leaf paths in the structure tree when no segments are provided.
+ * Resolve a segment's execution_path to a y-range. Tries exact match first;
+ * falls back to longest-prefix in the registered ranges (handles cases where
+ * the segment path extends past a structure node).
+ */
+function resolveYRange(
+    execPath: string,
+    ranges: Map<string, { yMin: number; yMax: number }>,
+): { yMin: number; yMax: number } | undefined {
+    const exact = ranges.get(execPath)
+    if (exact) return exact
+    let best: { yMin: number; yMax: number } | undefined
+    let bestLen = -1
+    for (const [path, range] of ranges) {
+        if (execPath.startsWith(path) && path.length > bestLen) {
+            bestLen = path.length
+            best = range
+        }
+    }
+    return best
+}
+
+/**
+ * Returns the y-range for every execution path in the structure tree.
+ * Used by callers (e.g. axis labels) that need positions independent of segments.
  */
 export function collectPathYRanges(
     structure: StructureNode,
     yMin: number = 0,
     yMax: number = 1,
     segments?: TimelineSegment[],
-    maxPaths: number = DEFAULT_MAX_TIMELINE_PATHS
+    _maxPaths: number = DEFAULT_MAX_TIMELINE_PATHS,
 ): Map<string, { yMin: number; yMax: number }> {
-    if (segments && segments.length > 0) {
-        return computeYRanges(groupSegmentsByPath(segments), yMin, yMax, maxPaths)
-    }
-
-    // No segments yet — fall back to one equal band per leaf, top-to-bottom
-    const leafPaths = collectLeafPaths(structure)
-    const n = leafPaths.length
-    const bandHeight = n > 0 ? (yMax - yMin) / n : yMax - yMin
-    const ranges = new Map<string, { yMin: number; yMax: number }>()
-    leafPaths.forEach((path, i) => {
-        const rectYMax = yMax - i * bandHeight
-        ranges.set(path, { yMin: rectYMax - bandHeight, yMax: rectYMax })
-    })
-    return ranges
-}
-
-function collectLeafPaths(node: StructureNode): string[] {
-    if (node.type === 'leaf') return [node.execution_path]
-    return node.children.flatMap(collectLeafPaths)
+    return computeYRangesFromStructure(structure, segments ?? [], yMin, yMax)
 }

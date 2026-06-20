@@ -134,6 +134,11 @@ export class SelectionSync {
         }
 
         cy.endBatch()
+        // Force a style re-evaluation so z-index changes triggered by
+        // `.dimmed` (e.g. self-reg edges dropping behind compounds when
+        // their gene is unselected) take effect immediately rather than
+        // waiting for the next drag/zoom event to dirty the renderer.
+        cy.style().update()
         this.updating = false
     }
 }

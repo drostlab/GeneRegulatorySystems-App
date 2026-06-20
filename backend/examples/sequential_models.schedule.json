@@ -21,8 +21,8 @@
                     }
                 ]
             }},
+            "seed": "${rootseed}-phase1",
             "step": [
-                {"{seed}": "${seed}-phase1"},
                 {"{add}": {
                     "$": ["defaults", "bootstrap"],
                     "1.proteins": 50
@@ -56,8 +56,8 @@
                     }
                 ]
             }},
+            "seed": "${rootseed}-phase2",
             "step": [
-                {"{seed}": "${seed}-phase2"},
                 {"to": 100000.0}
             ]
         }

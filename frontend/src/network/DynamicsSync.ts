@@ -16,20 +16,50 @@ const DEBOUNCE_MS = 16
 export class DynamicsSync {
     private cy: Core | null = null
     private stopWatch: WatchStopHandle | null = null
+    private stopEnableWatch: WatchStopHandle | null = null
     private timeout: ReturnType<typeof setTimeout> | null = null
 
     attach(cy: Core): void {
         this.cy = cy
 
         const viewerStore = useViewerStore()
+        // Gate the expensive sizing watcher on the toggle. While disabled, the
+        // protein-count watcher is never installed, so the heavy
+        // proteinCountsAtTimepoint/maxProteinCounts computeds stay dormant.
+        this.stopEnableWatch = watch(
+            () => viewerStore.resizeByExpressionEnabled,
+            (enabled) => {
+                if (enabled) this.enableSizingWatch()
+                else this.disableSizingWatch()
+            },
+            { immediate: true },
+        )
+    }
+
+    private enableSizingWatch(): void {
+        if (this.stopWatch) return
+        const viewerStore = useViewerStore()
         this.stopWatch = watch(
             () => [viewerStore.proteinCountsAtTimepoint, viewerStore.selectedGenes],
             () => this.scheduleUpdate(),
             { deep: true },
         )
+        this.scheduleUpdate()
+    }
+
+    private disableSizingWatch(): void {
+        this.stopWatch?.()
+        this.stopWatch = null
+        if (this.timeout) {
+            clearTimeout(this.timeout)
+            this.timeout = null
+        }
+        this.resetSizes()
     }
 
     destroy(): void {
+        this.stopEnableWatch?.()
+        this.stopEnableWatch = null
         this.stopWatch?.()
         this.stopWatch = null
         if (this.timeout) {
@@ -49,6 +79,8 @@ export class DynamicsSync {
 
     /** Called when the detail view (species/gene) changes so sizing is reapplied. */
     notifyDetailChanged(_visible: boolean): void {
+        // No-op while dynamic sizing is disabled (no active watcher).
+        if (!this.stopWatch) return
         this.scheduleUpdate()
     }
 

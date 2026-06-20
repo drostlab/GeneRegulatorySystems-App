@@ -7,6 +7,7 @@ using JSON
 using Logging
 using Dates
 using Arrow
+using PrecompileTools: @setup_workload, @compile_workload
 
 using GeneRegulatorySystems
 using GeneRegulatorySystems.Models
@@ -85,34 +86,52 @@ end
 # return full schedule object for a stored schedule (includes validation and visualization data)
 @get "/schedules/{source}/{name}" function(_, source::String, name::String)
     spec_str = ScheduleStorage.get_schedule_spec(name, source)
-    isnothing(spec_str) && throw("Schedule not found")
+    isnothing(spec_str) && return HTTP.Response(404, "Schedule not found")
     return ScheduleVisualization.reify_schedule(spec_str, name=name, source=source)::ScheduleVisualization.ReifiedSchedule
 end
 
 @kwdef struct LoadScheduleRequest
     schedule_name::String
     schedule_spec::String
+    schedule_source::String = "snapshot"
 end
 # validate and generate visualization for schedule spec
 @post "/schedules/load" function(req, data::Json{LoadScheduleRequest})
-    return ScheduleVisualization.reify_schedule(data.payload.schedule_spec, name=data.payload.schedule_name)::ScheduleVisualization.ReifiedSchedule
+    return ScheduleVisualization.reify_schedule(
+        data.payload.schedule_spec;
+        name=data.payload.schedule_name,
+        source=data.payload.schedule_source,
+    )::ScheduleVisualization.ReifiedSchedule
 end
 
 @kwdef struct UploadScheduleRequest
     schedule_name::String
     schedule_spec::String
+    original_name::Union{String, Nothing} = nothing
+    original_source::Union{String, Nothing} = nothing
 end
 # upload and save schedule to user storage
 @post "/schedules/upload" function(req, data::Json{UploadScheduleRequest})
-    ScheduleStorage.save_user_schedule(data.payload.schedule_name, data.payload.schedule_spec)
-    return ScheduleVisualization.reify_schedule(data.payload.schedule_spec, name=data.payload.schedule_name, source="user")::ScheduleVisualization.ReifiedSchedule
+    payload = data.payload
+    ScheduleStorage.save_user_schedule(payload.schedule_name, payload.schedule_spec)
+
+    # A renamed user schedule is a move, not a copy. Bundled examples are
+    # read-only, so saving one still creates a user-owned version.
+    if payload.original_source == "user" &&
+       !isnothing(payload.original_name) &&
+       payload.original_name != payload.schedule_name
+        ScheduleStorage.delete_user_schedule(payload.original_name)
+    end
+
+    return ScheduleVisualization.reify_schedule(payload.schedule_spec, name=payload.schedule_name, source="user")::ScheduleVisualization.ReifiedSchedule
 end
 
 # extract network for a stored schedule by model_path
 @get "/schedules/{source}/{name}/network" function(req, source::String, name::String)
-    model_path = HTTP.queryparams(HTTP.URI(req.target))["model_path"]
+    model_path = get(HTTP.queryparams(HTTP.URI(req.target)), "model_path", nothing)
+    isnothing(model_path) && return HTTP.Response(400, "model_path query parameter required")
     spec_str = ScheduleStorage.get_schedule_spec(name, source)
-    isnothing(spec_str) && throw("Schedule not found")
+    isnothing(spec_str) && return HTTP.Response(404, "Schedule not found")
     return ScheduleVisualization.extract_network_for_model_path(spec_str, model_path)::ScheduleVisualization.Network
 end
 
@@ -145,7 +164,7 @@ end
 # get simulation result (metadata only, no frames)
 @get "/simulations/{id}" function(_, id::String)
     result = Simulation.load_result(id)
-    isnothing(result) && throw("Result not found")
+    isnothing(result) && return HTTP.Response(404, "Result not found")
     return result::Simulation.SimulationResult
 end
 
@@ -179,7 +198,7 @@ end
 # compute mean + SE across execution paths for the requested species
 @post "/simulations/{id}/timeseries/summary" function(req, id::String, data::Json{TimeseriesSummaryRequest})
     result = Simulation.load_result(id)
-    isnothing(result) && throw("Result not found")
+    isnothing(result) && return HTTP.Response(404, "Result not found")
     species_filter = Set(Symbol.(data.payload.species))
     summaries = TimeseriesSummary.compute_summary(result.path, species_filter; n_points=data.payload.n_points)
     # Convert to JSON-friendly format
@@ -248,13 +267,21 @@ end
 
 # start a simulation run (async, streamed via WS)
 @post "/simulations/run" function(req, data::Json{RunSimulationRequest})
-    # Load and validate model from spec (throws on invalid spec)
-    model = Simulation.load_model_from_spec(data.payload.schedule_spec)
-
+    spec = data.payload.schedule_spec
     max_time = data.payload.max_time
 
+    # Single reify pass: populates the spec cache with the parsed GRSSchedule,
+    # validation messages, segments, and gene colours.  Subsequent lookups are
+    # dict reads.
+    reified = ScheduleVisualization.reify_schedule(spec, name=data.payload.schedule_name)
+    ScheduleVisualization.is_valid(reified) || return HTTP.Response(400, "Invalid schedule: $(ScheduleVisualization.get_error_messages(reified))")
+
+    model = ScheduleVisualization.cache_entry(spec).grs_schedule
+    gene_colours = reified.data.gene_colours
+    timeline_segments = reified.data.segments
+
     # Prepare result directory and metadata
-    result = Simulation.prepare_result(data.payload.schedule_name, data.payload.schedule_spec; max_time)
+    result = Simulation.prepare_result(data.payload.schedule_name, spec; max_time)
 
     # Create simulation controller for pause/resume and gene subscriptions.
     # Uses ws_client/WS_LOCK refs so the controller lazily reads the latest WS
@@ -268,23 +295,6 @@ end
         subscribed_species = initial_species
     )
     active_controller[] = ctrl
-
-    # Compute gene colours for phase-space colouring (dryrun, tolerates errors).
-    gene_colours = try
-        ScheduleVisualization.gene_colours_from_spec(data.payload.schedule_spec)
-    catch e
-        @warn "[Server] Could not compute gene_colours for phase-space" exception=e
-        Dict{String,String}()
-    end
-
-    # Reify schedule to extract timeline segments for per-segment progress tracking.
-    timeline_segments = try
-        reified = ScheduleVisualization.reify_schedule(data.payload.schedule_spec, name=data.payload.schedule_name)
-        isnothing(reified.data) ? nothing : reified.data.segments
-    catch e
-        @warn "[Server] Could not reify schedule for segment progress" exception=e
-        nothing
-    end
 
     # Spawn async simulation task
     simulation_task[] = @async begin
@@ -324,6 +334,46 @@ end
 
     # Return immediately with status=running
     return result::Simulation.SimulationResult
+end
+
+# ============================================================================
+# Precompile workload
+#
+# Exercises the cold-start hot paths (spec parse → GRSSchedule build →
+# reify → network extraction → integrator dispatch) so type inference is
+# cached in the package image.  Uses a tiny inlined spec with short `to`
+# to keep build time low.  Runtime codegen inside GRS.jl is not captured
+# here — that work still happens on first real request.
+# ============================================================================
+
+const PRECOMPILE_SPEC = """
+{
+    "to": 10.0,
+    "step": [
+        {"{add}": {"polymerases": 5e5, "ribosomes": 2e6, "proteasomes": 1e6}},
+        {"{regulation/v1}": {"genes": [
+            {"base_rates": {
+                "activation": 2.5, "deactivation": 10.0, "trigger": 6.6e-7,
+                "transcription": 0.001, "processing": 0.02, "translation": 2.5e-9,
+                "abortion": 0.01, "premrna_decay": 0.001, "mrna_decay": 0.001,
+                "protein_decay": 3e-10
+            }}
+        ]}}
+    ]
+}
+"""
+
+@setup_workload begin
+    @compile_workload begin
+        reified = ScheduleVisualization.reify_schedule(PRECOMPILE_SPEC; name="precompile")
+        if reified.data !== nothing
+            ScheduleVisualization.extract_union_network(PRECOMPILE_SPEC, reified.data.segments)
+            schedule = ScheduleVisualization.cache_entry(PRECOMPILE_SPEC).grs_schedule
+            state = Models.FlatState()
+            schedule(state, Inf; trace = (args...; kwargs...) -> nothing)
+        end
+        ScheduleVisualization.clear_spec_cache()
+    end
 end
 
 end

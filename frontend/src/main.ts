@@ -1,6 +1,5 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import piniaPluginPersistedstate from 'pinia-plugin-persistedstate'
 import PrimeVue from 'primevue/config'
 import { grsTooltip } from '@/utils/grsTooltip'
 import Tooltip from 'primevue/tooltip'
@@ -76,7 +75,6 @@ const MyPreset = definePreset(Aura, {
 const app = createApp(App)
 
 const pinia = createPinia()
-pinia.use(piniaPluginPersistedstate)
 app.use(pinia)
 app.use(PrimeVue, {
     theme: {

@@ -241,14 +241,11 @@ const activePhaseSpaceResult = computed(() => {
     return serverResult
 })
 
-watch(
-    () => activePhaseSpaceResult.value !== null,
-    (available) => {
-        if (available) showPhaseSpace.value = true
-    }
-)
+// Phase space is not auto-shown when its result becomes available; the user
+// reveals it via the toolbar button. `showPhaseSpace` stays false (and is
+// reset to false on every run) until then.
 
-// When showPhaseSpace toggles (button or auto-set), show/hide in MainChart
+// When showPhaseSpace toggles via the button, show/hide in MainChart
 watch(showPhaseSpace, (show) => {
     if (show && activePhaseSpaceResult.value) {
         chart.showPhaseSpace(activePhaseSpaceResult.value)

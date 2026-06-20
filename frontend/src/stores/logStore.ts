@@ -20,6 +20,7 @@ const MAX_LINES = 2000
 export const useLogStore = defineStore('log', () => {
     const lines = ref<LogLine[]>([])
     const drawerVisible = ref(false)
+    let backendStderrLevel: LogLine['level'] = 'stderr'
 
     function push(line: LogLine): void {
         lines.value.push(line)
@@ -29,10 +30,19 @@ export const useLogStore = defineStore('log', () => {
     }
 
     function pushBackend(text: string, stream: string): void {
+        let level: LogLine['level'] = stream === 'stderr' ? backendStderrLevel : 'stdout'
+        if (stream === 'stderr') {
+            const juliaLevel = text.match(/^\s*(?:\[|┌)\s*(Info|Warning|Error):/i)?.[1]?.toLowerCase()
+            const mappedLevel = juliaLevel === 'warning' ? 'warn' : juliaLevel
+            if (mappedLevel === 'info' || mappedLevel === 'warn' || mappedLevel === 'error') {
+                level = mappedLevel
+                backendStderrLevel = mappedLevel
+            }
+        }
         push({
             timestamp: Date.now(),
             source: 'backend',
-            level: stream === 'stderr' ? 'stderr' : 'stdout',
+            level,
             text,
         })
     }

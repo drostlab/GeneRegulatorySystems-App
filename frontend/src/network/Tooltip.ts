@@ -1,127 +1,257 @@
 /**
- * Lightweight DOM tooltip for Cytoscape elements.
+ * Tooltip on Cytoscape elements, sharing the project-wide GRS tooltip
+ * singleton (`v-grs-tooltip` directive's DOM element). This guarantees
+ * that hovering a cytoscape edge/node, a chip, or any directive-tagged
+ * DOM element uses the exact same tooltip surface.
  *
  * Parameterised by selector (e.g. 'edge', 'node') and a content function
  * that extracts tooltip text from the hovered element.
- *
- * @param selector - Cytoscape selector string to attach hover listeners to
- * @param contentFn - extracts display text from a Cytoscape element
- * @param tooltipId - unique DOM id for the tooltip element
  */
 import type { Core, EventHandler } from 'cytoscape'
+import { showGrsTooltip, moveGrsTooltip, hideGrsTooltip } from '@/utils/grsTooltip'
 
 export class Tooltip {
     private cy: Core | null = null
-    private tooltip: HTMLDivElement | null = null
     private onMouseOver: EventHandler | null = null
+    private onMouseMove: EventHandler | null = null
     private onMouseOut: EventHandler | null = null
+
+    private readonly selector: string
+    private readonly contentFn: (el: any) => string | null
 
     /**
      * @param selector - Cytoscape selector (e.g. 'edge', 'node')
-     * @param contentFn - returns tooltip text for a given element
-     * @param tooltipId - unique DOM id to avoid duplicate tooltips
+     * @param contentFn - returns tooltip text for a given element, or
+     *   `null`/empty string to suppress the tooltip for that element
+     * @param _tooltipId - retained for backward compat; no longer used
      */
-    private readonly selector: string
-    private readonly contentFn: (el: any) => string
-    private readonly tooltipId: string
-
-    constructor(selector: string, contentFn: (el: any) => string, tooltipId: string) {
+    constructor(selector: string, contentFn: (el: any) => string | null, _tooltipId?: string) {
         this.selector = selector
         this.contentFn = contentFn
-        this.tooltipId = tooltipId
     }
 
     /**
-     * Attach tooltip listeners to a Cytoscape instance.
-     * @param cy - the Cytoscape core instance
+     * Attach hover/move/out listeners to a Cytoscape instance.
      */
     attach(cy: Core): void {
         this.cy = cy
-        this.tooltip = this.createTooltipElement()
 
         this.onMouseOver = (evt: any) => {
-            const text = this.contentFn(evt.target)
-            this.tooltip!.textContent = text
-            this.tooltip!.style.display = 'block'
-
-            const renderedPos = evt.renderedPosition ?? evt.position
-            this.tooltip!.style.left = `${renderedPos.x + 12}px`
-            this.tooltip!.style.top = `${renderedPos.y - 20}px`
+            const oe = evt.originalEvent as MouseEvent | undefined
+            if (!oe) return
+            const content = this.contentFn(evt.target)
+            if (!content) { hideGrsTooltip(); return }
+            showGrsTooltip(content, oe.clientX, oe.clientY)
         }
-
-        this.onMouseOut = () => {
-            this.tooltip!.style.display = 'none'
+        this.onMouseMove = (evt: any) => {
+            const oe = evt.originalEvent as MouseEvent | undefined
+            if (!oe) return
+            moveGrsTooltip(oe.clientX, oe.clientY)
         }
+        this.onMouseOut = () => hideGrsTooltip()
 
         cy.on('mouseover', this.selector, this.onMouseOver)
+        cy.on('mousemove', this.selector, this.onMouseMove)
         cy.on('mouseout', this.selector, this.onMouseOut)
     }
 
+    /**
+     * Show the tooltip with the content for `ele` at viewport (client) coords.
+     * Used to surface the same tooltip from non-cytoscape triggers (e.g.
+     * inline-parameter chip hovers).
+     */
+    showFor(ele: any, clientX: number, clientY: number): void {
+        const content = this.contentFn(ele)
+        if (!content) { hideGrsTooltip(); return }
+        showGrsTooltip(content, clientX, clientY)
+    }
+
+    /** Hide the tooltip if visible. */
+    hide(): void {
+        hideGrsTooltip()
+    }
+
     destroy(): void {
-        if (this.cy && this.onMouseOver) {
-            this.cy.off('mouseover', this.selector, this.onMouseOver)
+        if (this.cy) {
+            if (this.onMouseOver) this.cy.off('mouseover', this.selector, this.onMouseOver)
+            if (this.onMouseMove) this.cy.off('mousemove', this.selector, this.onMouseMove)
+            if (this.onMouseOut) this.cy.off('mouseout', this.selector, this.onMouseOut)
         }
-        if (this.cy && this.onMouseOut) {
-            this.cy.off('mouseout', this.selector, this.onMouseOut)
-        }
-        this.tooltip?.remove()
-        this.tooltip = null
         this.onMouseOver = null
+        this.onMouseMove = null
         this.onMouseOut = null
         this.cy = null
     }
-
-    /**
-     * Create or re-use the tooltip DOM element.
-     * @returns the tooltip div element
-     */
-    private createTooltipElement(): HTMLDivElement {
-        let el = document.getElementById(this.tooltipId) as HTMLDivElement | null
-        if (el) return el
-
-        el = document.createElement('div')
-        el.id = this.tooltipId
-        el.className = 'grs-tooltip'
-        Object.assign(el.style, {
-            position: 'absolute',
-            display: 'none',
-            pointerEvents: 'none',
-            zIndex: '9999',
-        })
-
-        const container = this.cy?.container()
-        if (container) {
-            container.style.position = 'relative'
-            container.appendChild(el)
-        } else {
-            document.body.appendChild(el)
-        }
-
-        return el
-    }
 }
 
-/** Edge tooltip: shows the edge kind on hover. */
-export function createEdgeTooltip(): Tooltip {
+import type { Parameter, HiddenReagent } from '@/types/network'
+
+/**
+ * Resolve parameter values for the currently active model.
+ * Returns `undefined` if no model is active or the symbol is unknown.
+ */
+export type ParameterValueLookup = (symbol: string) => number | undefined
+
+/**
+ * Format a list of (parameter, value) pairs for tooltip display.
+ * Skips parameters whose value is unknown for the active model.
+ */
+function formatParameterLines(
+    parameters: Parameter[] | undefined,
+    lookup: ParameterValueLookup,
+): string[] {
+    if (!parameters || parameters.length === 0) return []
+    const lines: string[] = []
+    for (const p of parameters) {
+        const v = lookup(p.symbol)
+        if (v === undefined) continue
+        lines.push(`  ${p.name} = ${formatValue(v)}`)
+    }
+    return lines
+}
+
+function formatValue(v: number): string {
+    if (!Number.isFinite(v)) return String(v)
+    if (v === 0) return '0'
+    const abs = Math.abs(v)
+    if (abs >= 0.01 && abs < 1000) return v.toFixed(4).replace(/\.?0+$/, '')
+    return v.toExponential(2)
+}
+
+/** Strip species suffix (`.proteins`, `.active`, …) leaving the gene name. */
+function geneOf(nodeId: string): string {
+    const i = nodeId.indexOf('.')
+    return i === -1 ? nodeId : nodeId.slice(0, i)
+}
+
+/**
+ * Edge tooltip: shows `kind: from → to` plus the values of each parameter
+ * resolved against the currently active model. Endpoints are reduced to
+ * their gene names so the header reads cleanly regardless of view (gene
+ * vs species).
+ */
+export function createEdgeTooltip(lookup: ParameterValueLookup): Tooltip {
     return new Tooltip(
         'edge',
-        (edge: any) => edge.data('kind') ?? 'unknown',
+        (edge: any) => {
+            const kind: string = edge.data('kind') ?? 'unknown'
+            // Stoichiometry-only edges are self-explanatory; no tooltip.
+            if (kind === 'substrate' || kind === 'product') return null
+            const source = String(edge.data('source') ?? '')
+            const target = String(edge.data('target') ?? '')
+            const header = source && target
+                ? `${kind}: ${geneOf(source)} → ${geneOf(target)}`
+                : kind
+            const params = edge.data('parameters') as Parameter[] | undefined
+            const lines = formatParameterLines(params, lookup)
+            return lines.length ? `${header}\n${lines.join('\n')}` : header
+        },
         'cy-edge-tooltip',
     )
 }
 
-/** Node tooltip: shows the full node name on hover, plus base rates for gene nodes. */
-export function createNodeTooltip(): Tooltip {
+/**
+ * Derive a friendly reaction name from its `rate` parameter symbol.
+ * Cascade reactions have symbols like `gene_1.mrna_decay`; auxiliary
+ * reactions have `reaction.<i>.<field>`. Falls back to the raw symbol if
+ * the shape is unfamiliar.
+ */
+function reactionNameFromSymbol(symbol: string | undefined): string | null {
+    if (!symbol) return null
+    const parts = symbol.split('.')
+    if (parts.length === 2) {
+        // cascade: gene.kind  →  "kind on gene"
+        return `${parts[1]} on ${parts[0]}`
+    }
+    if (parts.length >= 3 && parts[0] === 'reaction') {
+        // auxiliary: reaction.<i>.<field>  →  "reaction <i>" or
+        // "reaction <i> (reverse)" when the field is the reverse rate.
+        const field = parts[parts.length - 1]
+        const reverse = field === 'k⁻' || field === 'k_minus' || field === 'k-'
+        return reverse ? `reaction ${parts[1]} (reverse)` : `reaction ${parts[1]}`
+    }
+    return symbol
+}
+
+/** Format a stoichiometry coefficient, omitting `1 ×` for readability. */
+function formatStoichiometry(value: unknown): string {
+    if (typeof value !== 'number' || value === 1) return ''
+    return `${value} `
+}
+
+/** Resolve the machinery (un-drawn) reagents for a reaction node id. */
+export type HiddenReagentLookup = (reactionId: string) => HiddenReagent[] | undefined
+
+function formatReagent(name: string, stoichiometry: unknown): string {
+    return `${formatStoichiometry(stoichiometry)}${geneOf(name)}${speciesSuffix(name)}`
+}
+
+/**
+ * Reaction equation lines, e.g. `2 gene_1.mrna → protein_x`, derived from
+ * the reaction node's connected `substrate`/`product` edges. Machinery
+ * species (polymerases/ribosomes/proteasomes) have no edges, so they are
+ * folded back in from `hiddenLookup` to show the complete reaction.
+ */
+function formatReactionEquation(node: any, hiddenLookup: HiddenReagentLookup): string[] {
+    const substrates: string[] = node.connectedEdges('[kind = "substrate"]')
+        .map((e: any) => formatReagent(String(e.data('source')), e.data('stoichiometry')))
+    const products: string[] = node.connectedEdges('[kind = "product"]')
+        .map((e: any) => formatReagent(String(e.data('target')), e.data('stoichiometry')))
+
+    const hidden = hiddenLookup(String(node.data('id'))) ?? []
+    for (const r of hidden) {
+        const text = formatReagent(r.species, r.stoichiometry)
+        if (r.role === 'substrate') substrates.push(text)
+        else products.push(text)
+    }
+
+    if (substrates.length === 0 && products.length === 0) return []
+    const lhs = substrates.length ? substrates.join(' + ') : '∅'
+    const rhs = products.length ? products.join(' + ') : '∅'
+    const reversible = node.connectedEdges('[kind = "substrate"], [kind = "product"]')
+        .some((e: any) => Boolean(e.data('reversible')))
+    const arrow = reversible ? '⇌' : '⭢'
+    return [`  ${lhs} ${arrow} ${rhs}`]
+}
+
+/** The `.proteins`/`.active`/... suffix of a species id, if any. */
+function speciesSuffix(speciesId: string): string {
+    const i = speciesId.indexOf('.')
+    return i === -1 ? '' : speciesId.slice(i)
+}
+
+/**
+ * Node tooltip:
+ * - Gene nodes show just the name.
+ * - Reaction nodes show a derived friendly name (e.g. `mrna_decay on gene_1`),
+ *   the reagent equation (reagents, products and their stoichiometries),
+ *   plus rate value resolved against the active model.
+ * - Other nodes (species etc.) show the name.
+ */
+export function createNodeTooltip(
+    lookup: ParameterValueLookup,
+    hiddenReagents: HiddenReagentLookup = () => undefined,
+): Tooltip {
     return new Tooltip(
         'node',
         (node: any) => {
-            const id: string = node.data('id') ?? 'unknown'
-            const baseRates: Record<string, number> | undefined = node.data('base_rates')
-            if (!baseRates) return id
-            const rateLines = Object.entries(baseRates)
-                .map(([k, v]) => `  ${k}: ${v}`)
-                .join('\n')
-            return `${id}\n${rateLines}`
+            const kind = String(node.data('kind') ?? '')
+            const params = node.data('parameters') as Parameter[] | undefined
+            const lines = formatParameterLines(params, lookup)
+
+            const id = String(node.data('id') ?? 'unknown')
+            let header: string
+            if (kind === 'reaction') {
+                const symbol = params?.[0]?.symbol
+                header = reactionNameFromSymbol(symbol) ?? id
+                lines.unshift(...formatReactionEquation(node, hiddenReagents))
+            } else if (kind === 'gene') {
+                header = `gene ${id}`
+            } else {
+                header = id
+            }
+
+            return lines.length ? `${header}\n${lines.join('\n')}` : header
         },
         'cy-node-tooltip',
     )

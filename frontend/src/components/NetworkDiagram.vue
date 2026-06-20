@@ -6,13 +6,54 @@ import { NetworkView } from '@/network/NetworkView'
 import { useTheme } from '@/composables/useTheme'
 import ProgressSpinner from 'primevue/progressspinner'
 import Button from 'primevue/button'
+import ContextMenu from 'primevue/contextmenu'
 
 const containerRef = ref<HTMLDivElement>()
+const contextMenuRef = ref<InstanceType<typeof ContextMenu>>()
 const scheduleStore = useScheduleStore()
 const viewerStore = useViewerStore()
 const networkView = new NetworkView()
 const { isDark, onThemeChange } = useTheme()
 const isDetailVisible = ref(false)
+
+const contextMenuItems = computed(() => {
+    const net = scheduleStore.unionNetwork
+    const allGenes = scheduleStore.allGenes ?? []
+    const allSpecies: string[] = net
+        ? net.nodes.filter(n => n.kind === 'species').map(n => String(n.name))
+        : []
+    const hasSelection =
+        viewerStore.selectedGenes.length > 0
+        || viewerStore.selectedSpeciesNodes.length > 0
+        || viewerStore.selectedOtherSpecies.length > 0
+    return [
+        {
+            label: 'Select all genes',
+            disabled: allGenes.length === 0,
+            command: () => {
+                viewerStore.selectedGenes = [...allGenes]
+            },
+        },
+        {
+            label: 'Select all species',
+            disabled: allSpecies.length === 0,
+            command: () => {
+                viewerStore.selectedSpeciesNodes = allSpecies
+                viewerStore.selectedOtherSpecies = scheduleStore.allOtherSpecies ?? []
+            },
+        },
+        { separator: true },
+        {
+            label: 'Clear selection',
+            disabled: !hasSelection,
+            command: () => {
+                viewerStore.selectedGenes = []
+                viewerStore.selectedSpeciesNodes = []
+                viewerStore.selectedOtherSpecies = []
+            },
+        },
+    ]
+})
 
 // Sync isDetailVisible when zoom or toggle changes detail visibility
 networkView.onDetailChange = (visible: boolean) => {
@@ -42,11 +83,42 @@ onMounted(() => {
     networkView.init(containerRef, isDark.value)
     onThemeChange((dark) => networkView.applyTheme(dark))
 
+    // Resolve parameter values against the active model. Read fresh on each
+    // call so tooltips and inline chips reflect whichever model is active.
+    //
+    // Fallback: if the active model path has no entry (e.g. it points at an
+    // instant model that wasn't reified, or there's only one model in the
+    // schedule and the user hasn't hovered yet), pick the first available
+    // model so chips still show meaningful values instead of `?`.
+    networkView.setParameterLookup((symbol: string) => {
+        const byPath = scheduleStore.unionNetwork?.parameters_by_model_path
+        if (!byPath) return undefined
+        const mp = viewerStore.activeModelPath
+        if (mp && byPath[mp]) return byPath[mp]?.[symbol]
+        const firstKey = Object.keys(byPath)[0]
+        return firstKey ? byPath[firstKey]?.[symbol] : undefined
+    })
+
+    // TODO: persist to spec / fire `/schedules/edit`.
+    networkView.onParameterChange = (symbol, value) => {
+        console.debug('[NetworkDiagram] parameter change', symbol, '=', value)
+    }
+
+    // Right-click on the network background surfaces a context menu with
+    // selection bulk-actions (select all genes/species, clear).
+    networkView.onContextMenu = (evt) => contextMenuRef.value?.show(evt)
+
     // Render when union network arrives
     if (scheduleStore.unionNetwork) {
         networkView.setNetwork(scheduleStore.unionNetwork, scheduleStore.geneColours ?? {})
         isDetailVisible.value = networkView.isDetailVisible
     }
+})
+
+// Refresh inline chip values whenever the user hovers a different model
+// (timeline rectangles, branch switches, etc.).
+watch(() => viewerStore.activeModelPath, () => {
+    networkView.refreshParameterValues()
 })
 
 onBeforeUnmount(() => {
@@ -75,6 +147,9 @@ defineExpose({ exportSVG })
 <template>
     <div class="network-diagram-container">
         <div ref="containerRef" class="cytoscape-container" />
+
+        <!-- Right-click context menu (selection bulk-actions) -->
+        <ContextMenu ref="contextMenuRef" :model="contextMenuItems" />
 
         <!-- Bottom-right controls -->
         <div class="controls">

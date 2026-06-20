@@ -57,11 +57,12 @@ function delay(ms: number): Promise<void> {
  * Parse API error response
  */
 export async function parseApiError(response: Response): Promise<string> {
+    const text = await response.text().catch(() => '')
     try {
-        const data = (await response.json()) as { error?: string; message?: string }
-        return data.error || data.message || `HTTP ${response.status}`
+        const data = JSON.parse(text) as { error?: string; message?: string }
+        return data.error || data.message || text || `HTTP ${response.status}: ${response.statusText}`
     } catch {
-        return `HTTP ${response.status}: ${response.statusText}`
+        return text || `HTTP ${response.status}: ${response.statusText}`
     }
 }
 

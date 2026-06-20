@@ -29,10 +29,6 @@ function _label(model::Plumbing.Adjust)
     isempty(entries) ? body : "$(body)\n$(entries)"
 end
 
-function _label(model::Plumbing.Seed)
-    "Seed\n  $(model.seed)"
-end
-
 function _label(desc::Descriptions)
     i = findfirst(d -> d isa Label, desc.descriptions)
     i !== nothing ? _label(desc.descriptions[i]) : ""
@@ -173,7 +169,7 @@ function _structure_node(spec::List, bindings::Dict{Symbol, Any}, path::String, 
     children = StructureNode[]
 
     for (i, item_spec) in enumerate(spec.items)
-        item_bindings = Scheduling.descended(bindings, i)
+        item_bindings = descended_bindings(bindings, i; channel = true)
         child = _structure_node_from_step(item_spec, item_bindings, "$child_prefix$i", false)
         push!(children, child)
     end
@@ -193,9 +189,10 @@ function _structure_node(spec::Each, bindings::Dict{Symbol, Any}, path::String, 
 
     children = StructureNode[]
     for (i, item) in enumerate(items)
-        item_bindings = Scheduling.descended(bindings, i)
+        item_bindings = descended_bindings(bindings, i; channel = spec.as != Symbol(""))
         if spec.as != Symbol("")
-            item_bindings = merge(item_bindings, Dict{Symbol, Any}(spec.as => item))
+            value = Scheduling.evaluate(item, path = "$child_prefix$i"; bindings)
+            item_bindings = merge(item_bindings, Dict{Symbol, Any}(spec.as => value))
         end
         child = _structure_node_from_step(spec.step, item_bindings, "$child_prefix$i", false)
         push!(children, child)
@@ -203,6 +200,12 @@ function _structure_node(spec::Each, bindings::Dict{Symbol, Any}, path::String, 
 
     node_type = (branch || any(_subtree_has_branch, children)) ? :branch : :sequence
     return StructureNode(type = node_type, execution_path = path, children = children)
+end
+
+function descended_bindings(bindings::Dict{Symbol, Any}, i::Int; channel::Bool)::Dict{Symbol, Any}
+    redefinitions = Dict{Symbol, Any}(:seed => "$(bindings[:seed])-$i")
+    channel && (redefinitions[:channel] = "$(bindings[:channel])-$i")
+    merge(bindings, redefinitions)
 end
 
 """True if this node or any descendant has type :branch."""
@@ -249,7 +252,7 @@ function _safe_evaluate_bindings(spec::Scope, bindings::Dict{Symbol, Any}, path:
         merged = if spec.barrier
             Dict{Symbol, Any}(
                 keep => bindings[keep]
-                for keep in (:seed, :into, :channel, :defaults)
+                for keep in (:rootseed, :seed, :into, :channel, :defaults)
                 if haskey(bindings, keep)
             )
         else

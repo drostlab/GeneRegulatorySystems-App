@@ -18,8 +18,10 @@ spec_seed(::AbstractVector) = "default"
 
 """Build standard bindings dict from a parsed spec."""
 function spec_bindings(spec)::Dict{Symbol, Any}
+    seed = spec_seed(spec)
     Dict{Symbol, Any}(
-        :seed => spec_seed(spec),
+        :rootseed => seed,
+        :seed => seed,
         :into => "",
         :channel => "",
         :defaults => Models.load_defaults(),

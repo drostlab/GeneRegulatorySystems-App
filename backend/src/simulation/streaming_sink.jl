@@ -177,12 +177,29 @@ end
 # ============================================================================
 
 """
-    (sink::StreamingSimulationSink)(into, state; path, primitive!, from, seed, _...)
+    (sink::StreamingSimulationSink)(state; path, primitive!, from, into, _...)
 
 Sink interface (callable struct). Called for each state transition.
 Accumulates events, checks pause, reports progress, and streams filtered timeseries.
 """
-function (sink::StreamingSimulationSink)(into, state; path, primitive!, from, seed, _...)
+function (sink::StreamingSimulationSink)(;
+    path,
+    into = nothing,
+    flush = nothing,
+    _...,
+)
+    matching = flush === true ? into : flush
+    matching !== nothing && flush!(sink; matching, finalize = false)
+end
+
+function (sink::StreamingSimulationSink)(
+    state;
+    path,
+    primitive!,
+    from,
+    into = nothing,
+    _...,
+)
     # Check pause before processing
     _check_pause_if_needed(sink)
 
@@ -205,7 +222,7 @@ function (sink::StreamingSimulationSink)(into, state; path, primitive!, from, se
     # Record index metadata (no output channel)
     if into === nothing
         @debug "[StreamingSink] Index entry (no output)" i=sink.i path=path
-        push!(sink.index, (; sink.i, path, from, to, model, label, count = 0, into = "", seed))
+        push!(sink.index, (; sink.i, path, from, to, model, label, count = 0, into = ""))
         sink.i_to_path[sink.i] = path
 
         # Register with gap tracker for bridging runs (step-based schedules).
@@ -307,7 +324,7 @@ function (sink::StreamingSimulationSink)(into, state; path, primitive!, from, se
     end
 
     # Record execution segment metadata
-    push!(sink.index, (; sink.i, path, from, to, model, label, count, into, seed))
+    push!(sink.index, (; sink.i, path, from, to, model, label, count, into))
     sink.i_to_path[sink.i] = path
 
     # Register episode with gap tracker
@@ -426,23 +443,28 @@ end
 """
     flush!(sink)
 
-Flush all accumulated events to Arrow files. Sends final timeseries update.
+Flush matching event channels to Arrow files. When `finalize` is true, also
+complete progress tracking and send the final timeseries update.
 """
-function flush!(sink::StreamingSimulationSink)
+function flush!(sink::StreamingSimulationSink; matching = nothing, finalize::Bool = true)
     sink.i > 0 || return
-    @info "[StreamingSink] Flushing all channels"
+    @info "[StreamingSink] Flushing channels" matching finalize
 
-    # Mark the final segment as completed
-    if sink.current_segment_key !== nothing
+    # Mark the final segment as completed only when finalizing the whole sink.
+    if finalize && sink.current_segment_key !== nothing
         _mark_segment_completed!(sink, sink.current_segment_key)
         sink.current_segment_key = nothing
     end
 
     for into in keys(sink.channels)
-        _flush_channel!(sink, into)
+        if matching === nothing || startswith(into, matching)
+            _flush_channel!(sink, into)
+        end
     end
 
     _write_index!(sink)
+
+    finalize || return
 
     # Final timeseries flush
     if !isempty(sink.pending_timeseries) && !isnothing(sink.controller)
@@ -472,7 +494,6 @@ function _write_index!(sink::StreamingSimulationSink)
         label = Arrow.DictEncode(index.label),
         index.count,
         into = Arrow.DictEncode(index.into),
-        index.seed,
     ))
     @debug "[StreamingSink] Wrote index file" index_file episodes=length(sink.index)
 end

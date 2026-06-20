@@ -2,58 +2,47 @@
 import Splitter from 'primevue/splitter'
 import SplitterPanel from 'primevue/splitterpanel'
 import Button from 'primevue/button'
-import Menu from 'primevue/menu'
 import ScheduleEditor from './components/ScheduleEditor.vue'
 import NetworkDiagram from './components/NetworkDiagram.vue'
 import SimulationViewer from './components/TrackViewer.vue'
 import LogDrawer from './components/LogDrawer.vue'
-import { ref } from 'vue'
+import { nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useTheme } from './composables/useTheme'
 import { useScheduleStore } from './stores/scheduleStore'
+import { useLogStore } from './stores/logStore'
+import { isTauri } from '@/config/api'
 
 const { isDark, toggle } = useTheme()
 const scheduleStore = useScheduleStore()
+const logStore = useLogStore()
 
 const networkDiagramRef = ref<InstanceType<typeof NetworkDiagram>>()
 const simulationViewerRef = ref<InstanceType<typeof SimulationViewer>>()
-const exportMenu = ref()
+const rootSplitterRef = ref<{ initializePanels: () => void }>()
 
-const exportMenuItems = [
-    {
-        label: 'Schedule spec (JSON)',
-        icon: 'pi pi-file',
-        command: () => scheduleStore.downloadSchedule(),
-    },
-    {
-        label: 'Network diagram (SVG)',
-        icon: 'pi pi-share-alt',
-        command: () => networkDiagramRef.value?.exportSVG(),
-    },
-    {
-        label: 'Simulation chart (PNG)',
-        icon: 'pi pi-chart-line',
-        command: () => simulationViewerRef.value?.exportSVG(),
-    },
-]
+watch(() => logStore.drawerVisible, async () => {
+    await nextTick()
+    rootSplitterRef.value?.initializePanels()
+})
 
-function toggleExportMenu(event: Event): void {
-    exportMenu.value.toggle(event)
-}
+// Native File > Export submenu items fire these events.
+const unlistenFns: Array<() => void> = []
+onMounted(async () => {
+    if (!isTauri()) return
+    const { listen } = await import('@tauri-apps/api/event')
+    unlistenFns.push(await listen('menu:export-schedule-json', () => scheduleStore.downloadSchedule()))
+    unlistenFns.push(await listen('menu:export-network-svg', () => networkDiagramRef.value?.exportSVG()))
+    unlistenFns.push(await listen('menu:export-simulation-png', () => simulationViewerRef.value?.exportSVG()))
+})
+onBeforeUnmount(() => {
+    unlistenFns.forEach(fn => fn())
+    unlistenFns.length = 0
+})
 </script>
 
 <template>
-    <div style="display: flex; flex-direction: column; width: 100vw; height: 100vh">
+    <div class="app-shell" style="display: flex; flex-direction: column; width: 100vw; height: 100vh">
         <div class="top-right-controls">
-            <Button
-                icon="pi pi-download"
-                severity="secondary"
-                text
-                rounded
-                aria-label="Export"
-                v-grs-tooltip="'Export'"
-                @click="toggleExportMenu"
-            />
-            <Menu ref="exportMenu" :model="exportMenuItems" popup />
             <Button
                 :icon="isDark ? 'pi pi-moon' : 'pi pi-sun'"
                 severity="secondary"
@@ -63,26 +52,36 @@ function toggleExportMenu(event: Event): void {
                 @click="toggle"
             />
         </div>
-        <!-- Main 3-panel layout with horizontal splitter -->
-        <Splitter layout="horizontal" style="flex: 1; overflow: hidden">
-            <SplitterPanel style="display: flex; flex-direction: column" :size="30" :minSize="15">
-                <ScheduleEditor />
-            </SplitterPanel>
-
-            <SplitterPanel style="display: flex; flex-direction: column" :size="70" :minSize="50">
-                <Splitter layout="vertical" style="height: 100%; width: 100%">
-                    <SplitterPanel style="display: flex; width: 100%" :size="45" :minSize="20">
-                        <NetworkDiagram ref="networkDiagramRef" />
+        <Splitter ref="rootSplitterRef" layout="vertical" style="flex: 1; overflow: hidden">
+            <SplitterPanel style="display: flex; min-height: 0" :size="logStore.drawerVisible ? 75 : 100" :minSize="40">
+                <!-- Main 3-panel layout with horizontal splitter -->
+                <Splitter layout="horizontal" style="width: 100%; overflow: hidden">
+                    <SplitterPanel style="display: flex; flex-direction: column" :size="30" :minSize="15">
+                        <ScheduleEditor />
                     </SplitterPanel>
-                        
-                    
-                    <SplitterPanel style="display: flex; width: 100%" :size="55" :minSize="20">
-                        <SimulationViewer ref="simulationViewerRef" />
+
+                    <SplitterPanel style="display: flex; flex-direction: column" :size="70" :minSize="50">
+                        <Splitter layout="vertical" style="height: 100%; width: 100%">
+                            <SplitterPanel style="display: flex; width: 100%" :size="45" :minSize="20">
+                                <NetworkDiagram ref="networkDiagramRef" />
+                            </SplitterPanel>
+
+                            <SplitterPanel style="display: flex; width: 100%" :size="55" :minSize="20">
+                                <SimulationViewer ref="simulationViewerRef" />
+                            </SplitterPanel>
+                        </Splitter>
                     </SplitterPanel>
                 </Splitter>
             </SplitterPanel>
+            <SplitterPanel
+                v-if="logStore.drawerVisible"
+                style="display: flex; min-height: 0"
+                :size="25"
+                :minSize="10"
+            >
+                <LogDrawer />
+            </SplitterPanel>
         </Splitter>
-        <LogDrawer />
     </div>
 </template>
 

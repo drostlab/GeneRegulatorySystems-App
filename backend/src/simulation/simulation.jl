@@ -16,7 +16,6 @@ import Tables
 import ..StreamingSink
 import ..ScheduleStorage
 import ..SimulationControl: SimulationController, check_pause!, send_progress, send_timeseries, send_status
-import ..ScheduleBindings: spec_bindings
 import ..GapTracking: GapTracker, register_episode!, check_gap, check_synthetic_start
 import GeneRegulatorySystems.Models
 import GeneRegulatorySystems.Models.Scheduling
@@ -129,25 +128,6 @@ Format: YYYY-MM-DD_HH-MM-SS (e.g., 2025-11-24_23-00-33)
 """
 function generate_simulation_id()
     Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
-end
-
-"""
-    load_model_from_spec(schedule_spec::String)::Models.Model
-
-Parse and construct a Model from a schedule specification string.
-
-# Arguments
-- `schedule_spec::String`: JSON schedule specification
-
-# Returns
-- `Models.Model`: Constructed model ready for execution
-
-# Throws
-- Error if JSON parsing fails or model construction fails
-"""
-function load_model_from_spec(schedule_spec::String)::Models.Model
-    spec = JSON.parse(schedule_spec, dicttype=Dict{Symbol, Any})
-    return Models.Model(spec; bindings = spec_bindings(spec))
 end
 
 # ============================================================================

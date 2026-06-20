@@ -9,7 +9,7 @@
  *
  * Filters out model-level container nodes and machinery species.
  */
-import type { UnionNetwork, Node, Link } from '@/types/network'
+import type { UnionNetwork, Node, Link, HiddenReagent } from '@/types/network'
 import { MODEL_NODE_KINDS, MACHINERY_SPECIES, linkId } from '@/types/network'
 import { getEdgeColour, shouldShowEdgeLabel } from './networkStyles'
 import { getTheme } from '@/config/theme'
@@ -24,6 +24,44 @@ const DETAIL_KINDS = new Set(['species', 'reaction'])
 // ============================================================================
 // Public API
 // ============================================================================
+
+/**
+ * Map of reaction node id → its machinery (polymerase/ribosome/proteasome)
+ * reagents, which are filtered out of the visualisation and so have no
+ * cytoscape edges. Lets tooltips show the *full* reaction equation even
+ * though these participants aren't drawn. Keyed by reaction name, the join
+ * key shared by `substrate.to` / `product.from` links.
+ */
+export function buildHiddenReagentsMap(network: UnionNetwork): Map<string, HiddenReagent[]> {
+    const map = new Map<string, HiddenReagent[]>()
+    const seen = new Set<string>()
+    for (const link of network.links) {
+        const isSub = link.kind === 'substrate'
+        const isProd = link.kind === 'product'
+        if (!isSub && !isProd) continue
+
+        // substrate: from=species, to=reaction; product: from=reaction, to=species.
+        const species = isSub ? link.from : link.to
+        const reaction = isSub ? link.to : link.from
+        if (!MACHINERY_SPECIES.has(species)) continue
+
+        // The union network may repeat a link across models; dedupe per
+        // (reaction, species, role) so machinery isn't listed twice.
+        const dedupeKey = `${reaction}\0${species}\0${link.kind}`
+        if (seen.has(dedupeKey)) continue
+        seen.add(dedupeKey)
+
+        const entry: HiddenReagent = {
+            species,
+            stoichiometry: Number(link.properties?.stoichiometry ?? 1),
+            role: isSub ? 'substrate' : 'product',
+        }
+        const arr = map.get(reaction)
+        if (arr) arr.push(entry)
+        else map.set(reaction, [entry])
+    }
+    return map
+}
 
 /**
  * Gene-level elements for the zoomed-out view.
@@ -251,12 +289,28 @@ function buildNodeElement(
         ? String(node.properties.species_type)
         : node.name
 
-    // Parent colour for reaction label backgrounds (lightened/darkened per theme)
+    // Parent colour for reaction label backgrounds (lightened/darkened per theme).
+    // Undefined for orphan reactions so the stylesheet fallback applies instead.
     const parentColour = node.parent && node.parent in geneColours
         ? (isDark ? darken(geneColours[node.parent]!, 0.3) : lighten(geneColours[node.parent]!, 0.7))
+        : undefined
+
+    // Compound-parent (gene in species view) bg colour: same lighten/darken
+    // function as `parentColour`, but applied to the gene's own colour. Used
+    // as the fully-opaque compound bg so it reads as a clear container.
+    const compoundColour = node.kind === 'gene'
+        ? (isDark ? darken(colour, 0.3) : lighten(colour, 0.7))
         : colour
 
     const textColour = node.kind === 'gene' ? contrastTextColour(colour) : undefined
+
+    // For reaction nodes the backend's `rate` is the full canonical
+    // parameter symbol. The canvas label wants a short readable form:
+    //   cascade:    `gene_1.processing`     -> `processing`
+    //   aux fwd:    `reaction.0.k⁺`         -> `rxn 0`
+    //   aux rev:    `reaction.0.k⁻`         -> `rxn 0 ←`
+    const rate = node.properties?.rate
+    const rateName = typeof rate === 'string' ? shortReactionLabel(rate) : rate
 
     return {
         data: {
@@ -268,7 +322,10 @@ function buildNodeElement(
             colour,
             textColour,
             parentColour,
+            compoundColour,
+            parameters: node.parameters ?? [],
             ...node.properties,
+            rateName,
         },
         classes: cssClass,
     }
@@ -290,13 +347,21 @@ function buildEdgeElement(
     originalLinkIds?: string[],
 ): cytoscape.ElementDefinition {
     const edgeColour = getEdgeColour(link.kind)
-    const label = shouldShowEdgeLabel(link.kind) ? formatLinkLabel(link) : ''
+    // Suppress the canvas label when InlineParameters will render chips for
+    // this edge's parameters; otherwise the chips and the static label
+    // double up. Non-parameterised edges (substrate/product/produces/etc.)
+    // keep their canvas label.
+    const hasInlineParams = (link.parameters ?? []).length > 0
+    const label = !hasInlineParams && shouldShowEdgeLabel(link.kind)
+        ? formatLinkLabel(link)
+        : ''
     const isSelfLoop = source === target
+    // Self-regulation: same gene at both endpoints, whether the edge connects
+    // the gene to itself (gene view) or two species inside it (species view).
+    const isSelfReg = geneOf(source) === geneOf(target)
 
     const at = (link.properties.at as number) ?? 1
     const isPeripheral = link.properties.peripheral === true
-    const weight = 1 / Math.max(at, 0.1)
-
     return {
         data: {
             id: edgeId,
@@ -307,12 +372,18 @@ function buildEdgeElement(
             edgeColour,
             label,
             at,
-            weight,
             originalLinkIds: originalLinkIds ?? [linkId(link)],
+            parameters: link.parameters ?? [],
             ...link.properties,
         },
-        classes: `${link.kind}${isSelfLoop ? ' loop' : ''}${isPeripheral ? ' peripheral' : ''}`,
+        classes: `${link.kind}${isSelfLoop ? ' loop' : ''}${isSelfReg ? ' self-reg' : ''}${isPeripheral ? ' peripheral' : ''}`,
     }
+}
+
+/** Strip the species suffix (`.proteins`, `.active`, …) leaving the gene name. */
+function geneOf(id: string): string {
+    const i = id.indexOf('.')
+    return i === -1 ? id : id.slice(0, i)
 }
 
 /**
@@ -337,7 +408,10 @@ function getNodeColour(node: Node, geneColours: Record<string, string>): string 
  * @param link - the backend link
  */
 function formatLinkLabel(link: Link): string {
+    // `reversible` is a styling flag on reagent edges (drives bidirectional
+    // arrows), not a value to print — keep it out of the visible label.
     const entries = Object.entries(link.properties ?? {})
+        .filter(([key]) => key !== 'reversible')
     if (entries.length === 0) return ''
 
     if (entries.length === 1) {
@@ -351,6 +425,25 @@ function formatLinkLabel(link: Link): string {
         parts.push(`${key}=${formatted}`)
     }
     return parts.join(' ')
+}
+
+/**
+ * Compact reaction-node label derived from the rate parameter symbol.
+ *
+ *   cascade:        `gene_1.processing`     -> `processing`
+ *   aux forward:    `reaction.0.k⁺`         -> `rxn 0`
+ *   aux reverse:    `reaction.0.k⁻`         -> `rxn 0 ←`
+ *
+ * Forward/reverse aux reactions share an index but produce two distinct
+ * Catalyst reactions, so the reverse one gets an arrow to disambiguate.
+ */
+function shortReactionLabel(symbol: string): string {
+    const aux = symbol.match(/^reaction\.(\d+)\.(.+)$/)
+    if (aux) {
+        const reverse = aux[2] === 'k⁻' || aux[2] === 'k_minus' || aux[2] === 'k-'
+        return reverse ? `rxn ${aux[1]} ←` : `rxn ${aux[1]}`
+    }
+    return symbol.split('.').pop() ?? symbol
 }
 
 /**

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Schedule } from '@/types/schedule'
+import type { Schedule, ScheduleSource } from '@/types/schedule'
 import type { UnionNetwork } from '@/types/network'
 import * as scheduleService from '@/services/scheduleService'
 import {
@@ -138,13 +138,13 @@ export const useScheduleStore = defineStore(
             }
         }
 
-        async function loadScheduleBySpec(spec: string, name: string): Promise<Schedule> {
+        async function loadScheduleBySpec(spec: string, name: string, source: ScheduleSource = 'snapshot'): Promise<Schedule> {
             // Skip full reload if data already loaded for same spec
             const isSameSpec = schedule.value.data !== null && schedule.value.spec === spec
 
             // Set editor state immediately
             schedule.value.name = name
-            schedule.value.source = 'snapshot'
+            schedule.value.source = source
             schedule.value.spec = spec
             schedule.value.validationMessages = []
 
@@ -157,7 +157,7 @@ export const useScheduleStore = defineStore(
 
             try {
                 // Don't clear data/network yet -- keep old content visible during validation
-                const res = await scheduleService.loadScheduleFromSpec(spec, name)
+                const res = await scheduleService.loadScheduleFromSpec(spec, name, source)
 
                 // Now that we have new data, clear old state and replace
                 clearNetwork()
@@ -222,9 +222,5 @@ export const useScheduleStore = defineStore(
             getSpeciesForSpeciesType,
             downloadSchedule
         }
-    },
-    {
-        persist: import.meta.env.DEV ? true : false
     }
 )
-

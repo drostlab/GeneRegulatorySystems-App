@@ -35,8 +35,8 @@
                 "reactions": [{"from": ["gene_2"], "rate": 0.001, "to": []}]
             }},
             "into": "{channels}",
+            "seed": "${rootseed}-repressilator",
             "step": [
-                {"{seed}": "${seed}-rep"},
                 {"{add}": {
                     "$": ["defaults", "bootstrap"],
                     "gene_1.proteins": 100

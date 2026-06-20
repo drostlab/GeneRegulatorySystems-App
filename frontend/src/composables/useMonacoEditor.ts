@@ -2,7 +2,7 @@
  * Monaco Editor Composable – Encapsulates Monaco editor lifecycle
  *
  * Responsibilities:
- * - Initialize Monaco from CDN
+ * - Initialize Monaco (bundled locally so it works offline)
  * - Create and manage editor instance
  * - Handle theme switching
  * - Content change callbacks
@@ -15,8 +15,22 @@
  */
 
 import { shallowRef } from 'vue'
+import * as monaco from 'monaco-editor'
+import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
+import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
 import { RED, GREEN } from '@/config/theme'
 import { hexToRgba, rgbaToHex } from '@/utils/colorUtils'
+
+// Configure Monaco workers once for the whole app. Bundled by Vite so this
+// works offline (no CDN fetch).
+if (!(self as any).MonacoEnvironment) {
+    (self as any).MonacoEnvironment = {
+        getWorker(_: string, label: string) {
+            if (label === 'json') return new jsonWorker()
+            return new editorWorker()
+        },
+    }
+}
 
 export function useMonacoEditor(
     containerId: string,
@@ -189,39 +203,13 @@ export function useMonacoEditor(
     }
 
     /**
-     * Initialize Monaco from CDN
+     * Initialize Monaco (bundled locally — works offline)
      */
     function init(initialContent: string = '', isEditing: boolean = false): Promise<void> {
-        return new Promise((resolve, reject) => {
-            const monacoGlobal = (window as any).monaco
-            if (typeof monacoGlobal !== 'undefined') {
-                defineAtomThemes(monacoGlobal)
-                registerColorProvider(monacoGlobal)
-                createEditor(monacoGlobal, initialContent, isEditing)
-                resolve()
-                return
-            }
-
-            const script = document.createElement('script')
-            script.src = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs/loader.min.js'
-            script.onload = () => {
-                // @ts-ignore
-                require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs' } })
-                // @ts-ignore
-                require(['vs/editor/editor.main'], () => {
-                    const monacoInstance = (window as any).monaco
-                    defineAtomThemes(monacoInstance)
-                    registerColorProvider(monacoInstance)
-                    createEditor(monacoInstance, initialContent, isEditing)
-                    resolve()
-                })
-            }
-            script.onerror = () => {
-                console.error('[useMonacoEditor] Failed to load Monaco editor from CDN')
-                reject(new Error('Failed to load Monaco editor'))
-            }
-            document.head.appendChild(script)
-        })
+        defineAtomThemes(monaco)
+        registerColorProvider(monaco)
+        createEditor(monaco, initialContent, isEditing)
+        return Promise.resolve()
     }
 
     /**

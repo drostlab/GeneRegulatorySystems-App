@@ -318,6 +318,7 @@ export async function setupAppMenu(): Promise<void> {
     const { CheckMenuItem } = await import('@tauri-apps/api/menu/checkMenuItem')
     const { PredefinedMenuItem } = await import('@tauri-apps/api/menu/predefinedMenuItem')
     const { invoke } = await import('@tauri-apps/api/core')
+    const { emit } = await import('@tauri-apps/api/event')
     const { openPath } = await import('@tauri-apps/plugin-opener')
 
     const dataDir: string = await invoke('get_data_dir')
@@ -334,6 +335,32 @@ export async function setupAppMenu(): Promise<void> {
         }
     }
 
+    // macOS absorbs the first submenu into the app-named menu, which would
+    // make "File" disappear. Reserve that slot with a minimal app submenu —
+    // Quit alone is enough to make File show up as its own menu.
+    const appSubmenu = await Submenu.new({
+        text: 'GeneRegulatorySystems',
+        items: [await PredefinedMenuItem.new({ item: 'Quit' })],
+    })
+
+    const exportSubmenu = await Submenu.new({
+        text: 'Export',
+        items: [
+            await MenuItem.new({
+                text: 'Schedule Spec (JSON)',
+                action: () => { void emit('menu:export-schedule-json') },
+            }),
+            await MenuItem.new({
+                text: 'Network Diagram (SVG)',
+                action: () => { void emit('menu:export-network-svg') },
+            }),
+            await MenuItem.new({
+                text: 'Simulation Chart (PNG)',
+                action: () => { void emit('menu:export-simulation-png') },
+            }),
+        ],
+    })
+
     const fileMenu = await Submenu.new({
         text: 'File',
         items: [
@@ -345,6 +372,8 @@ export async function setupAppMenu(): Promise<void> {
                 text: 'Open Results Folder',
                 action: () => { revealFolder('results') },
             }),
+            await PredefinedMenuItem.new({ item: 'Separator' }),
+            exportSubmenu,
         ],
     })
 
@@ -357,6 +386,16 @@ export async function setupAppMenu(): Promise<void> {
         action: async () => {
             viewerStore.editorHighlightEnabled = !viewerStore.editorHighlightEnabled
             await editorHighlightItem.setChecked(viewerStore.editorHighlightEnabled)
+        },
+    })
+
+    const resizeByExpressionItem = await CheckMenuItem.new({
+        id: 'toggle-resize-by-expression',
+        text: 'Resize Genes by Expression',
+        checked: viewerStore.resizeByExpressionEnabled,
+        action: async () => {
+            viewerStore.resizeByExpressionEnabled = !viewerStore.resizeByExpressionEnabled
+            await resizeByExpressionItem.setChecked(viewerStore.resizeByExpressionEnabled)
         },
     })
 
@@ -376,18 +415,20 @@ export async function setupAppMenu(): Promise<void> {
     const viewMenu = await Submenu.new({
         text: 'View',
         items: [
-            await MenuItem.new({
-                text: 'Show Diagnostic Logs',
-                accelerator: 'CmdOrCtrl+Shift+L',
-                action: () => useLogStore().showDrawer(),
-            }),
             editorHighlightItem,
+            resizeByExpressionItem,
         ],
     })
 
     const advancedMenu = await Submenu.new({
         text: 'Advanced',
         items: [
+            await MenuItem.new({
+                text: 'Show Diagnostic Logs',
+                accelerator: 'CmdOrCtrl+Shift+L',
+                action: () => useLogStore().showDrawer(),
+            }),
+            await PredefinedMenuItem.new({ item: 'Separator' }),
             await MenuItem.new({
                 text: 'Reset Julia Environment…',
                 action: () => { void invoke('reset_julia_environment_interactive') },
@@ -397,6 +438,7 @@ export async function setupAppMenu(): Promise<void> {
 
     const menu = await Menu.new({
         items: [
+            appSubmenu,
             fileMenu,
             editMenu,
             viewMenu,

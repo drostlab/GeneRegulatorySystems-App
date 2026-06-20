@@ -49,7 +49,7 @@ export const SPECIES_SIZE = 8
 export const ORPHAN_SPECIES_SIZE = 30
 
 /** Reaction node size. */
-export const REACTION_SIZE = 2
+export const REACTION_SIZE = 7
 
 /** Opacity for dimmed (unselected / excluded) elements. */
 export const DIM_OPACITY = THEME_DIM_OPACITY
@@ -99,12 +99,22 @@ export function buildStylesheet(isDark = false): any[] {
             } as any,
         },
         // -- compound gene (label above box): mode-aware colour, no ellipsis --
+        // Fully opaque bg using a lightened (light mode) / darkened (dark mode)
+        // version of the gene colour, so edges at low z visibly pass behind
+        // compounds instead of bleeding through a 25%-transparent box.
+        //
+        // Compound depth left as `auto`: compound's effective z is
+        // `min(children z) - 1` = -1 (children default to 0). Species-view
+        // regulatory edges sit well below at z=-100, so they reliably draw
+        // beneath any compound they cross. Going with orphan would put the
+        // compound bg on top of its own species/reaction children — bad.
         {
             selector: 'node.compound-parent',
             style: {
                 'text-valign': 'top' as any,
                 'text-margin-y': -8,
-                'background-opacity': 0.25,
+                'background-color': 'data(compoundColour)',
+                'background-opacity': 1,
                 'text-wrap': 'none' as any,
                 'text-max-width': '9999px',
                 'color': t.network.geneLabelText,
@@ -172,16 +182,23 @@ export function buildStylesheet(isDark = false): any[] {
                 'shape': 'ellipse',
                 'width': REACTION_SIZE,
                 'height': REACTION_SIZE,
-                'label': 'data(rate)',
-                'font-size': 1.4,
+                'label': 'data(rateName)',
+                'font-size': 1.8,
                 'text-valign': 'center' as any,
-                'text-background-color': 'data(parentColour)',
+                // Default label background; parented reactions override with
+                // their gene tint below. Orphan reactions (no parentColour)
+                // keep this fallback instead of an undefined `data()` mapper.
+                'text-background-color': t.network.reactionBg,
                 'text-background-opacity': 0.8,
                 'text-background-padding': '0.2px',
                 'background-color': t.network.reactionBg,
                 'background-opacity': 0,
                 'color': t.network.edgeLabelText,
             } as any,
+        },
+        {
+            selector: 'node.reaction[parentColour]',
+            style: { 'text-background-color': 'data(parentColour)' } as any,
         },
         // -- excluded (hidden by ModelFilter) --
         {
@@ -256,6 +273,8 @@ export function buildStylesheet(isDark = false): any[] {
             } as any,
         },
         // -- species-view regulatory edges: width scaled by binding site (opacity handled below) --
+        // z-index well below the (now explicit z=10) gene compounds so edges
+        // visibly pass *behind* compounds they cross rather than over them.
         {
             selector: 'edge.species-view',
             style: {
@@ -263,6 +282,7 @@ export function buildStylesheet(isDark = false): any[] {
                 'font-size': 3,
                 'arrow-scale': 0.8,
                 'text-opacity': 1,
+                'z-index': -100,
             } as any,
         },
         {
@@ -352,7 +372,7 @@ export function buildStylesheet(isDark = false): any[] {
         {
             selector: 'edge.species-view:not(.dimmed):not(.peripheral)',
             style: {
-                'opacity': 'mapData(at, 0.1, 10, 1, 0.5)',
+                'opacity': 'mapData(at, 0.1, 10, 0.35, 0.15)',
             } as any,
         },
         {
@@ -364,6 +384,29 @@ export function buildStylesheet(isDark = false): any[] {
         {
             selector: 'edge.dimmed',
             style: {
+                'opacity': DIM_OPACITY,
+            } as any,
+        },
+        // -- self-regulatory edges in species view: pull above compounds and
+        //    boost opacity so they aren't lost inside their own gene's box.
+        //    Overrides the `.species-view` z-index: -1 and opacity matrix.
+        {
+            selector: 'edge.species-view.self-reg:not(.dimmed):not(.peripheral)',
+            style: {
+                'z-index': 200,
+                'opacity': 1,
+            } as any,
+        },
+        // When dimmed (gene unselected), match the dim opacity of every other
+        // regulatory edge and drop z so the line hides behind the compound.
+        // Both properties are set explicitly: relying on the lower-specificity
+        // `edge.dimmed` rule for opacity is unreliable because cytoscape's
+        // per-property cache can hold onto the self-reg `opacity: 1` from
+        // before the class flipped.
+        {
+            selector: 'edge.species-view.self-reg.dimmed',
+            style: {
+                'z-index': -100,
                 'opacity': DIM_OPACITY,
             } as any,
         },

@@ -13,14 +13,14 @@
  */
 import type { Core } from 'cytoscape'
 import type { Ref } from 'vue'
-import type { UnionNetwork } from '@/types/network'
+import type { Parameter, UnionNetwork, HiddenReagent } from '@/types/network'
 import cytoscape from 'cytoscape'
 // @ts-ignore
 import fcose from 'cytoscape-fcose'
 // @ts-ignore
 import svgExporter from 'cytoscape-svg'
 
-import { getGeneViewElements } from './networkElements'
+import { getGeneViewElements, buildHiddenReagentsMap } from './networkElements'
 import { buildStylesheet } from './networkStyles'
 import { getTheme } from '@/config/theme'
 import { AdaptiveZoom } from './AdaptiveZoom'
@@ -29,6 +29,11 @@ import { SelectionSync } from './SelectionSync'
 import { HoverSync } from './HoverSync'
 import { DynamicsSync } from './DynamicsSync'
 import { createEdgeTooltip, createNodeTooltip, type Tooltip } from './Tooltip'
+import {
+    InlineParameters,
+    type ParameterChangeHandler,
+    type ParameterValueLookup,
+} from './InlineParameters'
 import { saveFile } from '@/utils/saveFile'
 
 cytoscape.use(fcose)
@@ -44,8 +49,27 @@ export class NetworkView {
     private selectionSync = new SelectionSync()
     private hoverSync = new HoverSync()
     private dynamicsSync = new DynamicsSync()
-    private edgeTooltip: Tooltip = createEdgeTooltip()
-    private nodeTooltip: Tooltip = createNodeTooltip()
+    private inlineParameters = new InlineParameters()
+
+    /**
+     * Looks up a parameter's current value for the active model.
+     * Replaced via `setParameterLookup`; defaults to "unknown" so tooltips
+     * and inline chips gracefully degrade until wired up.
+     */
+    private parameterLookup: ParameterValueLookup = () => undefined
+
+    /**
+     * Machinery reagents (polymerases/ribosomes/proteasomes) per reaction.
+     * These have no drawn nodes/edges, so the node tooltip folds them back
+     * into the reaction equation from here. Rebuilt on each `setNetwork`.
+     */
+    private hiddenReagents: Map<string, HiddenReagent[]> = new Map()
+
+    private edgeTooltip: Tooltip = createEdgeTooltip(s => this.parameterLookup(s))
+    private nodeTooltip: Tooltip = createNodeTooltip(
+        s => this.parameterLookup(s),
+        id => this.hiddenReagents.get(id),
+    )
 
     /** External callback for detail visibility changes (zoom or manual toggle). */
     private _onDetailChange: ((visible: boolean) => void) | null = null
@@ -53,6 +77,69 @@ export class NetworkView {
     /** Register a callback for detail visibility changes. */
     set onDetailChange(cb: ((visible: boolean) => void) | null) {
         this._onDetailChange = cb
+    }
+
+    /** External callback for right-click on the network background. */
+    private _onContextMenu: ((evt: MouseEvent) => void) | null = null
+
+    /**
+     * Register a handler invoked on right-click of the cytoscape background
+     * (not on an element). The handler receives the original `MouseEvent`
+     * with `clientX/Y`; useful for surfacing a PrimeVue `ContextMenu`.
+     */
+    set onContextMenu(cb: ((evt: MouseEvent) => void) | null) {
+        this._onContextMenu = cb
+    }
+
+    /**
+     * Provide a callback that resolves a parameter symbol to its current
+     * value for the active model. Called fresh on each render/edit, so
+     * passing a function that reads from a reactive store keeps tooltips
+     * and inline chips in sync with `viewerStore.activeModelPath`.
+     */
+    setParameterLookup(lookup: ParameterValueLookup): void {
+        this.parameterLookup = lookup
+        this.inlineParameters.setParameterLookup(lookup)
+    }
+
+    /**
+     * Refresh inline chip values and parameter-driven edge data attributes
+     * (e.g. `at`, which drives regulatory edge width via `mapData`). Call
+     * when the active model changes so width/styles re-evaluate against the
+     * newly selected model's parameter values.
+     */
+    refreshParameterValues(): void {
+        this.inlineParameters.refreshValues()
+        this.syncElementParameterData()
+    }
+
+    /**
+     * Mirror `parameterLookup` into element `data(<name>)` attributes so any
+     * cytoscape style rule using `mapData(<name>, ...)` re-evaluates. Edge
+     * `parameters` arrays carry `{symbol, name}` slots — symbol keys the
+     * model-specific value, name is the data attribute the style references.
+     */
+    private syncElementParameterData(): void {
+        const cy = this.cy
+        if (!cy) return
+        cy.startBatch()
+        cy.elements().forEach((el: any) => {
+            const params = (el.data('parameters') ?? []) as Parameter[]
+            for (const p of params) {
+                const v = this.parameterLookup(p.symbol)
+                if (v !== undefined) el.data(p.name, v)
+            }
+        })
+        cy.endBatch()
+    }
+
+    /**
+     * Register a handler invoked when a user commits a new value via an
+     * inline parameter chip. The handler receives the canonical parameter
+     * symbol and the parsed numeric value.
+     */
+    set onParameterChange(handler: ParameterChangeHandler | null) {
+        this.inlineParameters.onParameterChange = handler
     }
 
     /**
@@ -74,6 +161,7 @@ export class NetworkView {
 
         if (!this.container) return
 
+        this.hiddenReagents = buildHiddenReagentsMap(network)
         const elements = getGeneViewElements(network, geneColours, this.isDark)
 
         this.cy = cytoscape({
@@ -87,6 +175,11 @@ export class NetworkView {
             boxSelectionEnabled: false,
             selectionType: 'single',
         })
+
+        // Elements are built from `link.properties` (the backend's default
+        // model's values).  Sync to the currently active model before layout
+        // so widths reflect the right model on first paint.
+        this.syncElementParameterData()
 
         // Run animated fcose layout; attach modules on completion
         this.runLayout(network, geneColours)
@@ -104,6 +197,7 @@ export class NetworkView {
         this.isDark = isDark
         this.applyContainerBackground()
         this.adaptiveZoom.applyTheme(isDark)
+        this.inlineParameters.applyTheme(isDark)
         if (this.cy) {
             this.cy.style(buildStylesheet(isDark))
         }
@@ -139,6 +233,29 @@ export class NetworkView {
     private runLayout(network: UnionNetwork, geneColours: Record<string, string>): void {
         if (!this.cy) return
 
+        // `at` is meaningful relative to the other regulatory interactions in
+        // this network.  A geometric mean preserves those multiplicative
+        // ratios while making the layout invariant to scaling every `at` by
+        // the same factor.
+        const regulatoryAts = this.cy.edges()
+            .filter((edge: any) => {
+                const kind = edge.data('kind')
+                return kind === 'activation' || kind === 'repression'
+            })
+            .map((edge: any) => Number(edge.data('at')))
+            .filter((at: number) => Number.isFinite(at) && at > 0)
+        const typicalRegulatoryAt = regulatoryAts.length > 0
+            ? Math.exp(
+                regulatoryAts.reduce((sum: number, at: number) => sum + Math.log(at), 0)
+                / regulatoryAts.length,
+            )
+            : 1
+        const regulatoryStrength = (edge: any): number => {
+            const at = Number(edge.data('at'))
+            if (!Number.isFinite(at) || at <= 0) return 0.5
+            return 1 / (1 + Math.sqrt(at / typicalRegulatoryAt))
+        }
+
         const layout = this.cy.layout({
             name: 'fcose',
             quality: 'proof',
@@ -154,13 +271,22 @@ export class NetworkView {
             nodeRepulsion: 50000,
             idealEdgeLength: (edge: any) => {
                 if (edge.data('kind') === 'differentiation_tree') return 10
-                const weight = edge.data('weight') ?? 1
-                // Softer scaling: sqrt dampens extreme differences
-                return 150 / Math.sqrt(weight)
+                const kind = edge.data('kind')
+                if (kind !== 'activation' && kind !== 'repression') return 150
+
+                // Strong interactions pull genes together; weak interactions
+                // become loose rather than acquiring an unbounded rest length.
+                const strength = regulatoryStrength(edge)
+                return 180 - strength * (180 - 90)
             },
             edgeElasticity: (edge: any) => {
                 if (edge.data('kind') === 'differentiation_tree') return 0.05
                 if (edge.hasClass('peripheral')) return 0.02
+                const kind = edge.data('kind')
+                if (kind === 'activation' || kind === 'repression') {
+                    const strength = regulatoryStrength(edge)
+                    return 0.05 + strength * (0.8 - 0.05)
+                }
                 return 0.45
             },
             nestingFactor: 0.1,
@@ -185,10 +311,32 @@ export class NetworkView {
             this.dynamicsSync.attach(this.cy)
             this.edgeTooltip.attach(this.cy)
             this.nodeTooltip.attach(this.cy)
+            this.inlineParameters.attach(this.cy, this.isDark)
+
+            // Hovering a parameter chip should surface the same tooltip the
+            // underlying element would show on direct hover.
+            this.inlineParameters.onChipHover = (ele, x, y) => {
+                const tooltip = ele.isEdge?.() ? this.edgeTooltip : this.nodeTooltip
+                tooltip.showFor(ele, x, y)
+            }
+            this.inlineParameters.onChipLeave = () => {
+                this.edgeTooltip.hide()
+                this.nodeTooltip.hide()
+            }
 
             // Double-click on background resets zoom and pan
             this.cy.on('dbltap', (evt) => {
                 if (evt.target === this.cy) this.cy!.fit(undefined, 50)
+            })
+
+            // Right-click on background -> external context menu (e.g. for
+            // "Select all genes / species / Clear selection" actions).
+            this.cy.on('cxttap', (evt: any) => {
+                if (evt.target !== this.cy) return
+                const oe = evt.originalEvent as MouseEvent | undefined
+                if (!oe || !this._onContextMenu) return
+                oe.preventDefault?.()
+                this._onContextMenu(oe)
             })
 
             // When detail visibility changes (zoom or toggle), sync externally
@@ -196,6 +344,12 @@ export class NetworkView {
                 this.modelFilter.refresh()
                 this.selectionSync.refresh()
                 this.dynamicsSync.notifyDetailChanged(visible)
+                this.inlineParameters.notifyDetailChanged()
+                // Force cytoscape to re-evaluate styles for elements whose
+                // classes just changed (e.g. `.species-view` adds/removes).
+                // Without this, z-index changes can lag until the next
+                // position/drag event triggers a redraw.
+                this.cy?.style().update()
                 this._onDetailChange?.(visible)
             }
         })
@@ -211,6 +365,7 @@ export class NetworkView {
         this.dynamicsSync.destroy()
         this.edgeTooltip.destroy()
         this.nodeTooltip.destroy()
+        this.inlineParameters.destroy()
     }
 
     private destroyCytoscape(): void {
