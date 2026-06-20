@@ -116,8 +116,8 @@
                     "each": {"length": 1},
                     "as": "i",
                     "label": "MS lineage",
+                    "seed": "${rootseed}-MS",
                     "step": [
-                        {"{seed}": "${seed}-MS-${i}"},
                         {"to": 10000.0, "step": 10}
                     ]
                 },
@@ -126,8 +126,8 @@
                     "each": {"length": 1},
                     "as": "i",
                     "label": "E lineage",
+                    "seed": "${rootseed}-E",
                     "step": [
-                        {"{seed}": "${seed}-E-${i}"},
                         {"{add}": {"P2-signal-pathway.proteins": 200}}, 
                         {"to": 10000.0, "step": 10}
                     ]

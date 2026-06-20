@@ -19,8 +19,8 @@
                 }
             ]
         }},
+        "seed": "${rootseed}-repressilator",
         "step": [
-            {"{seed}": "${seed}-rep"},
             {"{add}": {
                 "$": ["defaults", "bootstrap"],
                 "1.proteins": 100
@@ -31,7 +31,6 @@
                 "each": {"length": 5},
                 "as": "i",
                 "step": [
-                    {"{seed}": "${seed}-repress-${i}"},
                     {"to": 227500.0, "step": 100.0},
                     {"{add}": {"3.proteins": 1000}},
                     {"to": 227500.0, "step": 100.0}

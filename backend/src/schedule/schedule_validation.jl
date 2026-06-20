@@ -78,8 +78,6 @@ function _validate_spec(spec::AbstractDict{Symbol})::Vector{ValidationMessage}
         if !isa(spec[:seed], String)
             push!(messages, ValidationMessage(type="warning", content="Seed should be a string (got $(typeof(spec[:seed])))"))
         end
-    else
-        push!(messages, ValidationMessage(type="info", content="No seed specified"))
     end
 
     _try_construct_model!(messages, spec, get(spec, :seed, "default"))
@@ -93,8 +91,6 @@ function _validate_spec(spec::AbstractVector)::Vector{ValidationMessage}
         push!(messages, ValidationMessage(type="error", content="Schedule specification is empty"))
         return messages
     end
-
-    push!(messages, ValidationMessage(type="info", content="No seed specified"))
 
     _try_construct_model!(messages, spec, "default")
     return messages
