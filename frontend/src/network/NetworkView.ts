@@ -233,6 +233,29 @@ export class NetworkView {
     private runLayout(network: UnionNetwork, geneColours: Record<string, string>): void {
         if (!this.cy) return
 
+        // `at` is meaningful relative to the other regulatory interactions in
+        // this network.  A geometric mean preserves those multiplicative
+        // ratios while making the layout invariant to scaling every `at` by
+        // the same factor.
+        const regulatoryAts = this.cy.edges()
+            .filter((edge: any) => {
+                const kind = edge.data('kind')
+                return kind === 'activation' || kind === 'repression'
+            })
+            .map((edge: any) => Number(edge.data('at')))
+            .filter((at: number) => Number.isFinite(at) && at > 0)
+        const typicalRegulatoryAt = regulatoryAts.length > 0
+            ? Math.exp(
+                regulatoryAts.reduce((sum: number, at: number) => sum + Math.log(at), 0)
+                / regulatoryAts.length,
+            )
+            : 1
+        const regulatoryStrength = (edge: any): number => {
+            const at = Number(edge.data('at'))
+            if (!Number.isFinite(at) || at <= 0) return 0.5
+            return 1 / (1 + Math.sqrt(at / typicalRegulatoryAt))
+        }
+
         const layout = this.cy.layout({
             name: 'fcose',
             quality: 'proof',
@@ -248,13 +271,22 @@ export class NetworkView {
             nodeRepulsion: 50000,
             idealEdgeLength: (edge: any) => {
                 if (edge.data('kind') === 'differentiation_tree') return 10
-                const weight = edge.data('weight') ?? 1
-                // Softer scaling: sqrt dampens extreme differences
-                return 150 / Math.sqrt(weight)
+                const kind = edge.data('kind')
+                if (kind !== 'activation' && kind !== 'repression') return 150
+
+                // Strong interactions pull genes together; weak interactions
+                // become loose rather than acquiring an unbounded rest length.
+                const strength = regulatoryStrength(edge)
+                return 180 - strength * (180 - 90)
             },
             edgeElasticity: (edge: any) => {
                 if (edge.data('kind') === 'differentiation_tree') return 0.05
                 if (edge.hasClass('peripheral')) return 0.02
+                const kind = edge.data('kind')
+                if (kind === 'activation' || kind === 'repression') {
+                    const strength = regulatoryStrength(edge)
+                    return 0.05 + strength * (0.8 - 0.05)
+                }
                 return 0.45
             },
             nestingFactor: 0.1,

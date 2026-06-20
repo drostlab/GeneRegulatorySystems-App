@@ -76,6 +76,13 @@ export const GREY = {
     950: '#09090b',
 } as const
 
+/** Brand colours sampled from the GRS logo's Julia-inspired nodes. */
+export const JULIA_COLOURS = {
+    purple: '#a573be',
+    red:    '#d5645c',
+    green:  '#61ad51',
+} as const
+
 /** Exported palette aggregation for PrimeVue definePreset. */
 export const palette = {
     red:   RED,

@@ -362,8 +362,6 @@ function buildEdgeElement(
 
     const at = (link.properties.at as number) ?? 1
     const isPeripheral = link.properties.peripheral === true
-    const weight = 1 / Math.max(at, 0.1)
-
     return {
         data: {
             id: edgeId,
@@ -374,7 +372,6 @@ function buildEdgeElement(
             edgeColour,
             label,
             at,
-            weight,
             originalLinkIds: originalLinkIds ?? [linkId(link)],
             parameters: link.parameters ?? [],
             ...link.properties,

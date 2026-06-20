@@ -29,7 +29,6 @@ const contextMenuItems = computed(() => {
     return [
         {
             label: 'Select all genes',
-            icon: 'pi pi-asterisk',
             disabled: allGenes.length === 0,
             command: () => {
                 viewerStore.selectedGenes = [...allGenes]
@@ -37,7 +36,6 @@ const contextMenuItems = computed(() => {
         },
         {
             label: 'Select all species',
-            icon: 'pi pi-circle',
             disabled: allSpecies.length === 0,
             command: () => {
                 viewerStore.selectedSpeciesNodes = allSpecies
@@ -47,7 +45,6 @@ const contextMenuItems = computed(() => {
         { separator: true },
         {
             label: 'Clear selection',
-            icon: 'pi pi-times',
             disabled: !hasSelection,
             command: () => {
                 viewerStore.selectedGenes = []
