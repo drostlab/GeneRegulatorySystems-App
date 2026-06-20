@@ -179,15 +179,39 @@ function formatStoichiometry(value: unknown): string {
     return `${value} `
 }
 
+/** A reagent participating in a reaction that has no node drawn in the graph. */
+export interface HiddenReagent {
+    species: string
+    stoichiometry: number
+    role: 'substrate' | 'product'
+}
+
+/** Resolve the machinery (un-drawn) reagents for a reaction node id. */
+export type HiddenReagentLookup = (reactionId: string) => HiddenReagent[] | undefined
+
+function formatReagent(name: string, stoichiometry: unknown): string {
+    return `${formatStoichiometry(stoichiometry)}${geneOf(name)}${speciesSuffix(name)}`
+}
+
 /**
  * Reaction equation lines, e.g. `2 gene_1.mrna → protein_x`, derived from
- * the reaction node's connected `substrate`/`product` edges.
+ * the reaction node's connected `substrate`/`product` edges. Machinery
+ * species (polymerases/ribosomes/proteasomes) have no edges, so they are
+ * folded back in from `hiddenLookup` to show the complete reaction.
  */
-function formatReactionEquation(node: any): string[] {
-    const substrates = node.connectedEdges('[kind = "substrate"]')
-        .map((e: any) => `${formatStoichiometry(e.data('stoichiometry'))}${geneOf(String(e.data('source')))}${speciesSuffix(String(e.data('source')))}`)
-    const products = node.connectedEdges('[kind = "product"]')
-        .map((e: any) => `${formatStoichiometry(e.data('stoichiometry'))}${geneOf(String(e.data('target')))}${speciesSuffix(String(e.data('target')))}`)
+function formatReactionEquation(node: any, hiddenLookup: HiddenReagentLookup): string[] {
+    const substrates: string[] = node.connectedEdges('[kind = "substrate"]')
+        .map((e: any) => formatReagent(String(e.data('source')), e.data('stoichiometry')))
+    const products: string[] = node.connectedEdges('[kind = "product"]')
+        .map((e: any) => formatReagent(String(e.data('target')), e.data('stoichiometry')))
+
+    const hidden = hiddenLookup(String(node.data('id'))) ?? []
+    for (const r of hidden) {
+        const text = formatReagent(r.species, r.stoichiometry)
+        if (r.role === 'substrate') substrates.push(text)
+        else products.push(text)
+    }
+
     if (substrates.length === 0 && products.length === 0) return []
     const lhs = substrates.length ? substrates.join(' + ') : '∅'
     const rhs = products.length ? products.join(' + ') : '∅'
@@ -211,7 +235,10 @@ function speciesSuffix(speciesId: string): string {
  *   plus rate value resolved against the active model.
  * - Other nodes (species etc.) show the name.
  */
-export function createNodeTooltip(lookup: ParameterValueLookup): Tooltip {
+export function createNodeTooltip(
+    lookup: ParameterValueLookup,
+    hiddenReagents: HiddenReagentLookup = () => undefined,
+): Tooltip {
     return new Tooltip(
         'node',
         (node: any) => {
@@ -224,7 +251,7 @@ export function createNodeTooltip(lookup: ParameterValueLookup): Tooltip {
             if (kind === 'reaction') {
                 const symbol = params?.[0]?.symbol
                 header = reactionNameFromSymbol(symbol) ?? id
-                lines.unshift(...formatReactionEquation(node))
+                lines.unshift(...formatReactionEquation(node, hiddenReagents))
             } else if (kind === 'gene') {
                 header = `gene ${id}`
             } else {

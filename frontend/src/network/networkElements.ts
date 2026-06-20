@@ -25,6 +25,53 @@ const DETAIL_KINDS = new Set(['species', 'reaction'])
 // Public API
 // ============================================================================
 
+/** A reaction participant that has no node in the graph (machinery species). */
+export interface HiddenReagent {
+    /** Species name, e.g. `polymerases`. */
+    species: string
+    /** Stoichiometric coefficient. */
+    stoichiometry: number
+    role: 'substrate' | 'product'
+}
+
+/**
+ * Map of reaction node id → its machinery (polymerase/ribosome/proteasome)
+ * reagents, which are filtered out of the visualisation and so have no
+ * cytoscape edges. Lets tooltips show the *full* reaction equation even
+ * though these participants aren't drawn. Keyed by reaction name, the join
+ * key shared by `substrate.to` / `product.from` links.
+ */
+export function buildHiddenReagentsMap(network: UnionNetwork): Map<string, HiddenReagent[]> {
+    const map = new Map<string, HiddenReagent[]>()
+    const seen = new Set<string>()
+    for (const link of network.links) {
+        const isSub = link.kind === 'substrate'
+        const isProd = link.kind === 'product'
+        if (!isSub && !isProd) continue
+
+        // substrate: from=species, to=reaction; product: from=reaction, to=species.
+        const species = isSub ? link.from : link.to
+        const reaction = isSub ? link.to : link.from
+        if (!MACHINERY_SPECIES.has(species)) continue
+
+        // The union network may repeat a link across models; dedupe per
+        // (reaction, species, role) so machinery isn't listed twice.
+        const dedupeKey = `${reaction}\0${species}\0${link.kind}`
+        if (seen.has(dedupeKey)) continue
+        seen.add(dedupeKey)
+
+        const entry: HiddenReagent = {
+            species,
+            stoichiometry: Number(link.properties?.stoichiometry ?? 1),
+            role: isSub ? 'substrate' : 'product',
+        }
+        const arr = map.get(reaction)
+        if (arr) arr.push(entry)
+        else map.set(reaction, [entry])
+    }
+    return map
+}
+
 /**
  * Gene-level elements for the zoomed-out view.
  *

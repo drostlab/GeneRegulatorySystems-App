@@ -20,7 +20,7 @@ import fcose from 'cytoscape-fcose'
 // @ts-ignore
 import svgExporter from 'cytoscape-svg'
 
-import { getGeneViewElements } from './networkElements'
+import { getGeneViewElements, buildHiddenReagentsMap, type HiddenReagent } from './networkElements'
 import { buildStylesheet } from './networkStyles'
 import { getTheme } from '@/config/theme'
 import { AdaptiveZoom } from './AdaptiveZoom'
@@ -58,8 +58,18 @@ export class NetworkView {
      */
     private parameterLookup: ParameterValueLookup = () => undefined
 
+    /**
+     * Machinery reagents (polymerases/ribosomes/proteasomes) per reaction.
+     * These have no drawn nodes/edges, so the node tooltip folds them back
+     * into the reaction equation from here. Rebuilt on each `setNetwork`.
+     */
+    private hiddenReagents: Map<string, HiddenReagent[]> = new Map()
+
     private edgeTooltip: Tooltip = createEdgeTooltip(s => this.parameterLookup(s))
-    private nodeTooltip: Tooltip = createNodeTooltip(s => this.parameterLookup(s))
+    private nodeTooltip: Tooltip = createNodeTooltip(
+        s => this.parameterLookup(s),
+        id => this.hiddenReagents.get(id),
+    )
 
     /** External callback for detail visibility changes (zoom or manual toggle). */
     private _onDetailChange: ((visible: boolean) => void) | null = null
@@ -151,6 +161,7 @@ export class NetworkView {
 
         if (!this.container) return
 
+        this.hiddenReagents = buildHiddenReagentsMap(network)
         const elements = getGeneViewElements(network, geneColours, this.isDark)
 
         this.cy = cytoscape({
