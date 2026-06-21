@@ -416,6 +416,21 @@ export class MainChart {
             }
         })
 
+        // The live sweep parks every track (including the timeline panel, which is
+        // not a "timeseries" panel and so isn't fitted above) on the streaming
+        // window. Axis sync only reconciles on user interaction, so on a fresh fit
+        // copy the fitted x-range to all tracks explicitly -- otherwise the result
+        // loaded right after streaming shows misaligned panels until the first
+        // zoom/pan kicks the synchroniser.
+        if (fitAxes) {
+            const fitted = timeseriesPanels
+                .find(({ panel }) => panel.surface.renderableSeries.size() > 0)
+                ?.panel.surface.xAxes.get(0)?.visibleRange
+            if (fitted) {
+                this.tracks.forEach(({ panel }) => panel.setVisibleTimeRange(fitted.min, fitted.max))
+            }
+        }
+
         // Series were recreated -- re-apply selection state so SelectSync stays consistent
         this.selectSyncModifier?.reapplySelection()
     }

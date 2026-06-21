@@ -60,8 +60,46 @@ const isSimulationBusy = computed(() =>
 )
 const isUiDisabled = computed(() => isScheduleLoading.value || isSimulationBusy.value)
 
-/** Progress percentage for the progress bar (0-100). */
-const progressPercent = computed(() => Math.round(simulationStore.progress * 100))
+/** The backend reports `finalizing` while it pre-builds the viewport pyramids
+ *  after a run finishes computing but before flipping to `completed`. During that
+ *  window the chart is frozen on the last live frame, so we show the small
+ *  spinner to signal the wait isn't silent. */
+const isFinalizingResult = computed(() => simulationStore.currentResult?.status === 'finalizing')
+
+/** Smoothly-tweened progress in [0,1]. The store value only refreshes per live
+ *  poll (~500 ms), so the raw value ticks in visible steps. Rather than ease
+ *  *toward* the latest sample (an exponential filter chasing a steadily-rising
+ *  target settles to a constant lag below it, then snaps up at the end — the
+ *  bar reads low the whole way then races to 100%), we linearly tween from the
+ *  previous sample to the new one across one poll interval. That gives steady,
+ *  genuinely proportional motion with no persistent under-read. */
+const displayedProgress = ref(0)
+let progressRaf: number | null = null
+let progressTweenFrom = 0
+let progressTweenTarget = 0
+let progressTweenStart = 0
+
+function animateProgress() {
+    const target = simulationStore.progress
+    if (target !== progressTweenTarget) {
+        // New sample arrived -- start a fresh linear segment from where the bar
+        // currently sits toward the new target.
+        progressTweenFrom = target < progressTweenTarget - 0.001
+            ? target // backwards (new run / reset): snap, don't crawl down.
+            : displayedProgress.value
+        progressTweenTarget = target
+        progressTweenStart = performance.now()
+    }
+    const f = Math.min((performance.now() - progressTweenStart) / LIVE_POLL_INTERVAL_MS, 1)
+    displayedProgress.value = progressTweenFrom + (progressTweenTarget - progressTweenFrom) * f
+    progressRaf = requestAnimationFrame(animateProgress)
+}
+
+/** Bar fill percentage (0-100), fine-grained so the width grows smoothly. */
+const progressPercent = computed(() => Math.round(displayedProgress.value * 1000) / 10)
+
+/** Integer label that grows in step with the eased bar. */
+const progressLabel = computed(() => `${Math.round(displayedProgress.value * 100)}%`)
 
 /** Error message shown as overlay when a result fails to load. */
 const resultError = ref<string | null>(null)
@@ -476,6 +514,7 @@ function _hydrateFromPersistedState(): void {
 
 onMounted(async () => {
     loadResults()
+    progressRaf = requestAnimationFrame(animateProgress)
     const themeAtStart = isDark.value
     await chart.init(containerRef, themeAtStart)
     chart.setVisibleTracks(['schedule'])
@@ -580,6 +619,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
     stopLivePolling()
+    if (progressRaf !== null) cancelAnimationFrame(progressRaf)
     chart.dispose()
     window.removeEventListener('keydown', handleEscapeKey)
 })
@@ -668,7 +708,8 @@ function startLivePolling(resultId: string): void {
             if (generation !== livePollGeneration) return
             simulationStore.applyLiveSnapshot(snapshot)
 
-            if (snapshot.status === 'running' || snapshot.status === 'paused' || snapshot.status === 'cancelling') {
+            if (snapshot.status === 'running' || snapshot.status === 'paused'
+                || snapshot.status === 'cancelling' || snapshot.status === 'finalizing') {
                 chart.setLiveSnapshot(snapshot.series, snapshot.window_start, snapshot.current_time)
                 if (snapshot.current_time > 0) viewerStore.setTimepoint(snapshot.current_time)
                 livePollTimer = setTimeout(poll, LIVE_POLL_INTERVAL_MS)
@@ -912,7 +953,11 @@ defineExpose({
                             :show-value="true"
                             style="height: 20px; width: 300px; font-size: 0.7rem"
                             class="progress-bar-red"
-                        />
+                        >
+                            <!-- Bar width glides on the fine 0.1% value; keep the
+                                 label a clean integer so it doesn't flicker. -->
+                            <template #default>{{ progressLabel }}</template>
+                        </ProgressBar>
                     </div>
                 </div>
 
@@ -1089,7 +1134,7 @@ defineExpose({
             <div ref="containerRef" class="chart-container"></div>
 
             <ProgressSpinner
-                v-if="simulationStore.isFetchingTimeseries || isFinalizingSimulation"
+                v-if="simulationStore.isFetchingTimeseries || isFinalizingSimulation || isFinalizingResult"
                 class="chart-fetch-spinner"
                 style="width: 24px; height: 24px"
                 stroke-width="4"
@@ -1175,6 +1220,11 @@ defineExpose({
 
 .progress-bar-red :deep(.p-progressbar-value) {
     background-color: v-bind('RED[400]');
+    /* PrimeVue's theme animates the fill width with its own ~1s transition, which
+       makes the bar visibly lag behind the (correct) numeric label even though both
+       read the same `displayedProgress`. Kill it so the fill width *is* that value
+       every frame -- the rAF tween already does the smoothing. */
+    transition: none !important;
 }
 
 .header-right {

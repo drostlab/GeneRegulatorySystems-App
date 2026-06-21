@@ -54,18 +54,17 @@ Matches ExperimentTool.Channel format for efficient Arrow columnar storage.
 end
 
 """
-    SegmentProgress
+    ProgressSegment
 
-Per-segment progress tracking info.
+One scheduled segment on the execution-ordered progress timeline.
 
-- `from`/`to`: time range of the segment
+- `from`/`to`: absolute simulation-time range of the segment
 - `duration`: `to - from` (precomputed)
 """
-@kwdef struct SegmentProgress
+@kwdef struct ProgressSegment
     from::Float64
     to::Float64
     duration::Float64
-    completed::Bool = false
 end
 
 """
@@ -82,10 +81,10 @@ Direct Arrow sink with optional live state via SimulationController.
 - `controller`: SimulationController for pause/progress/live timeseries (duck-typed)
 - `i_to_path::Dict{Int, String}`: Episode index to path mapping
 - `frame_count::Int`: Running count of frames for progress reporting
-- `segment_progress::Dict{Tuple{String,Float64}, SegmentProgress}`: Per-segment progress keyed by (execution_path, from)
-- `total_duration::Float64`: Sum of all segment durations (for computing total progress)
-- `completed_duration::Float64`: Sum of completed segment durations (for fast progress computation)
-- `current_segment_key::Union{Tuple{String,Float64}, Nothing}`: Key of the currently active segment
+- `progress_segments::Vector{ProgressSegment}`: Scheduled segments in execution order
+- `progress_prefix::Vector{Float64}`: Cumulative duration *before* each segment (prefix sum)
+- `total_duration::Float64`: Sum of all segment durations (denominator for total progress)
+- `committed_duration::Float64`: Scheduled duration executed so far, accumulated per traced segment
 """
 @kwdef mutable struct StreamingSimulationSink
     location::String
@@ -96,66 +95,65 @@ Direct Arrow sink with optional live state via SimulationController.
     controller::Any = nothing
     i_to_path::Dict{Int, String} = Dict{Int, String}()
     frame_count::Int = 0
-    segment_progress::Dict{Tuple{String,Float64}, SegmentProgress} = Dict{Tuple{String,Float64}, SegmentProgress}()
+    progress_segments::Vector{ProgressSegment} = ProgressSegment[]
+    progress_prefix::Vector{Float64} = Float64[]
     total_duration::Float64 = 0.0
-    completed_duration::Float64 = 0.0
-    current_segment_key::Union{Tuple{String,Float64}, Nothing} = nothing
+    committed_duration::Float64 = 0.0
 end
 
 """
     set_segments!(sink, segments)
 
-Initialise per-segment progress tracking from the schedule's timeline segments.
-Each segment is a NamedTuple or struct with `execution_path`, `from`, `to`.
+Initialise progress tracking from the schedule's execution-ordered timeline
+segments. Each segment is a NamedTuple or struct with `from`/`to`. The segments
+are collected by a dryrun in execution order, so progress can be located by
+cumulative scheduled duration — robust to branch time-resets (where a later
+branch restarts at an earlier absolute time) and to contiguous-segment merging.
 """
 function set_segments!(sink::StreamingSimulationSink, segments)
-    empty!(sink.segment_progress)
-    sink.total_duration = 0.0
-    sink.completed_duration = 0.0
+    empty!(sink.progress_segments)
+    empty!(sink.progress_prefix)
+    sink.committed_duration = 0.0
+    acc = 0.0
     for seg in segments
         dur = max(seg.to - seg.from, 0.0)
-        key = (seg.execution_path, seg.from)
-        sink.segment_progress[key] = SegmentProgress(from=seg.from, to=seg.to, duration=dur)
-        sink.total_duration += dur
+        push!(sink.progress_segments, ProgressSegment(from=seg.from, to=seg.to, duration=dur))
+        push!(sink.progress_prefix, acc)
+        acc += dur
     end
-    @debug "[StreamingSink] Segment progress initialised" n_segments=length(segments) total_duration=sink.total_duration
+    sink.total_duration = acc
+    @debug "[StreamingSink] Progress segments initialised" n_segments=length(segments) total_duration=sink.total_duration
 end
 
 """
     compute_total_progress(sink, current_time) -> Float64
 
-Compute overall simulation progress (0.0–1.0) from per-segment tracking.
+Compute overall simulation progress (0.0–1.0).
+
+`committed_duration` is the scheduled duration of all fully traced segments, so
+it locates the currently executing segment on the execution-ordered timeline
+(by cumulative duration, not absolute time). `current_time` — the integrator
+time from a mid-segment `consolidated_progress` tick, or a segment's end time at
+a trace boundary — then adds smooth intra-segment progress on top.
 """
 function compute_total_progress(sink::StreamingSimulationSink, current_time::Float64)::Float64
     sink.total_duration <= 0.0 && return 0.0
+    elapsed = sink.committed_duration
 
-    # Start with already completed segments
-    progress_duration = sink.completed_duration
-
-    # Add partial progress for the current segment
-    key = sink.current_segment_key
-    if key !== nothing
-        seg = get(sink.segment_progress, key, nothing)
-        if seg !== nothing && !seg.completed && seg.duration > 0.0
-            frac = clamp((current_time - seg.from) / seg.duration, 0.0, 1.0)
-            progress_duration += seg.duration * frac
-        end
+    if !isempty(sink.progress_segments)
+        # The active segment is the last one whose prefix does not exceed what
+        # has been committed so far. Locate by committed (execution-order) duration
+        # rather than absolute time -- parallel branches reuse the same absolute
+        # time range, so a time-based scan would over-count sibling branches.
+        k = clamp(searchsortedlast(sink.progress_prefix, elapsed + 1e-9),
+                  1, length(sink.progress_segments))
+        seg = sink.progress_segments[k]
+        already = clamp(elapsed - sink.progress_prefix[k], 0.0, seg.duration)
+        intra = clamp(current_time - seg.from, 0.0, seg.duration)
+        elapsed = sink.progress_prefix[k] + max(already, intra)
     end
 
-    return clamp(progress_duration / sink.total_duration, 0.0, 1.0)
-end
-
-"""
-    mark_segment_completed!(sink, key)
-
-Mark a segment as completed and accumulate its duration.
-"""
-function mark_segment_completed!(sink::StreamingSimulationSink, key::Tuple{String,Float64})
-    seg = get(sink.segment_progress, key, nothing)
-    seg === nothing && return
-    seg.completed && return
-    sink.segment_progress[key] = SegmentProgress(from=seg.from, to=seg.to, duration=seg.duration, completed=true)
-    sink.completed_duration += seg.duration
+    return clamp(elapsed / sink.total_duration, 0.0, 1.0)
 end
 
 # ============================================================================
@@ -189,19 +187,14 @@ function (sink::StreamingSimulationSink)(
     check_control_if_needed(sink)
     !isnothing(sink.controller) && enter_path!(sink.controller, path, Float64(from))
 
-    # Track which segment is currently executing
-    segment_key = (path, from)
-    if haskey(sink.segment_progress, segment_key)
-        # Mark previous segment completed if switching
-        prev = sink.current_segment_key
-        if prev !== nothing && prev !== segment_key
-            mark_segment_completed!(sink, prev)
-        end
-        sink.current_segment_key = segment_key
-    end
-
     sink.i += 1
     to = Models.t(state)
+
+    # Account this segment's scheduled duration towards overall progress. Trace
+    # callbacks fire in execution order, one per primitive, so this advances the
+    # progress front through the timeline (raw segments, not the merged ones used
+    # for the denominator — but both sum to the same total duration).
+    sink.committed_duration += max(to - Float64(from), 0.0)
     model = primitive!.path
     label = haskey(primitive!.bindings, :label) ? primitive!.bindings[:label] : ""
 
@@ -277,12 +270,6 @@ complete progress tracking.
 function flush!(sink::StreamingSimulationSink; matching = nothing, finalize::Bool = true)
     sink.i > 0 || return
     @info "[StreamingSink] Flushing channels" matching finalize
-
-    # Mark the final segment as completed only when finalizing the whole sink.
-    if finalize && sink.current_segment_key !== nothing
-        mark_segment_completed!(sink, sink.current_segment_key)
-        sink.current_segment_key = nothing
-    end
 
     for into in keys(sink.channels)
         if matching === nothing || startswith(into, matching)

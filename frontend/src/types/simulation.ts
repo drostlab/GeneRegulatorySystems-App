@@ -10,7 +10,7 @@ export interface TimeseriesMetadata {
     segment_paths: Record<string, string>
 }
 
-export type SimulationStatus = 'running' | 'paused' | 'cancelling' | 'cancelled' | 'completed' | 'error'
+export type SimulationStatus = 'running' | 'paused' | 'cancelling' | 'finalizing' | 'cancelled' | 'completed' | 'error'
 
 export interface LiveSimulationSnapshot {
     status: SimulationStatus

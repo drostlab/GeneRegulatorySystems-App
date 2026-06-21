@@ -9,7 +9,7 @@ module SimulationControl
 using Logging
 
 export SimulationController, SimulationCancelled
-export check_control!, is_paused, pause!, resume!, cancel!
+export check_control!, is_paused, pause!, resume!, cancel!, finalize!, is_finalizing
 export set_live_species!, enter_path!, record_live_event!, update_live_progress!
 export live_snapshot, lineage_of
 
@@ -57,6 +57,7 @@ end
 @kwdef mutable struct SimulationController
     paused::Bool = false
     cancelled::Bool = false
+    finalizing::Bool = false
     pause_condition::Threads.Condition = Threads.Condition()
     result_path::String
     simulation_id::String
@@ -102,6 +103,12 @@ end
 is_paused(ctrl::SimulationController) = lock(ctrl.pause_condition) do
     ctrl.paused
 end
+
+"""Mark the controller as finalizing — the run has finished computing and is now
+building the viewport pyramids, before its status flips to `completed`."""
+finalize!(ctrl::SimulationController) = (ctrl.finalizing = true; nothing)
+
+is_finalizing(ctrl::SimulationController) = ctrl.finalizing
 
 function seed_species!(live::LiveTail, species::Symbol)
     value = get(live.latest_values, species, nothing)
