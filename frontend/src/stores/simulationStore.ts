@@ -253,10 +253,11 @@ export const useSimulationStore = defineStore(
                 phaseSpaceResult.value = null
                 isPhaseSpacePending.value = false
                 const result = await simulationService.loadResult(resultId)
-                currentResult.value = result
 
                 const scheduleStore = useScheduleStore()
-                await scheduleStore.loadScheduleBySpec(result.schedule_spec, result.schedule_name)
+                const loadedSchedule = await scheduleStore.loadScheduleBySpec(result.schedule_spec, result.schedule_name)
+                if (!loadedSchedule) return
+                currentResult.value = result
 
                 // When the schedule was already loaded (same spec), allGenes doesn't change
                 // so the selectedGenes watcher never fires and fetchGeneTimeseries is never called.

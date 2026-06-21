@@ -24,6 +24,7 @@ import { GREEN, RED } from '@/config/theme'
 import { contrastTextColour } from '@/utils/colorUtils'
 import type { TimeseriesData } from '@/types/simulation'
 import { extractPaths, extractChannels, matchesPathPrefix, getTimeExtent } from '@/types/schedule'
+import LoadingOverlay from '@/components/LoadingOverlay.vue'
 
 const simulationStore = useSimulationStore()
 const scheduleStore = useScheduleStore()
@@ -31,6 +32,7 @@ const viewerStore = useViewerStore()
 const { isDark, onThemeChange } = useTheme()
 
 const DEFAULT_SELECTED_GENES_COUNT = 5
+const LIVE_POLL_INTERVAL_MS = 500
 
 const containerRef = ref<HTMLDivElement>()
 const results = ref<SimulationResult[]>([])
@@ -61,21 +63,17 @@ const isUiDisabled = computed(() => isScheduleLoading.value || isSimulationBusy.
 /** Progress percentage for the progress bar (0-100). */
 const progressPercent = computed(() => Math.round(simulationStore.progress * 100))
 
-/** True when timeseries has never been loaded (first fetch needs a full overlay). */
-const isFirstTimeseriesFetch = computed(() =>
-    simulationStore.isFetchingTimeseries && simulationStore.fetchedGenes.size === 0
-)
-
 /** Error message shown as overlay when a result fails to load. */
 const resultError = ref<string | null>(null)
 
 /** Determine which loading overlay to show with priority (only one shown at a time). */
 const activeLoadingState = computed(() => {
-    // Priority order: schedule > final result > timeseries > result > preparing
+    // A result load owns its nested schedule load, so describe the user action
+    // rather than the internal step currently in progress.
+    // Once result metadata and its schedule are ready, hand timeseries loading
+    // over to the small chart spinner instead of keeping the full overlay up.
+    if (simulationStore.isLoadingResult && !simulationStore.isFetchingTimeseries) return 'result'
     if (isScheduleLoading.value) return 'schedule'
-    if (isFinalizingSimulation.value) return 'finalizing'
-    if (isFirstTimeseriesFetch.value) return 'timeseries'
-    if (simulationStore.isLoadingResult) return 'result'
     if (simulationStore.isPreparingSimulation) return 'preparing'
     return null
 })
@@ -222,6 +220,19 @@ watch(
     }
 )
 
+// A committed schedule replacement invalidates every trajectory panel, even
+// before the associated simulation result is cleared by the initiating view.
+watch(
+    () => scheduleStore.schedule.spec,
+    (spec, previousSpec) => {
+        if (spec === previousSpec) return
+        previousTrackSelection = null
+        chart.clearSimulationData()
+        showPhaseSpace.value = false
+        selectedTracks.value = scheduleStore.isLoaded ? ['schedule'] : []
+    },
+)
+
 /** Active phase-space result: client-side for 1-2 genes, server-precomputed otherwise. */
 const activePhaseSpaceResult = computed(() => {
     const genes = viewerStore.selectedGenes
@@ -278,12 +289,19 @@ watch(
 
 watch(
     () => ({ structure: scheduleStore.schedule.data?.structure, segments: viewerStore.filteredSegments, metadata: scheduleStore.timeseriesMetadata, maxPaths: viewerStore.maxTimelinePaths }),
-    async ({ structure, segments, metadata, maxPaths }) => {
+    ({ structure, segments, metadata, maxPaths }) => {
         if (structure && segments && segments.length > 0 && metadata) {
             // Stale-closure guard: ignore if schedule changed mid-flight
             const specAtStart = scheduleStore.schedule.spec
             console.debug(`[TrackViewer] Schedule data ready: ${segments.length} segments (filter="${viewerStore.pathFilter}")`)
-            chart.setScheduleData(structure, segments, metadata, maxPaths)
+            try {
+                chart.setScheduleData(structure, segments, metadata, maxPaths)
+            } catch (error) {
+                // Chart rendering is imperative and must not abort Vue's update
+                // cycle (in particular, removal of the loading overlay).
+                console.error('[TrackViewer] Failed to render schedule data:', error)
+                return
+            }
 
             // Fire network fetch without blocking (chart already rendered)
             scheduleStore.fetchUnionNetwork().catch(e => {
@@ -295,7 +313,10 @@ watch(
                 refreshSimulationData()
             }
         }
-    }
+    },
+    // The same schedule commit also clears scheduleStore.isLoading. Let Vue
+    // render that state before doing the comparatively heavy SciChart update.
+    { flush: 'post' },
 )
 
 watch(
@@ -591,6 +612,11 @@ async function loadResult(event: SelectChangeEvent) {
         return
     }
     if (simulationStore.isLoaded) {
+        // Apply the selection before installing the first simulation series.
+        // On the initial load the menu state can settle while the chart still
+        // has its schedule-only layout; the next user toggle would otherwise
+        // be the first call that makes the trajectory panels visible.
+        chart.setVisibleTracks(selectedTracks.value)
         refreshSimulationData()
     }
 }
@@ -642,7 +668,7 @@ function startLivePolling(resultId: string): void {
             if (snapshot.status === 'running' || snapshot.status === 'paused' || snapshot.status === 'cancelling') {
                 chart.setLiveSnapshot(snapshot.series, snapshot.window_start, snapshot.current_time)
                 if (snapshot.current_time > 0) viewerStore.setTimepoint(snapshot.current_time)
-                livePollTimer = setTimeout(poll, snapshot.status === 'paused' ? 500 : 250)
+                livePollTimer = setTimeout(poll, LIVE_POLL_INTERVAL_MS)
                 return
             }
 
@@ -1060,7 +1086,7 @@ defineExpose({
             <div ref="containerRef" class="chart-container"></div>
 
             <ProgressSpinner
-                v-if="simulationStore.isFetchingTimeseries && !isFirstTimeseriesFetch"
+                v-if="simulationStore.isFetchingTimeseries || isFinalizingSimulation"
                 class="chart-fetch-spinner"
                 style="width: 24px; height: 24px"
                 stroke-width="4"
@@ -1078,18 +1104,12 @@ defineExpose({
         </div>
 
         <!-- Single loading overlay - shows only the highest priority loading state -->
-        <div v-if="activeLoadingState" class="loading-overlay">
-            <div class="loading-card">
-                <ProgressSpinner style="width: 50px; height: 50px" stroke-width="3" />
-                <div class="loading-text">
-                    <span v-if="activeLoadingState === 'schedule'">Loading schedule...</span>
-                    <span v-else-if="activeLoadingState === 'finalizing'">Loading completed simulation...</span>
-                    <span v-else-if="activeLoadingState === 'timeseries'">Loading timeseries...</span>
-                    <span v-else-if="activeLoadingState === 'result'">Loading result...</span>
-                    <span v-else-if="activeLoadingState === 'preparing'">Preparing simulation...</span>
-                </div>
-            </div>
-        </div>
+        <LoadingOverlay
+            v-if="activeLoadingState"
+            :label="activeLoadingState === 'schedule' ? 'Loading schedule...'
+                : activeLoadingState === 'result' ? 'Loading result...'
+                : 'Preparing simulation...'"
+        />
         </div>
     </Teleport>
 </template>

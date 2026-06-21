@@ -36,38 +36,57 @@ const N_LEVELS = 16
 """
     Bin
 
-One time-bin summary of a step series, addressed by integer `idx` at its level
-(left edge = `t0 + idx·dt`). `lo`/`hi` capture within-bin spikes that a single
-value per bin would drop; `first`/`last` give entry/exit values so a step trace
-connects to neighbouring bins. `gap` marks a bin containing a discontinuity so the
-renderer breaks the line rather than carrying across it.
-
-A pure-gap bin (no real samples) has `lo > hi` and renders as a single gap point.
+One time-bin summary of a step series, addressed by integer `idx` at its level.
+Representative samples retain their original time and sequence number. This is
+essential for digital lines: moving a later minimum to the bin's left edge creates
+a false vertical drop at boundaries that happen to align with the bin grid.
 """
-struct Bin
-    idx::Int
-    first::Int
-    lo::Int
-    hi::Int
-    last::Int
-    gap::Bool
+struct Sample
+    seq::Int
+    time::Float64
+    value::Int
 end
 
-has_data(b::Bin) = b.lo <= b.hi
+const NO_SAMPLE = Sample(0, 0.0, 0)
+
+struct Bin
+    idx::Int
+    first::Sample
+    lo::Sample
+    hi::Sample
+    last::Sample
+    first_gap::Sample
+    last_gap::Sample
+end
+
+has_data(b::Bin) = b.first.seq != 0
+has_gap(b::Bin) = b.first_gap.seq != 0
+
+earlier(a::Sample, b::Sample) = a.seq <= b.seq ? a : b
+later(a::Sample, b::Sample) = a.seq >= b.seq ? a : b
+lower(a::Sample, b::Sample) = a.value <= b.value ? a : b
+higher(a::Sample, b::Sample) = a.value >= b.value ? a : b
 
 """Merge two adjacent same-level bins into `parent` (cheap coarsening, no rescan)."""
 function combine(l::Bin, r::Bin, parent::Int)::Bin
+    first_sample = has_data(l) ? l.first : r.first
+    last_sample = has_data(r) ? r.last : l.last
+    lo = !has_data(l) ? r.lo : !has_data(r) ? l.lo : lower(l.lo, r.lo)
+    hi = !has_data(l) ? r.hi : !has_data(r) ? l.hi : higher(l.hi, r.hi)
+    first_gap = !has_gap(l) ? r.first_gap : !has_gap(r) ? l.first_gap : earlier(l.first_gap, r.first_gap)
+    last_gap = !has_gap(r) ? l.last_gap : !has_gap(l) ? r.last_gap : later(l.last_gap, r.last_gap)
     Bin(
         parent,
-        has_data(l) ? l.first : r.first,
-        min(l.lo, r.lo),
-        max(l.hi, r.hi),
-        has_data(r) ? r.last : l.last,
-        l.gap | r.gap,
+        first_sample,
+        lo,
+        hi,
+        last_sample,
+        first_gap,
+        last_gap,
     )
 end
 
-reindex(b::Bin, idx::Int) = Bin(idx, b.first, b.lo, b.hi, b.last, b.gap)
+reindex(b::Bin, idx::Int) = Bin(idx, b.first, b.lo, b.hi, b.last, b.first_gap, b.last_gap)
 
 # ============================================================================
 # Per-(species, path) pyramid
@@ -89,7 +108,6 @@ struct PathPyramid
 end
 
 level_dt(p::PathPyramid, k::Int) = p.base_dt * 2.0^(k - 1)
-bin_time(p::PathPyramid, k::Int, idx::Int) = p.t0 + idx * level_dt(p, k)
 
 """
     build_pyramid(raw) -> PathPyramid
@@ -116,29 +134,34 @@ end
 function bin_raw(raw::Vector{Tuple{Float64, Int}}, t0::Float64, dt::Float64)::Vector{Bin}
     bins = Bin[]
     cur = 0
-    first_v = lo = hi = last_v = 0
-    real = false
-    gap = false
+    first_sample = lo = hi = last_sample = NO_SAMPLE
+    first_gap = last_gap = NO_SAMPLE
 
     function flush!()
-        (real || gap) || return
-        push!(bins, Bin(cur, first_v, real ? lo : 1, real ? hi : 0, last_v, gap))
+        (first_sample.seq != 0 || first_gap.seq != 0) || return
+        push!(bins, Bin(cur, first_sample, lo, hi, last_sample, first_gap, last_gap))
     end
 
-    for (t, v) in raw
+    for (seq, (t, v)) in enumerate(raw)
         idx = floor(Int, (t - t0) / dt)
-        if idx != cur || (!real && !gap)
-            (real || gap) && flush!()
-            cur, real, gap = idx, false, false
-            lo, hi = typemax(Int), typemin(Int)
+        if idx != cur || (first_sample.seq == 0 && first_gap.seq == 0)
+            (first_sample.seq != 0 || first_gap.seq != 0) && flush!()
+            cur = idx
+            first_sample = lo = hi = last_sample = NO_SAMPLE
+            first_gap = last_gap = NO_SAMPLE
         end
+        sample = Sample(seq, t, v)
         if v == GAP
-            gap = true
+            first_gap.seq == 0 && (first_gap = sample)
+            last_gap = sample
         else
-            real || (first_v = v)
-            real = true
-            lo, hi = min(lo, v), max(hi, v)
-            last_v = v
+            if first_sample.seq == 0
+                first_sample = lo = hi = sample
+            else
+                lo = lower(lo, sample)
+                hi = higher(hi, sample)
+            end
+            last_sample = sample
         end
     end
     flush!()
@@ -205,12 +228,12 @@ function expand(p::PathPyramid, k::Int, t0::Float64, t1::Float64)::Vector{Tuple{
     i = lo
     n = length(bins)
     while i <= n && bins[i].idx <= i1 + 1
-        emit_bin!(out, bins[i], bin_time(p, k, bins[i].idx))
+        emit_bin!(out, bins[i])
         i += 1
     end
     # Carry-in: include the bin just before the window so the entering step is correct.
     if lo > 1
-        prepend_bin!(out, bins[lo - 1], bin_time(p, k, bins[lo - 1].idx))
+        prepend_bin!(out, bins[lo - 1])
     end
     return out
 end
@@ -218,22 +241,24 @@ end
 idx_of(b::Bin) = b.idx
 idx_of(i::Int) = i
 
-"""Append a bin's OHLC envelope as step points at its left edge `t` (deduping flats)."""
-function emit_bin!(out::Vector{Tuple{Float64, Int}}, b::Bin, t::Float64)
-    if !has_data(b)
-        push!(out, (t, GAP))
-        return
+"""Append a bin's representative points at their original times and in source order."""
+function emit_bin!(out::Vector{Tuple{Float64, Int}}, b::Bin)
+    samples = Sample[b.first, b.lo, b.hi, b.last, b.first_gap, b.last_gap]
+    filter!(sample -> sample.seq != 0, samples)
+    sort!(samples; by = sample -> sample.seq)
+
+    previous_seq = 0
+    for sample in samples
+        sample.seq == previous_seq && continue
+        push!(out, (sample.time, sample.value))
+        previous_seq = sample.seq
     end
-    for v in (b.first, b.lo, b.hi, b.last)
-        (isempty(out) || last(out)[2] != v || last(out)[1] != t) && push!(out, (t, v))
-    end
-    b.gap && push!(out, (t, GAP))
     return
 end
 
-function prepend_bin!(out::Vector{Tuple{Float64, Int}}, b::Bin, t::Float64)
+function prepend_bin!(out::Vector{Tuple{Float64, Int}}, b::Bin)
     pre = Tuple{Float64, Int}[]
-    emit_bin!(pre, b, t)
+    emit_bin!(pre, b)
     prepend!(out, pre)
     return
 end

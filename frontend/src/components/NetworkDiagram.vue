@@ -4,9 +4,9 @@ import { useScheduleStore } from '@/stores/scheduleStore'
 import { useViewerStore } from '@/stores/viewerStore'
 import { NetworkView } from '@/network/NetworkView'
 import { useTheme } from '@/composables/useTheme'
-import ProgressSpinner from 'primevue/progressspinner'
 import Button from 'primevue/button'
 import ContextMenu from 'primevue/contextmenu'
+import LoadingOverlay from '@/components/LoadingOverlay.vue'
 
 const containerRef = ref<HTMLDivElement>()
 const contextMenuRef = ref<InstanceType<typeof ContextMenu>>()
@@ -174,12 +174,10 @@ defineExpose({ exportSVG })
         <div v-if="scheduleStore.isLoading && !scheduleStore.isNetworkLoading" class="disabled-overlay" />
 
         <!-- Spinner overlay while network is actually being fetched -->
-        <div v-if="scheduleStore.isNetworkLoading" class="loading-overlay">
-            <div class="loading-card">
-                <ProgressSpinner style="width: 50px; height: 50px" stroke-width="3" />
-                <div class="loading-text">Loading network...</div>
-            </div>
-        </div>
+        <LoadingOverlay
+            v-if="scheduleStore.isNetworkLoading"
+            label="Loading network..."
+        />
     </div>
 </template>
 

@@ -2,15 +2,19 @@ import { apiFetchJson, apiFetchText } from '@/utils/api'
 import { parseScheduleKey, type Schedule, type ScheduleSource, type TimelineSegment } from '@/types/schedule'
 import type { UnionNetwork } from '@/types/network'
 
+export interface RequestOptions {
+    signal?: AbortSignal
+}
+
 export async function fetchAvailableSchedules(): Promise<string[]> {
     return apiFetchJson<string[]>('/schedules')
 }
 
-export async function loadScheduleFromKey(key: string): Promise<Schedule> {
+export async function loadScheduleFromKey(key: string, options: RequestOptions = {}): Promise<Schedule> {
     const { source, name } = parseScheduleKey(key)
     const schedule = await apiFetchJson<Schedule>(
-        `/schedules/${source}/${name}`,
-        { method: 'GET' }
+        `/schedules/${source}/${encodeURIComponent(name)}`,
+        { method: 'GET', ...options }
     )
     return schedule
 }
@@ -20,11 +24,12 @@ export async function getScheduleSpec(key: string): Promise<string> {
     return apiFetchText(`/schedules/${source}/${encodeURIComponent(name)}/spec`)
 }
 
-export async function loadScheduleFromSpec(spec: string, name: string, source: ScheduleSource = 'snapshot'): Promise<Schedule> {
+export async function loadScheduleFromSpec(spec: string, name: string, source: ScheduleSource = 'snapshot', options: RequestOptions = {}): Promise<Schedule> {
     const schedule = await apiFetchJson<Schedule>(
         '/schedules/load',
         {
             method: 'POST',
+            signal: options.signal,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ schedule_name: name, schedule_spec: spec, schedule_source: source })
         }
@@ -53,11 +58,12 @@ export async function uploadSchedule(spec: string, name: string, origin?: SaveSc
     )
 }
 
-export async function fetchUnionNetwork(spec: string, segments: TimelineSegment[]): Promise<UnionNetwork> {
+export async function fetchUnionNetwork(spec: string, segments: TimelineSegment[], options: RequestOptions = {}): Promise<UnionNetwork> {
     return apiFetchJson<UnionNetwork>(
         '/schedules/union-network',
         {
             method: 'POST',
+            signal: options.signal,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ schedule_spec: spec, segments })
         }

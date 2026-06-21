@@ -112,13 +112,8 @@ async function handleScheduleSelect(event: SelectChangeEvent) {
         return
     }
 
-    // Clear simulation when user selects a new schedule
-    simulationStore.clearResult()
-
-    // Clear editor content immediately so stale JSON isn't visible during loading
-    setCurrentJson('')
-    
-    await store.loadScheduleByKey(scheduleKey)
+    const loaded = await store.loadScheduleByKey(scheduleKey)
+    if (loaded) simulationStore.clearResult()
 }
 
 watch (
@@ -171,8 +166,9 @@ async function saveEdit() {
 
 async function createNewSchedule() {
     const name = uniqueScheduleName('untitled')
+    const loaded = await store.loadScheduleBySpec('{\n}\n', name, 'user')
+    if (!loaded) return
     simulationStore.clearResult()
-    await store.loadScheduleBySpec('{\n}\n', name, 'user')
     editor.isNew = true
     editor.currentName = name
     editor.originalName = ''
@@ -182,8 +178,9 @@ async function createNewSchedule() {
 async function duplicateSchedule() {
     if (!store.schedule.spec) return
     const name = uniqueScheduleName(`${store.schedule.name || 'untitled'} copy`)
+    const loaded = await store.loadScheduleBySpec(getCurrentJson(), name, 'user')
+    if (!loaded) return
     simulationStore.clearResult()
-    await store.loadScheduleBySpec(getCurrentJson(), name, 'user')
     editor.isNew = true
     editor.currentName = name
     editor.originalName = ''
