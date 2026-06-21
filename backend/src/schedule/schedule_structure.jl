@@ -1,14 +1,15 @@
 # ============================================================================
-# Schedule Structure Tree + Segment Collection
+# Segment Collection
+#
+# A single dryrun pass produces a flat list of enriched `TimelineSegment`s. The
+# schedule topology (branches/sequences) is *not* re-derived here — it is carried
+# faithfully by the engine's native `execution_path` grammar (`+ - / .`) and
+# reconstructed on the frontend. See docs/schedule-view-redesign.md.
 # ============================================================================
 
 using GeneRegulatorySystems.Models
 using GeneRegulatorySystems.Models: Wrapped, Label, Descriptions
 using GeneRegulatorySystems.Models.Plumbing
-using GeneRegulatorySystems.Models.Scheduling
-using GeneRegulatorySystems.Models.Scheduling: Primitive, Schedule as GRSSchedule
-using GeneRegulatorySystems.Specifications
-using GeneRegulatorySystems.Specifications: Scope, List, Each, Load, Template, Slice
 
 # ============================================================================
 # Label Extraction
@@ -62,7 +63,7 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
     gene_colours = Dict{String, String}()
     seen_model_paths = Set{String}()
 
-    function dryrun_collector(primitive!, x, Δt; path, into=nothing, _...)
+    function dryrun_collector(primitive!, x, Δt; path, _...)
         is_instant = !isfinite(Δt) || Δt == 0.0 || Models.unwrap(primitive!.f!) isa Models.Instant
         user_label = is_instant ? nothing : get(primitive!.bindings, :label, nothing)
         label = user_label isa AbstractString ? user_label : _label(primitive!.f!.model)
@@ -74,8 +75,8 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
             json_path = model_path_to_json_path(model_path),
             from = x.t,
             to = x.t + (isfinite(Δt) ? Δt : 0.0),
+            model_type = string(nameof(typeof(Models.unwrap(primitive!)))),
             label = label,
-            channel = something(into, ""),
         ))
         next_id[] += 1
 
@@ -112,7 +113,7 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
         if seg.execution_path == current.execution_path &&
            seg.label == current.label &&
            seg.model_path == current.model_path &&
-           seg.channel == current.channel &&
+           seg.model_type == current.model_type &&
            seg.from == current.to
             current = TimelineSegment(
                 id = current.id,
@@ -121,8 +122,8 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
                 json_path = current.json_path,
                 from = current.from,
                 to = seg.to,
+                model_type = current.model_type,
                 label = current.label,
-                channel = current.channel,
             )
         else
             push!(merged, current)
@@ -138,143 +139,7 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
         json_path = seg.json_path,
         from = seg.from,
         to = seg.to,
+        model_type = seg.model_type,
         label = seg.label,
-        channel = seg.channel,
     ) for (i, seg) in enumerate(merged)]
 end
-
-# ============================================================================
-# Structure Tree
-# ============================================================================
-
-"""Walk the Schedule specification tree to produce a StructureNode hierarchy."""
-function _build_structure_tree(grs_schedule::GRSSchedule)::StructureNode
-    return _structure_node(grs_schedule.specification, grs_schedule.bindings, grs_schedule.path, grs_schedule.branch)
-end
-
-function _structure_node(spec::Scope, bindings::Dict{Symbol, Any}, path::String, branch::Bool)::StructureNode
-    child_path = "$path$(spec.branch ? '/' : '+')"
-    merged_bindings = _safe_evaluate_bindings(spec, bindings, path)
-    child = _structure_node_from_step(spec.step, merged_bindings, child_path, spec.branch)
-
-    if haskey(merged_bindings, :to)
-        return StructureNode(type = :scope, execution_path = child_path, label = "repeat", children = [child])
-    end
-
-    return StructureNode(type = :scope, execution_path = child_path, children = [child])
-end
-
-function _structure_node(spec::List, bindings::Dict{Symbol, Any}, path::String, branch::Bool)::StructureNode
-    child_prefix = branch ? path : "$path-"
-    children = StructureNode[]
-
-    for (i, item_spec) in enumerate(spec.items)
-        item_bindings = descended_bindings(bindings, i; channel = true)
-        child = _structure_node_from_step(item_spec, item_bindings, "$child_prefix$i", false)
-        push!(children, child)
-    end
-
-    node_type = (branch || any(_subtree_has_branch, children)) ? :branch : :sequence
-    return StructureNode(type = node_type, execution_path = path, children = children)
-end
-
-function _structure_node(spec::Each, bindings::Dict{Symbol, Any}, path::String, branch::Bool)::StructureNode
-    child_prefix = branch ? path : "$path-"
-
-    items = try
-        Scheduling.evaluate(spec.items; bindings, path)
-    catch
-        []
-    end
-
-    children = StructureNode[]
-    for (i, item) in enumerate(items)
-        item_bindings = descended_bindings(bindings, i; channel = spec.as != Symbol(""))
-        if spec.as != Symbol("")
-            value = Scheduling.evaluate(item, path = "$child_prefix$i"; bindings)
-            item_bindings = merge(item_bindings, Dict{Symbol, Any}(spec.as => value))
-        end
-        child = _structure_node_from_step(spec.step, item_bindings, "$child_prefix$i", false)
-        push!(children, child)
-    end
-
-    node_type = (branch || any(_subtree_has_branch, children)) ? :branch : :sequence
-    return StructureNode(type = node_type, execution_path = path, children = children)
-end
-
-function descended_bindings(bindings::Dict{Symbol, Any}, i::Int; channel::Bool)::Dict{Symbol, Any}
-    redefinitions = Dict{Symbol, Any}(:seed => "$(bindings[:seed])-$i")
-    channel && (redefinitions[:channel] = "$(bindings[:channel])-$i")
-    merge(bindings, redefinitions)
-end
-
-"""True if this node or any descendant has type :branch."""
-function _subtree_has_branch(node::StructureNode)::Bool
-    node.type == :branch && return true
-    any(_subtree_has_branch, node.children)
-end
-
-function _structure_node(spec::Template, bindings::Dict{Symbol, Any}, path::String, branch::Bool)::StructureNode
-    expanded = try
-        Scheduling.evaluate(spec; bindings, path)
-    catch
-        nothing
-    end
-
-    if expanded isa Specifications.Specification
-        return _structure_node(expanded, bindings, path, branch)
-    end
-
-    return StructureNode(type = :leaf, execution_path = path, label = _safe_label(expanded))
-end
-
-function _structure_node(spec::Slice, bindings::Dict{Symbol, Any}, path::String, branch::Bool)::StructureNode
-    return StructureNode(type = :leaf, execution_path = path, label = "slice")
-end
-
-function _structure_node(spec::Load, bindings::Dict{Symbol, Any}, path::String, branch::Bool)::StructureNode
-    return StructureNode(type = :leaf, execution_path = path, label = "load: $(spec.path)")
-end
-
-function _structure_node(spec, bindings::Dict{Symbol, Any}, path::String, branch::Bool)::StructureNode
-    return StructureNode(type = :leaf, execution_path = path)
-end
-
-function _structure_node_from_step(step, bindings::Dict{Symbol, Any}, path::String, branch::Bool)::StructureNode
-    if step isa Specifications.Specification
-        return _structure_node(step, bindings, path, branch)
-    end
-    return StructureNode(type = :leaf, execution_path = path, label = _safe_label(step))
-end
-
-function _safe_evaluate_bindings(spec::Scope, bindings::Dict{Symbol, Any}, path::String)::Dict{Symbol, Any}
-    try
-        merged = if spec.barrier
-            Dict{Symbol, Any}(
-                keep => bindings[keep]
-                for keep in (:rootseed, :seed, :into, :channel, :defaults)
-                if haskey(bindings, keep)
-            )
-        else
-            copy(bindings)
-        end
-
-        for (name, definition) in spec.definitions
-            try
-                merged[name] = Scheduling.evaluate(definition, path = "$path.$name"; bindings)
-                merged[Symbol("^$name")] = Scheduling.Locator(path)
-            catch
-                @debug "Could not evaluate binding" name path
-            end
-        end
-        return merged
-    catch
-        return bindings
-    end
-end
-
-_safe_label(x::Models.Model) = _label(x)
-_safe_label(x::Models.Wrapped) = _label(x)
-_safe_label(x::Number) = "step=$x"
-_safe_label(::Nothing) = ""
-_safe_label(x) = string(typeof(x))

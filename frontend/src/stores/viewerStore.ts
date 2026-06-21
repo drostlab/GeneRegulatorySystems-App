@@ -8,7 +8,7 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { type SpeciesType } from '@/types'
-import { getPathsForSegmentIds, getModelPathAtTime, getGeneFromSpeciesName, getActivePathsAtTime, filterSegmentsByPrefix, filterSegmentsByChannel } from '@/types/schedule'
+import { getPathsForSegmentIds, getModelPathAtTime, getGeneFromSpeciesName, getActivePathsAtTime, filterSegmentsByPrefix } from '@/types/schedule'
 import { useScheduleStore } from './scheduleStore'
 import { useSimulationStore } from './simulationStore'
 
@@ -21,13 +21,9 @@ export const useViewerStore = defineStore('viewer', () => {
     const selectedSegmentIds = ref<Set<number> | null>(null)
     /** Execution-path prefix filter (empty = show all). Mirrors inspect tool's items_prefix. */
     const pathFilter = ref<string>('')
-    /** Channel filter (empty = show all). */
-    const channelFilter = ref<string>('')
 
     /** Maximum genes to fetch/render at once (selection can exceed this). */
     const maxRenderedGenes = ref<number>(10)
-    /** Maximum concurrently visible execution-path rows in the timeline. */
-    const maxTimelinePaths = ref<number>(20)
     /** Whether hovering timeline segments highlights the corresponding JSON in the editor. */
     const editorHighlightEnabled = ref<boolean>(false)
     /**
@@ -38,16 +34,15 @@ export const useViewerStore = defineStore('viewer', () => {
      */
     const resizeByExpressionEnabled = ref<boolean>(false)
 
-    /** Segments filtered by both pathFilter and channelFilter. */
+    /** Segments filtered by the path-prefix filter. */
     const filteredSegments = computed(() => {
         const scheduleStore = useScheduleStore()
-        const byPath = filterSegmentsByPrefix(scheduleStore.segments, pathFilter.value)
-        return filterSegmentsByChannel(byPath, channelFilter.value)
+        return filterSegmentsByPrefix(scheduleStore.segments, pathFilter.value)
     })
 
-    /** Execution paths that survive both filters. */
+    /** Execution paths that survive the path filter. */
     const filteredPaths = computed((): Set<string> | null => {
-        if (pathFilter.value === '' && channelFilter.value === '') return null
+        if (pathFilter.value === '') return null
         const paths = new Set<string>()
         for (const seg of filteredSegments.value) {
             paths.add(seg.execution_path)
@@ -199,10 +194,6 @@ export const useViewerStore = defineStore('viewer', () => {
         pathFilter.value = prefix
     }
 
-    function setChannelFilter(channel: string): void {
-        channelFilter.value = channel
-    }
-
     function reset(): void {
         currentTimepoint.value = 0
         selectedGenes.value = []
@@ -214,7 +205,6 @@ export const useViewerStore = defineStore('viewer', () => {
         hoveredExecutionPath.value = null
         hoveredGeneId.value = null
         pathFilter.value = ''
-        channelFilter.value = ''
     }
 
     return {
@@ -225,9 +215,7 @@ export const useViewerStore = defineStore('viewer', () => {
         selectedSpeciesTypes,
         selectedSegmentIds,
         pathFilter,
-        channelFilter,
         maxRenderedGenes,
-        maxTimelinePaths,
         editorHighlightEnabled,
         resizeByExpressionEnabled,
         filteredSegments,
@@ -244,7 +232,6 @@ export const useViewerStore = defineStore('viewer', () => {
         setHoveredInstantModel,
         setHoveredGene,
         setPathFilter,
-        setChannelFilter,
         selectSegments,
         selectExecutionPath,
         reset

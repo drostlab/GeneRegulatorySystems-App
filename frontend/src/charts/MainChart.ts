@@ -10,16 +10,13 @@ import type { BasePanel, BasePanelOptions } from "./panels/BasePanel"
 import type { TimeseriesPanel } from "./panels/TimeseriesPanel"
 import type { Ref } from "vue"
 import { getTheme } from "@/config/theme"
-import { TimelinePanel } from "./panels/TimelinePanel"
-import { PromoterPanel } from "./panels/PromoterPanel"
 import { CountsPanel } from "./panels/CountsPanel"
 import { PhaseSpacePanel, type HoverInfo } from "./panels/PhaseSpacePanel"
 import { SharedTimeCursorModifier } from "./modifiers/SharedTimeCursorModifier"
 import { PanelGroup } from "./layout/PanelGroup"
 import { ChartLayout, type GroupNode, type LayoutNode } from "./layout/ChartLayout"
-import { collectPathYRanges } from "./layout/rectangleLayout"
 import { getPathTimeRanges } from "@/types/schedule"
-import type { StructureNode, TimelineSegment, TimeseriesData, TimeseriesMetadata } from "@/types"
+import type { TimelineSegment, TimeseriesData, TimeseriesMetadata } from "@/types"
 import type { PhaseSpaceResult } from "@/types/simulation"
 import { type SpeciesType } from "@/types/schedule"
 import { useScheduleStore } from "@/stores/scheduleStore"
@@ -32,8 +29,6 @@ export interface Viewport {
 }
 
 export type SelectionChangeCallback = (selectedGenes: string[]) => void
-export type SegmentClickCallback = (segmentId: number, modelPath: string) => void
-export type HoverChangeCallback = (modelPath: string | null, executionPath: string | null) => void
 
 /** Fraction of width allocated to the timeseries group when phase space is visible. */
 const TIMESERIES_SPLIT_RATIO = 0.65
@@ -62,14 +57,10 @@ export class MainChart {
     // -- Callbacks --
     private timepointChangeCallback?: (timepoint: number) => void
     private selectionChangeCallback?: SelectionChangeCallback
-    private segmentClickCallback?: SegmentClickCallback
-    private hoverChangeCallback?: HoverChangeCallback
-    private instantHoverChangeCallback?: (path: string | null) => void
     private phaseSpacePathSelectCallback?: (path: string) => void
     private phaseSpaceHoverCallback?: (info: HoverInfo | null) => void
     private timeseriesPathHoverCallback?: (path: string | null) => void
     private timeseriesGeneHoverCallback?: (gene: string | null) => void
-    private drillInCallback?: (executionPath: string) => void
 
     private isDark = false
 
@@ -95,9 +86,11 @@ export class MainChart {
             ]
         }
 
+        // The schedule timeline + promoter ('active') panels were removed from the
+        // charts in the session-2 clean break (see docs/schedule-view-redesign.md):
+        // the timeline returns as a standalone phase-D Vue component, and promoter
+        // activity returns with the branch-aggregation track.
         this.tracks = [
-            { id: 'schedule', panel: new TimelinePanel(options) },
-            { id: 'active', panel: new PromoterPanel(options) },
             { id: 'elongations', panel: new CountsPanel(options, "Elongations") },
             { id: 'premrnas', panel: new CountsPanel(options, "Pre-mRNAs") },
             { id: 'mrnas', panel: new CountsPanel(options, "mRNAs") },
@@ -137,20 +130,6 @@ export class MainChart {
         this.selectSyncModifier = new SelectSyncModifier(this.timeseriesGroup, geneGroupFn, genes => this.selectionChangeCallback?.(genes))
         this.surface.chartModifiers.add(this.selectSyncModifier)
 
-        const timelinePanel = this.getTimelinePanel()
-        timelinePanel.onSegmentClick((segmentId, modelPath) => {
-            this.segmentClickCallback?.(segmentId, modelPath)
-        })
-        timelinePanel.onHoverChange((modelPath, executionPath) => {
-            this.hoverChangeCallback?.(modelPath, executionPath)
-        })
-        timelinePanel.onInstantHoverChange((modelPath) => {
-            this.instantHoverChangeCallback?.(modelPath)
-        })
-        timelinePanel.onDrillIn((executionPath) => {
-            this.drillInCallback?.(executionPath)
-        })
-
         // Wire timeseries hover callbacks to all timeseries panels
         for (const { panel } of this.getTimeseriesPanels()) {
             panel.onPathHover(path => this.timeseriesPathHoverCallback?.(path))
@@ -173,18 +152,6 @@ export class MainChart {
         this.selectionChangeCallback = callback
     }
 
-    onSegmentClick(callback: SegmentClickCallback): void {
-        this.segmentClickCallback = callback
-    }
-
-    onHoverChange(callback: HoverChangeCallback): void {
-        this.hoverChangeCallback = callback
-    }
-
-    onInstantHoverChange(callback: (path: string | null) => void): void {
-        this.instantHoverChangeCallback = callback
-    }
-
     /** Register a callback for when the user hovers over a path in a timeseries panel. */
     onTimeseriesPathHover(callback: (path: string | null) => void): void {
         this.timeseriesPathHoverCallback = callback
@@ -193,11 +160,6 @@ export class MainChart {
     /** Register a callback for when the user hovers over a gene in a timeseries panel. */
     onTimeseriesGeneHover(callback: (gene: string | null) => void): void {
         this.timeseriesGeneHoverCallback = callback
-    }
-
-    /** Register a callback for double-click drill-in on a timeline rectangle. */
-    onDrillIn(callback: (executionPath: string) => void): void {
-        this.drillInCallback = callback
     }
 
     /**
@@ -223,22 +185,9 @@ export class MainChart {
         this.phaseSpacePanel?.highlightGene(gene)
     }
 
-    /** Deselect any selected segment in the timeline panel. */
-    deselectSegment(): void {
-        this.getTimelinePanel().deselectSegment()
-    }
-
-    private getTimelinePanel(): TimelinePanel {
-        return this.tracks.find(({ id }) => id === 'schedule')!.panel as TimelinePanel
-    }
-
-    private getPromoterPanel(): PromoterPanel {
-        return this.tracks.find(({ id }) => id === 'active')!.panel as PromoterPanel
-    }
-
     private getTimeseriesPanels(): Array<{ id: string; panel: TimeseriesPanel }> {
         return this.tracks
-            .filter(({ panel }) => panel instanceof (PromoterPanel as any) || panel instanceof (CountsPanel as any))
+            .filter(({ panel }) => panel instanceof (CountsPanel as any))
             .map(({ id, panel }) => ({ id, panel: panel as TimeseriesPanel }))
     }
 
@@ -428,14 +377,7 @@ export class MainChart {
         this.timeCursorModifier?.setCursorTime(currentTime)
     }
 
-    setScheduleData(structure: StructureNode, segments: TimelineSegment[], metadata: TimeseriesMetadata, maxTimelinePaths?: number): void {
-        const timelinePanel = this.getTimelinePanel()
-        timelinePanel.setScheduleData(structure, segments, maxTimelinePaths)
-        this.timeCursorModifier.bringToFront()
-        const pathYRanges = collectPathYRanges(structure, 0, 1, segments, maxTimelinePaths)
-        const promoterPanel = this.getPromoterPanel()
-        promoterPanel.setPathYRanges(pathYRanges)
-
+    setScheduleData(segments: TimelineSegment[], metadata: TimeseriesMetadata): void {
         const pathTimeRanges = getPathTimeRanges(segments)
         const timeseriesPanels = this.getTimeseriesPanels()
         timeseriesPanels.forEach(({ panel }) => {

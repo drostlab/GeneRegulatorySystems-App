@@ -5,7 +5,7 @@ import { useScheduleStore } from '@/stores/scheduleStore'
 import { useViewerStore } from '@/stores/viewerStore'
 import type { SimulationResult } from '@/types/simulation'
 import { formatResultLabel } from '@/types/simulation'
-import { speciesTypeLabels, DEFAULT_VISIBLE_SPECIES_TYPES, GENE_SPECIES_TYPES } from '@/types/schedule'
+import { speciesTypeLabels, DEFAULT_VISIBLE_SPECIES_TYPES, COUNT_SPECIES_TYPES } from '@/types/schedule'
 import type { SpeciesType } from '@/types/schedule'
 import Button from 'primevue/button'
 import Select, { type SelectChangeEvent } from 'primevue/select'
@@ -23,7 +23,7 @@ import { buildClientPhaseSpace, recolourPhaseSpace } from '@/charts/phaseSpaceBu
 import { GREEN, RED } from '@/config/theme'
 import { contrastTextColour } from '@/utils/colorUtils'
 import type { TimeseriesData } from '@/types/simulation'
-import { extractPaths, extractChannels, matchesPathPrefix, getTimeExtent } from '@/types/schedule'
+import { extractPaths, matchesPathPrefix, getTimeExtent } from '@/types/schedule'
 import LoadingOverlay from '@/components/LoadingOverlay.vue'
 
 const simulationStore = useSimulationStore()
@@ -44,7 +44,6 @@ const trackSettingsPanel = ref()
 const previousGeneSelection = ref<string[] | null>(null)
 const showPhaseSpace = ref(false)
 const pathSuggestions = ref<string[]>([])
-const channelSuggestions = ref<string[]>([])
 const isFinalizingSimulation = ref(false)
 
 const chart = new MainChart()
@@ -141,15 +140,11 @@ function selectorSwatchStyle(id: string): Record<string, string | undefined> {
 
 const trackOptions = computed(() => {
     const options: Array<{ label: string; value: string }> = []
-    
-    // Only include schedule if loaded
-    if (scheduleStore.isLoaded) {
-        options.push({ label: 'Schedule Timeline', value: 'schedule' })
-    }
-    
-    // Only include species types if simulation loaded
+
+    // Only include species types if simulation loaded. (The schedule timeline and
+    // promoter panels were removed from the charts — session-2 clean break.)
     if (simulationStore.isLoaded) {
-        GENE_SPECIES_TYPES.forEach(type => {
+        COUNT_SPECIES_TYPES.forEach(type => {
             options.push({ label: speciesTypeLabels[type], value: type })
         })
         // Only show "Other species" when the schedule has non-gene species
@@ -157,7 +152,7 @@ const trackOptions = computed(() => {
             options.push({ label: speciesTypeLabels['other'], value: 'other' })
         }
     }
-    
+
     return options
 })
 
@@ -169,13 +164,9 @@ watch(
     }),
     (state, oldState) => {
         const validTracks: string[] = []
-        
-        if (state.scheduleLoaded) {
-            validTracks.push('schedule')
-        }
-        
+
         if (state.simulationLoaded) {
-            GENE_SPECIES_TYPES.forEach(type => validTracks.push(type))
+            COUNT_SPECIES_TYPES.forEach(type => validTracks.push(type))
             if (state.hasOtherSpecies) {
                 validTracks.push('other')
             }
@@ -194,19 +185,13 @@ watch(
             if (previousTrackSelection !== null) {
                 const restored = previousTrackSelection.filter(t => validTracks.includes(t))
                 previousTrackSelection = null
-                if (restored.some(t => t !== 'schedule')) {
+                if (restored.length > 0) {
                     selectedTracks.value = restored
                     return
                 }
             }
-            const hasSimulationTracks = selectedTracks.value.some(t => t !== 'schedule')
-            if (!hasSimulationTracks) {
-                const defaults: string[] = []
-                if (state.scheduleLoaded) {
-                    defaults.push('schedule')
-                }
-                defaults.push(...DEFAULT_VISIBLE_SPECIES_TYPES)
-                selectedTracks.value = defaults
+            if (selectedTracks.value.length === 0) {
+                selectedTracks.value = [...DEFAULT_VISIBLE_SPECIES_TYPES]
             }
             return
         }
@@ -229,7 +214,7 @@ watch(
         previousTrackSelection = null
         chart.clearSimulationData()
         showPhaseSpace.value = false
-        selectedTracks.value = scheduleStore.isLoaded ? ['schedule'] : []
+        selectedTracks.value = []
     },
 )
 
@@ -288,14 +273,14 @@ watch(
 )
 
 watch(
-    () => ({ structure: scheduleStore.schedule.data?.structure, segments: viewerStore.filteredSegments, metadata: scheduleStore.timeseriesMetadata, maxPaths: viewerStore.maxTimelinePaths }),
-    ({ structure, segments, metadata, maxPaths }) => {
-        if (structure && segments && segments.length > 0 && metadata) {
+    () => ({ segments: viewerStore.filteredSegments, metadata: scheduleStore.timeseriesMetadata }),
+    ({ segments, metadata }) => {
+        if (segments && segments.length > 0 && metadata) {
             // Stale-closure guard: ignore if schedule changed mid-flight
             const specAtStart = scheduleStore.schedule.spec
             console.debug(`[TrackViewer] Schedule data ready: ${segments.length} segments (filter="${viewerStore.pathFilter}")`)
             try {
-                chart.setScheduleData(structure, segments, metadata, maxPaths)
+                chart.setScheduleData(segments, metadata)
             } catch (error) {
                 // Chart rendering is imperative and must not abort Vue's update
                 // cycle (in particular, removal of the loading overlay).
@@ -440,15 +425,8 @@ function searchPathSuggestions(event: AutoCompleteCompleteEvent): void {
     pathSuggestions.value = allPaths.filter(p => matchesPathPrefix(p, query) || p === query)
 }
 
-/** Compute autocomplete suggestions for the channel filter input. */
-function searchChannelSuggestions(event: AutoCompleteCompleteEvent): void {
-    const query = event.query.toLowerCase()
-    const allChannels = extractChannels(scheduleStore.segments)
-    channelSuggestions.value = allChannels.filter(c => c.toLowerCase().includes(query))
-}
-
 function updateViewerStore() {
-    viewerStore.selectedSpeciesTypes = selectedTracks.value.filter(t => t !== 'schedule') as SpeciesType[]
+    viewerStore.selectedSpeciesTypes = selectedTracks.value as SpeciesType[]
 }
 
 async function loadResults() {
@@ -461,12 +439,11 @@ async function loadResults() {
  * chart.init() completes, so watchers fire against a not-yet-ready chart.
  */
 function _hydrateFromPersistedState(): void {
-    const structure = scheduleStore.schedule.data?.structure
     const segments = viewerStore.filteredSegments
     const metadata = scheduleStore.timeseriesMetadata
-    if (structure && segments.length > 0 && metadata) {
+    if (segments.length > 0 && metadata) {
         console.debug(`[TrackViewer] Hydrating chart from persisted state: ${segments.length} segments`)
-        chart.setScheduleData(structure, segments, metadata, viewerStore.maxTimelinePaths)
+        chart.setScheduleData(segments, metadata)
         scheduleStore.fetchUnionNetwork().catch(e => {
             console.error('[TrackViewer] Failed to fetch union network:', e)
         })
@@ -478,7 +455,7 @@ onMounted(async () => {
     loadResults()
     const themeAtStart = isDark.value
     await chart.init(containerRef, themeAtStart)
-    chart.setVisibleTracks(['schedule'])
+    chart.setVisibleTracks([])
     onThemeChange((dark) => chart.applyTheme(dark))
     // Reconcile only if the theme actually changed during async init
     if (isDark.value !== themeAtStart) {
@@ -494,11 +471,9 @@ onMounted(async () => {
     chart.onViewportChange((vp) => { refreshSimulationData(vp) })
 
     chart.onSelectionChange((selectedGenes: string[]) => {
-        // Skip deselect when this fires in the same event as a segment click
-        if (skipSegmentDeselect) {
-            skipSegmentDeselect = false
-        } else if (viewerStore.selectedSegmentIds) {
-            chart.deselectSegment()
+        // A path may still be selected via the phase-space view; clear it when the
+        // gene selection changes from the chart.
+        if (viewerStore.selectedSegmentIds) {
             viewerStore.selectSegments(null)
         }
         if (selectedGenes.length > 0) {
@@ -512,32 +487,6 @@ onMounted(async () => {
             viewerStore.selectedGenes = previousGeneSelection.value
             previousGeneSelection.value = null
         }
-    })
-
-    /**
-     * Flag to prevent onSelectionChange from immediately deselecting a segment
-     * that was just selected in onSegmentClick (both fire in the same event tick).
-     */
-    let skipSegmentDeselect = false
-
-    chart.onSegmentClick(async (segmentId: number, _modelPath: string) => {
-        if (segmentId < 0) {
-            // Deselect: segmentId = -1 signals deselection from TimelinePanel
-            console.debug('[TrackViewer] Segment deselected')
-            viewerStore.selectSegments(null)
-            return
-        }
-        skipSegmentDeselect = true
-        console.debug(`[TrackViewer] Segment click: id=${segmentId}`)
-        viewerStore.selectSegments(new Set([segmentId]))
-    })
-
-    chart.onHoverChange((modelPath: string | null, executionPath: string | null) => {
-        viewerStore.setHoveredRectModel(modelPath, executionPath)
-    })
-
-    chart.onInstantHoverChange((modelPath: string | null) => {
-        viewerStore.setHoveredInstantModel(modelPath)
     })
 
     chart.onPhaseSpacePathSelect((path: string) => {
@@ -563,12 +512,6 @@ onMounted(async () => {
     // Timeseries panel gene hover -> store (bidirectional sync with network)
     chart.onTimeseriesGeneHover((gene: string | null) => {
         viewerStore.setHoveredGene(gene)
-    })
-
-    // Double-click on timeline rectangle -> drill into that execution path
-    chart.onDrillIn((executionPath: string) => {
-        console.debug(`[TrackViewer] Drill-in: path="${executionPath}"`)
-        viewerStore.setPathFilter(executionPath)
     })
 
     window.addEventListener('keydown', handleEscapeKey)
@@ -741,7 +684,7 @@ function clearSimulation() {
     chart.hidePhaseSpace()
     showPhaseSpace.value = false
     simulationStore.clearResult()
-    selectedTracks.value = scheduleStore.isLoaded ? ['schedule'] : []
+    selectedTracks.value = []
 }
 
 function toggleFullscreen() {
@@ -750,9 +693,8 @@ function toggleFullscreen() {
 
 function handleEscapeKey(event: KeyboardEvent) {
     if (event.key === 'Escape') {
-        // Deselect segment selection first (also zooms back to full extent)
+        // Clear any active path/segment selection first
         if (viewerStore.selectedSegmentIds) {
-            chart.deselectSegment()
             viewerStore.selectSegments(null)
             return
         }
@@ -942,32 +884,6 @@ defineExpose({
                                 @click="viewerStore.setPathFilter('')"
                                 class="filter-clear-btn"
                                 v-grs-tooltip="'Clear path filter'"
-                            />
-                        </div>
-                        <div class="filter-row">
-                            <AutoComplete
-                                :model-value="viewerStore.channelFilter"
-                                @update:model-value="(v: string | undefined) => viewerStore.setChannelFilter(v ?? '')"
-                                :suggestions="channelSuggestions"
-                                @complete="searchChannelSuggestions"
-                                :complete-on-focus="true"
-                                size="small"
-                                placeholder="Channel filter..."
-                                class="filter-autocomplete"
-                                input-class="filter-input"
-                                append-to="body"
-                                empty-search-message="No channels in schedule"
-                                panel-class="filter-overlay"
-                            />
-                            <Button
-                                v-if="viewerStore.channelFilter !== ''"
-                                icon="pi pi-times"
-                                size="small"
-                                text
-                                severity="secondary"
-                                @click="viewerStore.setChannelFilter('')"
-                                class="filter-clear-btn"
-                                v-grs-tooltip="'Clear channel filter'"
                             />
                         </div>
                     </div>

@@ -4,7 +4,6 @@ export { SPECIES_TYPES } from './schedule'
 export type {
     Schedule,
     ScheduleData,
-    StructureNode,
     SpeciesType,
     TimelineSegment
 } from './schedule'

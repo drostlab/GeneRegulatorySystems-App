@@ -131,15 +131,6 @@ function hslToHex(h: number, s: number, l: number): string {
 }
 
 /**
- * Extract HSL lightness (0–1) from a hex colour.
- */
-function hexLightness(hex: string): number {
-    const { r, g, b } = parseHex(hex)
-    const { l } = rgbToHsl(r, g, b)
-    return l
-}
-
-/**
  * Linear interpolation between two colours.
  */
 export function lerpColor(color1: string, color2: string, t: number): string {
@@ -184,33 +175,6 @@ export function desaturate(hex: string, amount: number): string {
     const { h, s, l } = rgbToHsl(r, g, b)
     const sNew = s * (1 - amount)
     return hslToHex(h, sNew, l)
-}
-
-/**
- * Build a stable mapping from channel names to distinct subtle hue colours.
- * Empty channel maps to the provided `baseColour`.
- * Non-empty channels are spread across hues from green (~120°) to purple (~280°),
- * using the same lightness as `baseColour` so they appear identical in brightness,
- * with very low saturation for a subtle tint effect.
- */
-export function buildChannelColourMap(channels: string[], baseColour: string): Map<string, string> {
-    const map = new Map<string, string>()
-    map.set('', baseColour)
-
-    const sorted = [...channels].filter(c => c !== '').sort()
-    if (sorted.length === 0) return map
-
-    const lightness = hexLightness(baseColour)
-    const HUE_MIN = 120
-    const HUE_MAX = 280
-    const SATURATION = 0.25
-
-    for (let i = 0; i < sorted.length; i++) {
-        const t = sorted.length === 1 ? 0.5 : i / (sorted.length - 1)
-        const hue = HUE_MIN + t * (HUE_MAX - HUE_MIN)
-        map.set(sorted[i]!, hslToHex(hue, SATURATION, lightness))
-    }
-    return map
 }
 
 /**

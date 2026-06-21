@@ -26,7 +26,7 @@ using ..ScheduleBindings: spec_bindings
 # Exports
 # ============================================================================
 
-export Network, UnionNetwork, ModelExclusions, TimelineSegment, ScheduleData, StructureNode
+export Network, UnionNetwork, ModelExclusions, TimelineSegment, ScheduleData
 export ReifiedSchedule, ValidationMessage
 export reify_schedule, extract_network_for_model_path, extract_union_network, is_valid, get_error_messages
 export gene_colours_from_spec, clear_spec_cache
@@ -100,6 +100,8 @@ Single execution segment from a dryrun pass.
 - `model_path`: `primitive!.path` (spec location, used for network loading)
 - `json_path`: JSONPath segments for locating the model definition in the source JSON
 - `from`/`to`: time range (from == to for instant models)
+- `model_type`: the unwrapped GRS model's type name (e.g. `"Adjust"`); the frontend
+  maps this to a glyph. Instant-ness is carried by `from == to`, not `model_type`.
 - `label`: human-readable model label
 """
 @kwdef struct TimelineSegment
@@ -109,36 +111,19 @@ Single execution segment from a dryrun pass.
     json_path::Vector{Any}
     from::Float64
     to::Float64
+    model_type::String
     label::String
-    channel::String
-end
-
-"""
-    StructureNode
-
-Recursive tree mirroring the schedule specification structure.
-Used by the frontend to compute rectangle layout for timeline/promoter charts.
-
-- `type`: `:scope`, `:sequence`, `:branch`, `:leaf`
-- `execution_path`: the execution path prefix for this node
-- `label`: human-readable label (from spec)
-- `children`: child nodes (empty for leaves)
-"""
-@kwdef struct StructureNode
-    type::Symbol
-    execution_path::String = ""
-    label::String = ""
-    children::Vector{StructureNode} = StructureNode[]
 end
 
 """
     ScheduleData
 
 Complete visualisation schema. No network included -- networks are loaded on demand.
+The schedule topology is reconstructed on the frontend by parsing each segment's
+`execution_path` on the `+ - / .` grammar.
 """
 @kwdef struct ScheduleData
     segments::Vector{TimelineSegment}
-    structure::StructureNode
     genes::Vector{String} = String[]
     gene_colours::Dict{String, String} = Dict{String, String}()
 end
@@ -288,8 +273,7 @@ function fill_schedule_data!(entry::SpecCacheEntry, spec_string::String, name::S
             segments, genes, gene_colours = _collect_segments(entry.grs_schedule)
             merge!(gene_colours, _extract_spec_gene_colours(spec))
             merged = _merge_contiguous_segments(segments)
-            structure = _build_structure_tree(entry.grs_schedule)
-            data = ScheduleData(; segments=merged, structure, genes, gene_colours)
+            data = ScheduleData(; segments=merged, genes, gene_colours)
             @info "Schedule visualisation generated" name segments=length(merged) genes=length(genes) elapsed=(time() - vis_start)
         end
     catch e

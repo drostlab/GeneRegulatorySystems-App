@@ -4,7 +4,20 @@ export type SpeciesType = typeof SPECIES_TYPES[number]
 /** Canonical gene-derived species types (excludable from "other" detection). */
 export const GENE_SPECIES_TYPES = ['active', 'elongations', 'premrnas', 'mrnas', 'proteins'] as const
 
-export const DEFAULT_VISIBLE_SPECIES_TYPES: SpeciesType[] = ['active', 'mrnas', 'proteins']
+/**
+ * Gene species types that have a chart panel today. Promoter activity ('active')
+ * is intentionally excluded — its panel was removed in the session-2 clean break
+ * and returns with the branch-aggregation track (docs/schedule-view-redesign.md).
+ * 'active' stays in GENE_SPECIES_TYPES so `gene.active` is still classified as a
+ * gene species (not "other").
+ */
+export const COUNT_SPECIES_TYPES = ['elongations', 'premrnas', 'mrnas', 'proteins'] as const
+
+// NB: 'active' (promoter activity) is intentionally absent — the promoter panel is
+// removed from the charts (see docs/schedule-view-redesign.md, session-2 clean
+// break) and returns with the branch-aggregation track. 'active' stays in
+// GENE_SPECIES_TYPES so `gene.active` is still classified as a gene species.
+export const DEFAULT_VISIBLE_SPECIES_TYPES: SpeciesType[] = ['mrnas', 'proteins']
 
 export const speciesTypeLabels: Record<SpeciesType, string> = {
     'active': 'Promoter activity',
@@ -24,20 +37,10 @@ export interface TimelineSegment {
     from: number
     to: number
     label: string
-    /** Resolved channel name (empty string when unset). */
-    channel: string
-}
-
-export interface StructureNode {
-    type: 'scope' | 'sequence' | 'branch' | 'leaf'
-    execution_path: string
-    label: string
-    children: StructureNode[]
 }
 
 export interface ScheduleData {
     segments: TimelineSegment[]
-    structure: StructureNode
     genes: string[]
     gene_colours: Record<string, string>
 }
@@ -206,21 +209,6 @@ export function matchesPathPrefix(executionPath: string, prefix: string): boolea
 export function filterSegmentsByPrefix(segments: TimelineSegment[], prefix: string): TimelineSegment[] {
     if (prefix === '') return segments
     return segments.filter(s => matchesPathPrefix(s.execution_path, prefix))
-}
-
-/** Extract sorted unique channel names from segments (excluding empty). */
-export function extractChannels(segments: TimelineSegment[]): string[] {
-    const channels = new Set<string>()
-    for (const seg of segments) {
-        if (seg.channel !== '') channels.add(seg.channel)
-    }
-    return [...channels].sort()
-}
-
-/** Filter segments to those matching a specific channel (empty = show all). */
-export function filterSegmentsByChannel(segments: TimelineSegment[], channel: string): TimelineSegment[] {
-    if (channel === '') return segments
-    return segments.filter(s => s.channel === channel)
 }
 
 /**
