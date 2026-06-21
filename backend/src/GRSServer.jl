@@ -212,25 +212,31 @@ end
     t1::Float64
     width_px::Int = 1000
 end
-# adaptive viewport query: ≲2·width_px decimated OHLC-step points per (species, path)
+# Adaptive viewport query. Counts use OHLC steps; promoters use time-weighted
+# activity bins so coarse rendering preserves occupancy rather than false pulses.
 @post "/simulations/{id}/timeseries/viewport" function(req, id::String, data::Json{ViewportRequest})
     result = Simulation.load_result(id)
     isnothing(result) && return HTTP.Response(404, "Result not found")
     p = data.payload
 
-    timeseries = Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}()
+    timeseries = Dict{Symbol, Any}()
     for sp_str in p.species
         sp = Symbol(sp_str)
+        is_promoter = endswith(sp_str, ".active")
         paths = isnothing(p.paths) ? Viewport.paths_for(result.path, sp) : p.paths
-        series_map = Dict{String, Vector{Tuple{Float64, Int}}}()
+        series_map = Dict{String, Any}()
         for path in paths
-            series = Viewport.query_species(result.path, sp, path, p.t0, p.t1, p.width_px)
+            series = if is_promoter
+                Viewport.query_activity_species(result.path, sp, path, p.t0, p.t1, p.width_px)
+            else
+                Viewport.query_species(result.path, sp, path, p.t0, p.t1, p.width_px)
+            end
             isnothing(series) && continue
             series_map[path] = series
         end
         isempty(series_map) || (timeseries[sp] = series_map)
     end
-    return Simulation.SimulationData(; timeseries)
+    return (; timeseries)
 end
 
 const simulation_task = Ref{Union{Nothing, Task}}(nothing)

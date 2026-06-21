@@ -393,6 +393,8 @@ watch(
  * both axes over the schedule's full time extent. Called from `onViewportChange`
  * with a `vp` on zoom/pan — re-queries at the new window and preserves the range.
  */
+let viewportRequestGeneration = 0
+
 async function refreshSimulationData(vp?: Viewport, fullExtent = false): Promise<void> {
     if (!simulationStore.isLoaded || simulationStore.isSimulationRunning) return
     const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
@@ -407,11 +409,12 @@ async function refreshSimulationData(vp?: Viewport, fullExtent = false): Promise
         ? { t0: extent.min, t1: extent.max, widthPx: 1500 }
         : vp ?? chart.getViewport() ?? { t0: extent.min, t1: extent.max, widthPx: 1500 }
 
+    const generation = ++viewportRequestGeneration
     const data = await simulationStore.fetchViewport(
         genes, viewerStore.selectedOtherSpecies, pathArray,
         window.t0, window.t1, window.widthPx,
     )
-    if (data) {
+    if (data && generation === viewportRequestGeneration) {
         chart.setSimulationData(data, { fitAxes: vp === undefined })
     }
 }

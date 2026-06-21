@@ -117,13 +117,13 @@ export interface ViewportQuery {
     paths?: string[] | null
     t0: number
     t1: number
-    /** Target horizontal resolution; the server returns ≲2·width_px points per series. */
+    /** Target horizontal resolution; promoters become time-weighted activity bins when coarse. */
     width_px: number
 }
 
 /**
  * Adaptive viewport query against a finished result's multi-resolution pyramid.
- * Returns ≲2·width_px decimated OHLC-step points per (species, path) for [t0, t1].
+ * Counts use decimated OHLC steps; promoters use time-weighted activity bins.
  */
 export async function fetchViewport(
     resultId: string,

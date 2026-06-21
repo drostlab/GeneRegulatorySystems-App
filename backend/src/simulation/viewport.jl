@@ -9,7 +9,8 @@ SSA / ODE trajectories are piecewise-constant, right-continuous step functions
 them at full resolution clogs the client renderer, so this module bins each
 `(species, path)` series into an OHLC-style time pyramid and answers viewport
 queries (`t0`, `t1`, `width_px`) with `≲ 2·width_px` points — independent of total
-simulation length.
+simulation length. Promoter activity uses time-weighted screen bins instead of
+OHLC extrema so short pulses do not become artificially long active periods.
 
 The pyramid sits *on top of* the canonical catenation reconstruction
 (`Simulation.load_timeseries_for_species`): its input is already gap-marked
@@ -21,13 +22,16 @@ module Viewport
 
 import ..Simulation
 
-export PathPyramid, build_pyramid, query, query_species, GAP
+export PathPyramid, build_pyramid, query, query_activity, query_species, GAP
 
 """Gap sentinel value carried by the reconstructed series (see GapTracking)."""
 const GAP = -1
 
 """Number of binned levels above raw. Level `k` (1-based) has width `base_dt·2^(k-1)`."""
 const N_LEVELS = 16
+
+"""Horizontal pixels represented by one coarse promoter-activity bin."""
+const ACTIVITY_PIXELS_PER_BIN = 4
 
 # ============================================================================
 # OHLC bin
@@ -105,29 +109,61 @@ struct PathPyramid
     t0::Float64
     base_dt::Float64
     levels::Vector{Vector{Bin}}
+    times::Vector{Float64}
+    cumulative_area::Vector{Float64}
+    cumulative_covered::Vector{Float64}
 end
 
 level_dt(p::PathPyramid, k::Int) = p.base_dt * 2.0^(k - 1)
 
 """
-    build_pyramid(raw) -> PathPyramid
+    build_pyramid(raw; activity=false) -> PathPyramid
 
 Build the full pyramid for one reconstructed `(time, value)` series. `GAP` points
-are discontinuity markers, excluded from `lo`/`hi`.
+are discontinuity markers, excluded from `lo`/`hi`. Activity pyramids retain
+prefix integrals instead of OHLC levels because promoter queries only need
+time-weighted screen-bin averages.
 """
-function build_pyramid(raw::Vector{Tuple{Float64, Int}})::PathPyramid
-    isempty(raw) && return PathPyramid(raw, 0.0, 1.0, [Bin[] for _ in 1:N_LEVELS])
+function build_pyramid(
+    raw::Vector{Tuple{Float64, Int}}; activity::Bool = false,
+)::PathPyramid
+    isempty(raw) && return PathPyramid(
+        raw, 0.0, 1.0, [Bin[] for _ in 1:N_LEVELS], Float64[], Float64[], Float64[],
+    )
 
     t0 = first(first(raw))
     span = first(last(raw)) - t0
     base_dt = span > 0 ? span / (2.0^N_LEVELS) : 1.0
 
-    levels = Vector{Vector{Bin}}(undef, N_LEVELS)
-    levels[1] = bin_raw(raw, t0, base_dt)
-    for k in 2:N_LEVELS
-        levels[k] = coarsen(levels[k - 1])
+    levels = [Bin[] for _ in 1:N_LEVELS]
+    if !activity
+        levels[1] = bin_raw(raw, t0, base_dt)
+        for k in 2:N_LEVELS
+            levels[k] = coarsen(levels[k - 1])
+        end
     end
-    return PathPyramid(raw, t0, base_dt, levels)
+    times, cumulative_area, cumulative_covered = activity ? build_integrals(raw) :
+        (Float64[], Float64[], Float64[])
+    return PathPyramid(raw, t0, base_dt, levels, times, cumulative_area, cumulative_covered)
+end
+
+"""Prefix integrals of value and non-gap duration for fast activity averages."""
+function build_integrals(raw::Vector{Tuple{Float64, Int}})
+    n = length(raw)
+    times = first.(raw)
+    area = zeros(Float64, n)
+    covered = zeros(Float64, n)
+    for i in 2:n
+        dt = max(0.0, times[i] - times[i - 1])
+        value = raw[i - 1][2]
+        area[i] = area[i - 1]
+        covered[i] = covered[i - 1]
+        if value != GAP
+            area[i] += value * dt
+            covered[i] += dt
+        end
+    end
+    return times, area, covered
 end
 
 """Bin the raw series into the finest level in a single pass."""
@@ -206,6 +242,60 @@ function query(p::PathPyramid, t0::Float64, t1::Float64, width_px::Int)::Vector{
     # bins. Each bin emits ≤4 OHLC points, keeping output ≤ ~2·width_px.
     k = clamp(ceil(Int, log2(target_dt / p.base_dt)) + 2, 1, N_LEVELS)
     return expand(p, k, t0, t1)
+end
+
+"""Integral of promoter value and represented duration up to time `t`."""
+function activity_integral_at(p::PathPyramid, t::Float64)::Tuple{Float64, Float64}
+    isempty(p.raw) && return (0.0, 0.0)
+    bounded = clamp(t, first(p.times), last(p.times))
+    i = searchsortedlast(p.times, bounded)
+    i == 0 && return (0.0, 0.0)
+    area = p.cumulative_area[i]
+    covered = p.cumulative_covered[i]
+    value = p.raw[i][2]
+    if value != GAP
+        dt = bounded - p.times[i]
+        area += value * dt
+        covered += dt
+    end
+    return area, covered
+end
+
+"""
+    query_activity(p, t0, t1, width_px)
+
+Return exact promoter transitions when they fit the screen budget. Otherwise,
+return one time-weighted activity value per `ACTIVITY_PIXELS_PER_BIN` horizontal
+pixels. Fractional values are rendered through promoter-band opacity by the client.
+"""
+function query_activity(
+    p::PathPyramid, t0::Float64, t1::Float64, width_px::Int,
+)::Vector{Tuple{Float64, Float64}}
+    (isempty(p.raw) || t1 <= t0) && return Tuple{Float64, Float64}[]
+    isempty(p.times) && throw(ArgumentError("activity query requires an activity pyramid"))
+    width_px = max(width_px, 1)
+    bin_count = max(1, cld(width_px, ACTIVITY_PIXELS_PER_BIN))
+    exact = raw_slice(p.raw, t0, t1)
+    if length(exact) <= bin_count
+        return [(t, Float64(value)) for (t, value) in exact]
+    end
+
+    dt = (t1 - t0) / bin_count
+    out = Tuple{Float64, Float64}[]
+    sizehint!(out, bin_count + 1)
+    last_value = Float64(GAP)
+    for i in 0:bin_count-1
+        left = t0 + i * dt
+        right = i == bin_count - 1 ? t1 : left + dt
+        left_area, left_covered = activity_integral_at(p, left)
+        right_area, right_covered = activity_integral_at(p, right)
+        covered = right_covered - left_covered
+        value = covered > 0 ? (right_area - left_area) / covered : Float64(GAP)
+        push!(out, (left, value))
+        last_value = value
+    end
+    push!(out, (t1, last_value))
+    return out
 end
 
 """Raw points within `[t0, t1]`, plus one straddling point each side for clean step edges."""
@@ -298,8 +388,9 @@ function species_pyramids(result_path::String, species::Symbol)::Dict{String, Pa
 
         ts = Simulation.load_timeseries_for_species(result_path, Set((species,)))
         path_series = get(ts, species, Dict{String, Vector{Tuple{Float64, Int}}}())
+        activity = endswith(String(species), ".active")
         paths = Dict{String, PathPyramid}(
-            path => build_pyramid(series) for (path, series) in path_series
+            path => build_pyramid(series; activity) for (path, series) in path_series
         )
         CACHE[key] = SpeciesPyramids(stamp, paths)
         return paths
@@ -330,6 +421,17 @@ function query_species(
     p = get(paths, path, nothing)
     p === nothing && return nothing
     return query(p, t0, t1, width_px)
+end
+
+"""Viewport query using time-weighted promoter occupancy at coarse resolution."""
+function query_activity_species(
+    result_path::String, species::Symbol, path::String,
+    t0::Float64, t1::Float64, width_px::Int,
+)::Union{Vector{Tuple{Float64, Float64}}, Nothing}
+    paths = species_pyramids(result_path, species)
+    p = get(paths, path, nothing)
+    p === nothing && return nothing
+    return query_activity(p, t0, t1, width_px)
 end
 
 """List the execution paths available for `species` in a result (for the path-filter UI)."""
