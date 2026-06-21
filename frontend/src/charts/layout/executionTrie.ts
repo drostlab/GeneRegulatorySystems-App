@@ -25,6 +25,8 @@ export interface TrieNode {
     path: string
     /** Separator that introduced this node from its parent (`''` for the root). */
     sep: string
+    /** True when this prefix is an engine `Each` expansion (the path alone says only `-i`). */
+    each: boolean
     children: TrieNode[]
 }
 
@@ -56,8 +58,9 @@ function tokenize(path: string): Token[] {
  * Build a path-first trie from a set of execution paths. Repeated paths (e.g. a
  * `:to` loop) collapse onto the same nodes. Children are kept in first-seen order.
  */
-export function buildTrie(paths: Iterable<string>): TrieNode {
-    const root: TrieNode = { path: '', sep: '', children: [] }
+export function buildTrie(paths: Iterable<string>, eachPrefixes: Iterable<string> = []): TrieNode {
+    const each = new Set(eachPrefixes)
+    const root: TrieNode = { path: '', sep: '', each: each.has(''), children: [] }
     const byPath = new Map<string, TrieNode>([['', root]])
 
     for (const path of paths) {
@@ -65,7 +68,7 @@ export function buildTrie(paths: Iterable<string>): TrieNode {
         for (const { prefix, sep } of tokenize(path)) {
             let node = byPath.get(prefix)
             if (!node) {
-                node = { path: prefix, sep, children: [] }
+                node = { path: prefix, sep, each: each.has(prefix), children: [] }
                 byPath.set(prefix, node)
                 parent.children.push(node)
             }
@@ -81,5 +84,5 @@ export function buildTrie(paths: Iterable<string>): TrieNode {
  * child's separator is sufficient.
  */
 export function childrenAreParallel(node: TrieNode): boolean {
-    return node.children.length > 0 && node.children[0]!.sep === '/'
+    return node.children.length > 0 && (node.each || node.children[0]!.sep === '/')
 }

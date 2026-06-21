@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import ScheduleEditor from './components/ScheduleEditor.vue'
 import NetworkDiagram from './components/NetworkDiagram.vue'
 import SimulationViewer from './components/TrackViewer.vue'
+import ScheduleViewer from './components/schedule/ScheduleViewer.vue'
 import LogDrawer from './components/LogDrawer.vue'
 import { nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useTheme } from './composables/useTheme'
@@ -19,6 +20,8 @@ const logStore = useLogStore()
 const networkDiagramRef = ref<InstanceType<typeof NetworkDiagram>>()
 const simulationViewerRef = ref<InstanceType<typeof SimulationViewer>>()
 const rootSplitterRef = ref<{ initializePanels: () => void }>()
+// Phase-D schedule exploration: keep SciChart out of the visual iteration loop.
+const showTrackViewer = false
 
 watch(() => logStore.drawerVisible, async () => {
     await nextTick()
@@ -66,8 +69,9 @@ onBeforeUnmount(() => {
                                 <NetworkDiagram ref="networkDiagramRef" />
                             </SplitterPanel>
 
-                            <SplitterPanel style="display: flex; width: 100%" :size="55" :minSize="20">
-                                <SimulationViewer ref="simulationViewerRef" />
+                            <SplitterPanel style="display: flex; flex-direction: column; width: 100%" :size="55" :minSize="20">
+                                <ScheduleViewer class="schedule-pane" />
+                                <SimulationViewer v-if="showTrackViewer" ref="simulationViewerRef" class="track-pane" />
                             </SplitterPanel>
                         </Splitter>
                     </SplitterPanel>
@@ -94,5 +98,15 @@ onBeforeUnmount(() => {
     display: flex;
     flex-direction: row;
     gap: 2px;
+}
+
+.schedule-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.track-pane {
+    flex: 1 1 auto;
+    min-height: 0;
 }
 </style>

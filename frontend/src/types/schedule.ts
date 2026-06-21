@@ -36,11 +36,30 @@ export interface TimelineSegment {
     json_path: (string | number)[]
     from: number
     to: number
+    /** Unwrapped GRS model type, used by the schedule view's glyph map. */
+    model_type: string
     label: string
+    /** Authored labels belong to execution scopes, not model definitions. */
+    scope_label: string
+    stage: string
+}
+
+export interface ScheduleOperator {
+    path: string
+    kind: 'each' | 'list'
+    parallel: boolean
+    label: string
+    binding: string
+    child_paths: string[]
+    child_values: string[]
+    child_labels: string[]
 }
 
 export interface ScheduleData {
     segments: TimelineSegment[]
+    /** Execution prefixes expanded by Each; `execution_path` cannot distinguish these from List. */
+    each_prefixes: string[]
+    operators: ScheduleOperator[]
     genes: string[]
     gene_colours: Record<string, string>
 }

@@ -27,6 +27,7 @@ using ..ScheduleBindings: spec_bindings
 # ============================================================================
 
 export Network, UnionNetwork, ModelExclusions, TimelineSegment, ScheduleData
+export ScheduleOperator
 export ReifiedSchedule, ValidationMessage
 export reify_schedule, extract_network_for_model_path, extract_union_network, is_valid, get_error_messages
 export gene_colours_from_spec, clear_spec_cache
@@ -113,17 +114,34 @@ Single execution segment from a dryrun pass.
     to::Float64
     model_type::String
     label::String
+    scope_label::String = ""
+    stage::String = ""
+end
+
+"""Evaluated sequence/branch metadata used for semantic schedule annotations."""
+@kwdef struct ScheduleOperator
+    path::String
+    kind::String
+    parallel::Bool
+    label::String = ""
+    binding::String = ""
+    child_paths::Vector{String} = String[]
+    child_values::Vector{String} = String[]
+    child_labels::Vector{String} = String[]
 end
 
 """
     ScheduleData
 
 Complete visualisation schema. No network included -- networks are loaded on demand.
-The schedule topology is reconstructed on the frontend by parsing each segment's
-`execution_path` on the `+ - / .` grammar.
+Most schedule topology is reconstructed on the frontend from `execution_path`.
+`each_prefixes` is the one structural sidecar the path grammar cannot carry:
+non-branch `Each` and ordinary `List` items both use the `-i` separator.
 """
 @kwdef struct ScheduleData
     segments::Vector{TimelineSegment}
+    each_prefixes::Vector{String} = String[]
+    operators::Vector{ScheduleOperator} = ScheduleOperator[]
     genes::Vector{String} = String[]
     gene_colours::Dict{String, String} = Dict{String, String}()
 end
@@ -271,9 +289,10 @@ function fill_schedule_data!(entry::SpecCacheEntry, spec_string::String, name::S
             @info "Generating schedule visualisation" name source
             vis_start = time()
             segments, genes, gene_colours = _collect_segments(entry.grs_schedule)
+            each_prefixes, operators = collect_schedule_metadata(entry.grs_schedule)
             merge!(gene_colours, _extract_spec_gene_colours(spec))
             merged = _merge_contiguous_segments(segments)
-            data = ScheduleData(; segments=merged, genes, gene_colours)
+            data = ScheduleData(; segments=merged, each_prefixes, operators, genes, gene_colours)
             @info "Schedule visualisation generated" name segments=length(merged) genes=length(genes) elapsed=(time() - vis_start)
         end
     catch e

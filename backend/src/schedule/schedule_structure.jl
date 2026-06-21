@@ -10,6 +10,9 @@
 using GeneRegulatorySystems.Models
 using GeneRegulatorySystems.Models: Wrapped, Label, Descriptions
 using GeneRegulatorySystems.Models.Plumbing
+using GeneRegulatorySystems.Models.Scheduling
+using GeneRegulatorySystems.Models.Scheduling: Primitive, Schedule as GRSSchedule
+using GeneRegulatorySystems.Specifications: Scope, Each, Sequence, Template, Slice
 
 # ============================================================================
 # Label Extraction
@@ -51,6 +54,90 @@ end
 # ============================================================================
 
 """
+Collect the evaluated sequence metadata needed by the schedule view.
+
+GRS's path grammar deliberately serialises both a non-branch `Each` and a `List`
+with `-i`. This narrow walk over already parsed/evaluated `Schedule` objects
+records that operator provenance together with authored labels and Each binding
+values. It does not reconstruct models, timing, branches, or layout.
+"""
+function collect_schedule_metadata(grs_schedule::GRSSchedule)::Tuple{Vector{String}, Vector{ScheduleOperator}}
+    prefixes = Set{String}()
+    operators = ScheduleOperator[]
+    collect_schedule_metadata!(prefixes, operators, grs_schedule)
+    return (sort!(collect(prefixes)), operators)
+end
+
+function collect_schedule_metadata!(prefixes::Set{String}, operators::Vector{ScheduleOperator}, schedule::GRSSchedule{Scope})
+    bindings = Scheduling.evaluate_bindings(schedule)
+    path = "$(schedule.path)$(schedule.specification.branch ? '/' : '+')"
+    step = Scheduling.model(
+        schedule.specification.step;
+        bindings,
+        branch = schedule.specification.branch,
+        path,
+    )
+    collect_schedule_metadata!(prefixes, operators, step)
+end
+
+function operator_value(value)::String
+    value isa AbstractString && return String(value)
+    value isa Union{Number, Symbol, Bool} && return string(value)
+    return ""
+end
+
+function step_binding(step, key::Symbol)
+    hasproperty(step, :bindings) || return nothing
+    return get(getproperty(step, :bindings), key, nothing)
+end
+
+function collect_schedule_metadata!(prefixes::Set{String}, operators::Vector{ScheduleOperator}, schedule::GRSSchedule{<:Sequence})
+    specification = schedule.specification
+    specification isa Each && !schedule.branch && push!(prefixes, schedule.path)
+    path = schedule.branch ? schedule.path : "$(schedule.path)-"
+    steps = collect(Scheduling.models(specification; bindings = schedule.bindings, path))
+    prefix = schedule.branch && endswith(schedule.path, "/") ? chop(schedule.path) : schedule.path
+    binding = specification isa Each ? string(specification.as) : ""
+    push!(operators, ScheduleOperator(
+        path = prefix,
+        kind = specification isa Each ? "each" : "list",
+        parallel = schedule.branch || specification isa Each,
+        label = string(something(get(schedule.bindings, :label, nothing), "")),
+        binding = binding,
+        child_paths = ["$(path)$(i)" for i in eachindex(steps)],
+        child_values = [operator_value(binding == "" ? nothing : step_binding(step, Symbol(binding))) for step in steps],
+        child_labels = [string(something(step_binding(step, :label), "")) for step in steps],
+    ))
+    for step in steps
+        collect_schedule_metadata!(prefixes, operators, step)
+    end
+end
+
+function collect_schedule_metadata!(prefixes::Set{String}, operators::Vector{ScheduleOperator}, schedule::GRSSchedule{Template})
+    expanded = Scheduling.evaluate(schedule.specification; bindings = schedule.bindings, path = schedule.path)
+    step = Scheduling.model(expanded; bindings = schedule.bindings, branch = schedule.branch, path = schedule.path)
+    collect_schedule_metadata!(prefixes, operators, step)
+end
+
+function collect_schedule_metadata!(prefixes::Set{String}, operators::Vector{ScheduleOperator}, schedule::GRSSchedule{Slice})
+    path = if haskey(schedule.bindings, :do)
+        "$(schedule.bindings[Symbol("^do")].path).do"
+    else
+        schedule.path
+    end
+    step = Scheduling.model(
+        get(schedule.bindings, :do, Plumbing.Wait());
+        bindings = schedule.bindings,
+        branch = schedule.branch,
+        path,
+    )
+    collect_schedule_metadata!(prefixes, operators, step)
+end
+
+collect_schedule_metadata!(::Set{String}, ::Vector{ScheduleOperator}, ::Primitive) = nothing
+collect_schedule_metadata!(::Set{String}, ::Vector{ScheduleOperator}, ::Any) = nothing
+
+"""
 Collect all raw segments, gene names, and gene colours from a single dryrun pass.
 Gene colours are generated per-model using dispatch (`_gene_colours`).
 Returns `(segments, gene_names, gene_colours)` — deduplicated per model_path.
@@ -65,8 +152,9 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
 
     function dryrun_collector(primitive!, x, Δt; path, _...)
         is_instant = !isfinite(Δt) || Δt == 0.0 || Models.unwrap(primitive!.f!) isa Models.Instant
-        user_label = is_instant ? nothing : get(primitive!.bindings, :label, nothing)
-        label = user_label isa AbstractString ? user_label : _label(primitive!.f!.model)
+        label = _label(primitive!.f!.model)
+        scope_label = get(primitive!.bindings, :label, "")
+        stage = get(primitive!.bindings, :stage, "")
         model_path = primitive!.path
         push!(segments, TimelineSegment(
             id = next_id[],
@@ -77,6 +165,8 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
             to = x.t + (isfinite(Δt) ? Δt : 0.0),
             model_type = string(nameof(typeof(Models.unwrap(primitive!)))),
             label = label,
+            scope_label = scope_label isa AbstractString ? scope_label : "",
+            stage = stage isa AbstractString ? stage : string(stage),
         ))
         next_id[] += 1
 
@@ -114,6 +204,8 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
            seg.label == current.label &&
            seg.model_path == current.model_path &&
            seg.model_type == current.model_type &&
+           seg.scope_label == current.scope_label &&
+           seg.stage == current.stage &&
            seg.from == current.to
             current = TimelineSegment(
                 id = current.id,
@@ -124,6 +216,8 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
                 to = seg.to,
                 model_type = current.model_type,
                 label = current.label,
+                scope_label = current.scope_label,
+                stage = current.stage,
             )
         else
             push!(merged, current)
@@ -141,5 +235,7 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
         to = seg.to,
         model_type = seg.model_type,
         label = seg.label,
+        scope_label = seg.scope_label,
+        stage = seg.stage,
     ) for (i, seg) in enumerate(merged)]
 end

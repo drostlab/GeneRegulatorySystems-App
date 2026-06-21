@@ -559,3 +559,325 @@ rewire them to the component's hover or delete.
 
 **Do not** revive `StructureNode`, the overlap heuristic, or `channel`; **do not**
 delete `PromoterPanel.ts` (the aggregation track needs it).
+
+---
+
+## Update (session 3, 2026-06-21) — Phase-D visual spike + topology blocker
+
+This section **overrides the Phase-D glyph/layout details above where they
+conflict**. A live browser iteration exposed both the preferred visual language
+and a missing structural signal in the flat path payload. Do not continue polishing
+the SVG until the topology point below is resolved.
+
+### Current uncommitted spike
+
+The working tree on `revamp-schedule-visualisation` contains an in-progress
+standalone schedule renderer:
+
+- `frontend/src/components/schedule/ScheduleView.vue` — SVG renderer + interactions.
+- `frontend/src/components/schedule/ScheduleViewer.vue` — reads `scheduleStore`
+  directly; no chart dependency.
+- `frontend/src/components/schedule/scheduleLayout.ts` — pure trie row layout.
+- `frontend/src/types/schedule.ts` — adds the missing TS `model_type` field.
+- `frontend/src/App.vue` / `TrackViewer.vue` — the component is mounted **inside
+  TrackViewer between its header and SciChart container, but is not a SciChart
+  panel and does not participate in `MainChart`/`ChartLayout`.** This is temporary;
+  flexible panels remain a future effort.
+
+`npm run build` was green throughout the spike. `./dev.sh` runs the browser app at
+`http://localhost:1420`; the first Julia launch may spend about a minute
+precompiling GRSServer.
+
+### Visual/interaction decisions from the live spike
+
+- The default view is a **structural lineage diagram**, not a Gantt chart.
+  Lineage branches are thicker horizontal lines. Primitive models are compact signs
+  hanging from posts above those lines.
+- Durational models use a small Julia-purple play flag (no permanent capsule).
+  Hovering or pinning reveals the faithful `[from,to]` span in purple with end caps.
+- Instants use a small red circle/post; `Adjust` has a small red stroked plus.
+  Instant and durational signs must share one stack keyed by **visual row + time**,
+  not by path + time, because distinct paths can occupy the same row.
+- Remove SVG `<title>` elements: they produce a second native grey tooltip. Detail
+  flags use the app's shared `.grs-tooltip` visual style, connect back to the sign
+  with a leader, and click toggles **multiple** pinned flags independently.
+- No zoom toolbar. Mouse wheel zooms horizontally around the pointer; double-click
+  returns to fit; drag pans horizontally when zoomed.
+- The schedule pane has no title/segment-count header and no tinted background.
+- Hovering a lineage should highlight its whole related chain: ancestors before it
+  plus its descendant tail; unrelated paths dim. Use an invisible wide hit stroke
+  so the visible line need not become clumsy.
+- Collapse is two-state and subtle. A collapsed subtree retains a dashed summary
+  line spanning the longest descendant time extent; it must not disappear into a
+  zero-width marker. Hover explains “Collapse branches” / “Expand branches”.
+
+### Critical blocker: ACDC proves path grammar alone is insufficient
+
+ACDC contains two nested `each` dimensions of length 3. The intended visual result
+is **two fork levels and 3×3 = 9 leaf lineages**:
+
+```
+outer Each
+├─ value 1 → inner Each /1, /2, /3
+├─ value 2 → inner Each /1, /2, /3
+└─ value 3 → inner Each /1, /2, /3
+```
+
+Its real dryrun paths are:
+
+```
+-2-1/1+  -2-1/2+  -2-1/3+
+-2-2/1+  -2-2/2+  -2-2/3+
+-2-3/1+  -2-3/2+  -2-3/3+
+```
+
+All nine durational primitives span `[0,200000]`. The current trie interprets the
+outer `-1/-2/-3` as ordinary series siblings and reuses three rows, so it renders
+only one visible three-way fork with multiple signs stacked on each row. Grouping
+coincident collapse controls merely hid this problem; it is not the solution.
+
+The frontend cannot distinguish an ordinary `List` sequence from a non-branch
+`Each` expansion using `execution_path` alone: both use `-i`. Reintroducing time-
+overlap inference would recreate the rejected heuristic. Re-walking the entire spec
+would recreate the rejected `StructureNode` architecture. The next agent must find
+the **smallest faithful structural signal**, preferably engine-native or captured
+during the dryrun, that marks unrolled `Each` levels versus genuine series.
+
+Possible direction: a lightweight per-prefix operator-kind sidecar (only structural
+provenance, not layout) or an engine trace event. Do not decide this by guesswork;
+inspect the pinned GRS scheduler and determine what can be surfaced without another
+app-side execution approximation.
+
+### Structural x mapping is now required, not deferred
+
+Nested forks can occur at the same simulation time (ACDC: both at `t=0`). A literal
+linear time scale maps both fork levels to the same x pixel. The standalone schedule
+therefore needs **structural fork lanes**: reserve horizontal visual space for each
+fork depth, then begin the physical-time span. For ACDC, outer fork lane → inner
+fork lane → the real `0…200000` model span.
+
+Those structural pixels do not represent elapsed time. This is the concrete reason
+the schedule owns its coordinate system and must link to SciChart by lineage identity
+and `[from,to]`, never shared x pixels or a global time cursor.
+
+### Next-agent order
+
+1. Read this session-3 update and reproduce ACDC in the live app.
+2. Undo/replace any coincident-fork grouping that masks the two `Each` levels.
+3. Establish the minimal reliable `Each`-vs-series structural metadata.
+4. Extend the trie/layout to produce nine ACDC leaves.
+5. Add structural fork-depth x lanes and confirm both fork levels are visible.
+6. Only then resume collapse and tooltip polish across ACDC, differentiation-tree,
+   repressilator-entrained, minimal, and a deep C. elegans schedule.
+
+---
+
+## Update (session 4, 2026-06-21) — topology signal resolved
+
+The ACDC ambiguity is resolved with a deliberately narrow backend sidecar:
+`ScheduleData.each_prefixes` contains only execution prefixes produced by a
+**non-branch `Each`**. The collector walks GRS's already parsed/evaluated scheduler
+objects and records operator provenance only; it does not rebuild timing, models,
+branches, or layout. `/i` remains sufficient for branching `Each`; the sidecar is
+needed only where non-branch `Each` and `List` both serialize as `-i`.
+
+The trie treats children of those prefixes as parallel visual lineages. ACDC now
+has an outer three-way fork plus the native inner `/` forks, producing nine rows.
+Forks use a time-preserving piecewise x transform. Every primitive interval shares
+one physical-time scale; fixed-width structural gutters are inserted only at the
+actual times where forks occur. Coincident nested forks consume multiple lanes
+inside the same gutter, while later forks get gutters at their own times. ACDC's
+shared bootstrap `Adjust` occupies the pre-event part of the `t=0` gutter before
+the two fork lanes. The time axis is hidden until this hybrid mapping gets an
+explicit visual legend.
+
+Duration flags now represent maximal consecutive runs of an execution model, not
+every dryrun time slice and not every occurrence of a model globally. Adjacent
+slices with the same `model_path` coalesce (C. elegans), but returning to a model
+after another model creates a new flag (dark/light/dark entrainment). Instant
+actions remain individual signs. `TrackViewer` is temporarily hidden during the
+visual spike; `ScheduleViewer` occupies the lower app pane independently.
+
+---
+
+## Update (session 5, 2026-06-21) — structural spike stabilised; aesthetics next
+
+The standalone schedule now has a coherent, general layout across the schedules
+tested during live iteration. The important geometry rule is that collapse changes
+visibility, never topology coordinates: spline endpoints and incoming branch starts
+are computed from `fullLayout`, while `layout` controls only what is visible. This
+fixed the short branch-line tips that appeared only when a nested fork was collapsed.
+Collapse controls sit at the actual fork origin on the parent line. Their hover
+tooltip has been removed; the chevron is sufficient.
+
+Current interaction/rendering state:
+
+- drag pans both axes whenever either axis overflows; both scrollbars are permanent;
+- poles render in a shared back layer so stacked sign faces always cover them;
+- HTML tooltip overlays are viewport-clamped outside the SVG clipping region;
+- duration selection spans are fully opaque purple, and tooltip details no longer
+  repeat the model's `[from,to]` interval;
+- repeated dryrun slices coalesce into maximal consecutive runs of one
+  `model_path`, while a later return to that model creates another flag;
+- lineage geometry, duration lengths, and later fork events remain physically
+  time-proportional, with fixed structural gutters only at fork times;
+- the physical time axis remains intentionally hidden because those structural
+  gutters make x a piecewise time mapping rather than one globally linear axis.
+
+The next pass should focus on visual hierarchy (flag density, tooltip typography,
+line weights/colour balance, and how repeated alternating models read) rather than
+changing topology or adding schedule-specific exceptions. Validate every aesthetic
+change on ACDC, differentiation-tree, repressilator-entrained, minimal, and a deep
+C. elegans schedule.
+
+### Replace generic `JumpModel` with definition provenance
+
+Showing `JumpModel` is technically true but semantically useless: V1, Kronecker,
+Differentiation, and RandomDifferentiation definitions all compile to that same
+runtime model. Do not infer a friendlier kind in the frontend from labels,
+`model_path`, or JSON path strings. GRS already preserves the generating definition
+as a chain of `Models.Wrapped` values.
+
+Add one backend `model_kind` field to `TimelineSegment`, derived by Julia dispatch
+over that provenance chain during the existing dryrun collection. Dispatch on
+`V1.Definition`, `KroneckerNetworks.Definition`, `Differentiation.Definition`, and
+`RandomDifferentiation.Definition`; recursively descend through unrelated
+`Wrapped` layers (including the scheduling `Locator`) and retain a neutral fallback
+for truly direct models. This is a small presentation sidecar, analogous in spirit
+to `each_prefixes`: it reports engine-held provenance and does not re-walk the spec.
+The tooltip can then show a stable human label such as `V1`, `Kronecker`,
+`Differentiation`, or `Random differentiation`, while `model_type` remains available
+for instant-glyph dispatch and debugging.
+
+### Handoff status
+
+All changes remain uncommitted on `revamp-schedule-visualisation`.
+`frontend/src/components/schedule/` is currently untracked as a directory, so plain
+`git diff` will not display those files; use `git status --short` and inspect them
+directly. `TrackViewer` is deliberately hidden during the spike, and the schedule is
+mounted as its own component above/independent of it. The frontend build was green
+after the session-5 presentation changes.
+
+---
+
+## Update (session 6, 2026-06-21) — semantic hover and model occupancy
+
+The visual spike now distinguishes three identities which must remain separate:
+
+1. **Lineage identity** comes from compatible choices in the execution-path trie.
+   Hovering a child highlights its ancestors, that child, and its descendant tail;
+   sibling choices dim. Hovering a shared trunk may highlight every compatible
+   downstream lineage. Each fork spline is independently interactive.
+2. **Model occurrence identity** is a connected component of durational segments
+   with the same engine-provided `model_path`. Components join only where time
+   intervals touch/overlap and execution paths are lineage-compatible. This lets a
+   purple flag highlight the complete extent over which that selected model applies,
+   including inherited occupancy through forks, without joining sibling lineages or
+   a later return to the same model after an intervening model.
+3. **Authored schedule semantics** are labels/stages/operator bindings, not primitive
+   execution-segment identity. They are now transported separately from the model
+   description and should drive schedule annotations.
+
+Raw dryrun segments remain the faithful geometry/time substrate but are not
+first-order interaction objects, and a model flag is not repeated merely because
+one inherited model was split into several execution paths. In particular, the
+duplicate purple `cel_atlas` flag after the fork is suppressed when the child
+continues the parent's `model_path`.
+
+### New semantic sidecar
+
+`ScheduleData.operators` is a lightweight companion to `each_prefixes`. It is
+collected during the same narrow walk over GRS's already evaluated scheduling
+operators and contains:
+
+- operator path, `each`/`list` kind, and whether it is parallel;
+- authored operator label;
+- `Each.as` binding name;
+- evaluated child paths, child binding values, and child labels.
+
+`TimelineSegment` also carries `scope_label` and `stage` separately from `label`.
+`label` now consistently describes the primitive/model; schedule scope labels no
+longer overwrite it. The frontend uses operator metadata at fork controls and child
+lineages: a fork can report e.g. `Each · rep · 3 branches`, while a child can report
+its authored lineage label and `rep = 2`. This is engine/spec provenance, not label
+parsing, overlap inference, or schedule-specific frontend logic.
+
+The collapse chevron still has no redundant “Collapse/Expand” help bubble. Hovering
+it may show the fork's semantic metadata and must also highlight the compatible
+lineage. Collapsed extent summaries remain interactive.
+
+Other presentation changes in this pass:
+
+- purple-flag hover/pin draws the complete connected model occurrence, including
+  the appropriate fork splines;
+- tooltip widths are content-derived within minimum/maximum bounds rather than a
+  fixed wide card;
+- a model description beginning with the primitive type no longer repeats that type
+  (the `Adjust`/`Adjust` duplication);
+- detail cards retain execution path for now, but model `[from,to]` text remains
+  omitted;
+- frontend production build and Julia package loading are green. The full five-
+  schedule reification sweep was started but interrupted, so ACDC and the remaining
+  fixtures must still be explicitly re-run after these schema additions.
+
+### Defects visible in the final screenshots
+
+The current screenshots identify two semantic/picking issues, not isolated styling
+bugs:
+
+- **`JumpModel` should not be shown in the normal tooltip.** It is a runtime
+  implementation type and adds no information beside a useful model description.
+  Complete the `model_kind` provenance work described in session 5; show that kind
+  only when it adds semantic value. Keep `model_type` internally for instant glyphs
+  and diagnostics.
+- **The visible lineage before a purple flag is not fully hoverable.** `branchSpans`
+  currently derives its hit interval from durational primitives, so a visible
+  structural/temporal lead-in can exist before the first duration-derived hit span.
+  Do not widen it with a magic pixel offset. Define rendered lineage geometry once
+  as typed pieces (`structural connector`, `temporal occupancy`, `collapsed
+  summary`), and give every visible piece the same lineage identity and wide hit
+  stroke. A hover anywhere on the visible lead-in must therefore select the same
+  lineage as the portion to the right of the flag.
+
+Scope/stage hover is not finished. The principled direction is to group adjacent
+geometry by explicit `scope_label`/`stage`, render a subtle scope emphasis plus a
+small inline label, and simultaneously retain the thicker neutral lineage emphasis.
+Do not restore raw segment tooltips as the primary interaction.
+
+### Branch limiting / progressive disclosure
+
+The topology is now stable enough to add a branch budget. This must be a view over
+the complete trie, not data truncation and not a synthetic lineage pretending to be
+real:
+
+- each parallel fork owns an independent visible-child budget;
+- show a deterministic initial window (for example the first few children), plus
+  any selected, pinned, hovered, or chart-linked child even if it lies outside that
+  window;
+- replace hidden children with one explicit `N more` aggregate row/control whose
+  thin summary spans the longest hidden descendant extent;
+- expanding that control reveals the real children; collapsing restores the same
+  stable ordering and coordinates outside that fork;
+- nested fork budgets compose independently, and ACDC's two 3-way levels should not
+  be limited under a default budget of at least three;
+- an aggregate row is navigational only: it must not claim one execution path or be
+  sent to SciChart as a lineage filter.
+
+This uses the same progressive-disclosure principle as subtree collapse while
+remaining honest about lineage identity. Implement it in the layout's visibility
+projection; keep `fullLayout` as the immutable source for fork endpoints, model
+extent, and chart linking.
+
+### Immediate next steps
+
+1. Re-run backend reification for ACDC, differentiation-tree,
+   repressilator-entrained, minimal, and `cel_atlas`; assert ACDC still has nine
+   leaves and inspect emitted operator paths/bindings.
+2. Replace duration-derived `branchSpans` picking with typed, shared lineage
+   geometry so the pre-flag lead-in is hoverable.
+3. Finish backend `model_kind` provenance and remove ordinary `JumpModel` display.
+4. Add semantic scope/stage emphasis using the explicit fields, without making raw
+   segments interaction objects.
+5. Add per-fork branch budgets and `N more` aggregation as a visibility projection.
+6. Only after those semantics settle, tune tooltip typography, flag density, and
+   line weights across the validation suite.

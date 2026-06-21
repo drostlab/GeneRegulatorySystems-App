@@ -31,6 +31,8 @@ export const useScheduleStore = defineStore(
         const allGenes = computed(() => schedule.value.data ? extractAllGeneIds(schedule.value.data) : null)
         const geneColours = computed(() => schedule.value.data?.gene_colours ?? null)
         const segments = computed(() => schedule.value.data?.segments || [])
+        const eachPrefixes = computed(() => schedule.value.data?.each_prefixes || [])
+        const scheduleOperators = computed(() => schedule.value.data?.operators || [])
         const isLoaded = computed(() => schedule.value.data !== null)
 
         const timeseriesMetadata = computed((): TimeseriesMetadata | null => {
@@ -193,6 +195,8 @@ export const useScheduleStore = defineStore(
             allGenes,
             geneColours,
             segments,
+            eachPrefixes,
+            scheduleOperators,
             isLoaded,
             timeseriesMetadata,
             unionNetwork,
