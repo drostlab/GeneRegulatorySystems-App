@@ -1,27 +1,30 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ScheduleOperator, TimelineSegment } from '@/types/schedule'
 import { getTimeExtent } from '@/types/schedule'
-import { buildTrie, childrenAreParallel, type TrieNode } from '@/charts/layout/executionTrie'
-import { collapsiblePaths, groupSegmentsByPath, layoutSchedule, SCHEDULE_ROW_HEIGHT } from './scheduleLayout'
-import { JULIA_COLOURS } from '@/config/theme'
+import { buildTrie, childrenAreParallel, type TrieNode } from '@/schedule/executionTrie'
+import { collapsiblePaths, groupSegmentsByPath, layoutSchedule, SCHEDULE_ROW_HEIGHT } from '@/schedule/layout'
+import { PURPLE, RED } from '@/config/theme'
+import { useViewerStore } from '@/stores/viewerStore'
 
 const props = defineProps<{
     segments: TimelineSegment[]
     eachPrefixes: string[]
     operators: ScheduleOperator[]
 }>()
+const viewerStore = useViewerStore()
 
 const LEFT = 36
 const RIGHT = 24
 const TOP = 44
 const AXIS_HEIGHT = 0
 const MIN_VIEWPORT_WIDTH = 320
-const MAX_ZOOM = 16
 const MIN_DETAIL_WIDTH = 118
 const MAX_DETAIL_WIDTH = 340
 const FORK_LANE_WIDTH = 24
 const PRE_FORK_SIGN_SPACING = 22
+const MAX_VISIBLE_COINCIDENT_SIGNS = 3
+const MAX_VISIBLE_BRANCHES = 3
 
 const INSTANT_ICONS: Readonly<Record<string, string>> = {
     Merge: 'pi pi-arrow-right-arrow-left',
@@ -34,8 +37,8 @@ const viewportWidth = ref(760)
 const viewportHeight = ref(320)
 const viewportLeft = ref(0)
 const viewportTop = ref(0)
-const horizontalZoom = ref(1)
 const collapsed = ref(new Set<string>())
+const expandedSignStacks = ref(new Set<string>())
 const hoveredId = ref<number | null>(null)
 const pinnedIds = ref(new Set<number>())
 const hoveredPath = ref<string | null>(null)
@@ -48,7 +51,7 @@ let dragStartScrollTop = 0
 
 const extent = computed(() => getTimeExtent(props.segments))
 const duration = computed(() => Math.max(1, extent.value.max - extent.value.min))
-const width = computed(() => Math.max(MIN_VIEWPORT_WIDTH, viewportWidth.value) * horizontalZoom.value)
+const width = computed(() => Math.max(MIN_VIEWPORT_WIDTH, viewportWidth.value))
 const layout = computed(() => layoutSchedule(props.segments, collapsed.value, props.eachPrefixes))
 const fullLayout = computed(() => layoutSchedule(props.segments, new Set(), props.eachPrefixes))
 const height = computed(() => TOP + AXIS_HEIGHT + layout.value.rowCount * SCHEDULE_ROW_HEIGHT)
@@ -63,17 +66,43 @@ const collapseControls = computed(() => {
     }
     return controls
 })
+
+// Start large forks collapsed. The user can reveal any of them with the normal
+// collapse control; three-way forks (such as ACDC) remain visible by default.
+watch(() => props.segments.map(segment => segment.id).join(','), () => {
+    const root = buildTrie(props.segments.map(segment => segment.execution_path), props.eachPrefixes)
+    const next = new Set<string>()
+    function visit(node: TrieNode): void {
+        if (childrenAreParallel(node) && node.children.length > MAX_VISIBLE_BRANCHES) next.add(node.path)
+        node.children.forEach(visit)
+    }
+    visit(root)
+    collapsed.value = next
+    expandedSignStacks.value = new Set()
+}, { immediate: true })
 const branchSpans = computed(() => [...groupSegmentsByPath(props.segments).entries()].flatMap(([path, segments]) => {
     const durations = segments.filter(segment => segment.from < segment.to)
     if (durations.length === 0) return []
-    return [{
-        path,
-        from: Math.min(...durations.map(segment => segment.from)),
-        to: Math.max(...durations.map(segment => segment.to)),
-        firstId: Math.min(...durations.map(segment => segment.id)),
-        lastId: Math.max(...durations.map(segment => segment.id)),
-        interactive: true,
-    }]
+
+    // A path can recur after another path has occupied the same rendered row.
+    // Keep those runs separate so its invisible hit target does not cover the
+    // intervening branch and report the wrong lineage.
+    const spans: Array<{ path: string; from: number; to: number; firstId: number; interactive: true }> = []
+    for (const segment of durations) {
+        const previous = spans.at(-1)
+        if (previous && segment.from <= previous.to + 1e-9) {
+            previous.to = Math.max(previous.to, segment.to)
+        } else {
+            spans.push({
+                path,
+                from: segment.from,
+                to: segment.to,
+                firstId: segment.id,
+                interactive: true,
+            })
+        }
+    }
+    return spans
 }))
 const hoveredBranch = computed(() => branchSpans.value.find(branch => branch.path === hoveredPath.value) ?? null)
 const hoveredOperator = computed(() => hoveredOperatorPath.value === null
@@ -103,24 +132,29 @@ const lineageChoices = computed(() => {
 const hoveredLineageInfo = computed(() => {
     const path = hoveredPath.value
     if (path === null) return null
-    const choice = props.operators.flatMap(operator => operator.child_paths.map((childPath, index) => ({
+    const choices = props.operators.flatMap(operator => operator.child_paths.map((childPath, index) => ({
         operator,
         childPath,
         index,
     }))).filter(candidate => isPrefixPath(candidate.childPath, path))
-        .sort((a, b) => b.childPath.length - a.childPath.length)[0]
+        .sort((a, b) => a.childPath.length - b.childPath.length)
     const pathSegments = props.segments.filter(segment => segment.execution_path === path)
     const scopeLabel = pathSegments.find(segment => segment.scope_label)?.scope_label ?? ''
     const stage = pathSegments.find(segment => segment.stage)?.stage ?? ''
     const lines: string[] = []
-    if (choice) {
-        const childLabel = choice.operator.child_labels[choice.index] ?? ''
-        const value = choice.operator.child_values[choice.index] ?? ''
-        if (childLabel) lines.push(childLabel)
-        if (choice.operator.binding && value) lines.push(`${choice.operator.binding} = ${value}`)
+    if (!scopeLabel) {
+        const childLabel = choices.at(-1)?.operator.child_labels[choices.at(-1)!.index] ?? ''
+        if (childLabel) lines.push(`label: ${childLabel}`)
     }
-    if (scopeLabel && !lines.includes(scopeLabel)) lines.push(scopeLabel)
-    if (stage && !lines.includes(stage)) lines.push(stage)
+    for (const choice of choices) {
+        const value = choice.operator.child_values[choice.index] ?? ''
+        if (choice.operator.binding && value) {
+            const line = `${choice.operator.binding.toLocaleLowerCase()}: ${value}`
+            if (!lines.includes(line)) lines.push(line)
+        }
+    }
+    if (scopeLabel) lines.unshift(`label: ${scopeLabel}`)
+    if (stage) lines.push(`stage: ${stage}`)
     lines.push(path)
     return { path, lines }
 })
@@ -142,15 +176,23 @@ const collapsedSummaries = computed(() => {
     return [...summaries.values()]
 })
 
-function stacked<T extends TimelineSegment>(segments: T[]): Array<{ segment: T; index: number }> {
+interface StackedSign<T extends TimelineSegment = TimelineSegment> {
+    segment: T
+    index: number
+    stackKey: string
+    stackSize: number
+}
+
+function stacked<T extends TimelineSegment>(segments: T[]): StackedSign<T>[] {
     const counts = new Map<string, number>()
-    return segments.map(segment => {
+    const positioned = segments.map(segment => {
         const row = layout.value.nodes.get(segment.execution_path)?.row ?? segment.execution_path
-        const key = `${row}\u0000${segment.from}`
-        const index = counts.get(key) ?? 0
-        counts.set(key, index + 1)
-        return { segment, index }
+        const stackKey = `${row}\u0000${segmentX(segment).toFixed(3)}`
+        const index = counts.get(stackKey) ?? 0
+        counts.set(stackKey, index + 1)
+        return { segment, index, stackKey }
     })
+    return positioned.map(sign => ({ ...sign, stackSize: counts.get(sign.stackKey) ?? 1 }))
 }
 
 // A duration flag denotes a transition to a different execution model. The
@@ -170,8 +212,6 @@ const executionModels = computed(() => {
     return [...instants, ...transitions].sort((a, b) => a.id - b.id)
 })
 
-// Instant actions and model selections share a visual stack.
-const signs = computed(() => stacked(executionModels.value))
 const forkGroups = computed(() => [...fullLayout.value.forkLaneCounts.entries()]
     .sort(([a], [b]) => a - b)
     .map(([time, lanes]) => {
@@ -179,11 +219,32 @@ const forkGroups = computed(() => [...fullLayout.value.forkLaneCounts.entries()]
         const firstDescendantId = Math.min(...forks.flatMap(fork => props.segments
             .filter(segment => isPrefixPath(fork.path, segment.execution_path))
             .map(segment => segment.id)))
-        const preSigns = signs.value.filter(({ segment }) =>
-            segment.from === time && segment.to === time && segment.id < firstDescendantId
-        )
+        const preSigns = executionModels.value
+            .filter(segment => segment.from === time && segment.to === time && segment.id < firstDescendantId)
+            .map(segment => ({ segment, index: 0 }))
         return { time, lanes, preSigns, preWidth: preSigns.length * PRE_FORK_SIGN_SPACING }
     }))
+// Stack only signs that land on the same rendered pole. Structural fork gutters
+// can separate events with the same simulation time, as in ACDC's bootstrap.
+const allSigns = computed(() => stacked(executionModels.value))
+const signs = computed(() => allSigns.value.filter(sign =>
+    sign.index < MAX_VISIBLE_COINCIDENT_SIGNS || expandedSignStacks.value.has(sign.stackKey)))
+const signStackSummaries = computed(() => {
+    const summaries = new Map<string, StackedSign>()
+    for (const sign of allSigns.value) {
+        if (sign.stackSize <= MAX_VISIBLE_COINCIDENT_SIGNS || expandedSignStacks.value.has(sign.stackKey)) continue
+        if (!summaries.has(sign.stackKey)) summaries.set(sign.stackKey, sign)
+    }
+    return [...summaries.values()].map(sign => ({
+        ...sign,
+        hiddenCount: sign.stackSize - MAX_VISIBLE_COINCIDENT_SIGNS,
+        index: MAX_VISIBLE_COINCIDENT_SIGNS,
+    }))
+})
+// SVG uses document order for layering. Paint duration poles first so an
+// instant-model pole at the same position remains visibly in front.
+const signsInPolePaintOrder = computed(() => [...signs.value].sort((a, b) =>
+    Number(b.segment.from < b.segment.to) - Number(a.segment.from < a.segment.to)))
 const preludeLines = computed(() => forkGroups.value.flatMap(group => {
     if (group.preSigns.length === 0) return []
     const first = group.preSigns[0]!.segment
@@ -213,23 +274,20 @@ const displayedModelForks = computed(() => displayedModelExtents.value.flatMap(e
     })
 )))
 const detailPlacements = computed(() => {
-    const placed: Array<{ x: number; y: number; width: number; height: number }> = []
-    return displayedSigns.value.map(({ segment, index }, detailIndex) => {
+    return displayedSigns.value.map(({ segment, index }) => {
         const tooltipWidth = detailWidth(segment)
-        const px = detailX(segment, detailIndex, tooltipWidth)
-        const preferredY = detailY(segment, detailIndex)
         const tooltipHeight = detailHeight(segment, tooltipWidth)
-        const minY = viewportTop.value + 4
-        const maxY = Math.max(minY, Math.min(height.value - tooltipHeight - 4, viewportTop.value + viewportHeight.value - tooltipHeight - 4))
-        const candidates = [preferredY, preferredY + 114, preferredY - 114, preferredY + 228, preferredY - 228]
-            .map(candidate => Math.max(minY, Math.min(maxY, candidate)))
-        const overlaps = (py: number) => placed.some(other =>
-            px < other.x + other.width + 6 && px + tooltipWidth + 6 > other.x &&
-            py < other.y + other.height + 6 && py + tooltipHeight + 6 > other.y
-        )
-        const py = candidates.find(candidate => !overlaps(candidate)) ?? candidates[0]!
-        placed.push({ x: px, y: py, width: tooltipWidth, height: tooltipHeight })
-        return { segment, stackIndex: index, x: px, y: py, width: tooltipWidth, height: tooltipHeight }
+        // Anchor every detail directly to its sign instead of moving it around
+        // to avoid other open details. The mast becomes its left edge and the
+        // lineage track its stable vertical reference.
+        return {
+            segment,
+            stackIndex: index,
+            x: segmentX(segment),
+            y: segmentY(segment) + 12,
+            width: tooltipWidth,
+            height: tooltipHeight,
+        }
     })
 })
 
@@ -250,7 +308,14 @@ watch(() => props.segments, () => {
     hoveredId.value = null
     hoveredPath.value = null
     hoveredOperatorPath.value = null
-    fitHorizontally()
+    if (scrollRef.value) scrollRef.value.scrollLeft = 0
+})
+
+// SciChart and the schedule publish hover through the same store. Reflect an
+// externally hovered trajectory back onto the lineage geometry and tooltip.
+watch(() => viewerStore.hoveredExecutionPath, path => {
+    hoveredPath.value = path
+    if (path === null) hoveredOperatorPath.value = null
 })
 
 function x(time: number): number {
@@ -314,11 +379,6 @@ function segmentEndX(segment: TimelineSegment): number {
     return outgoingFork ? forkX(outgoingFork.time, outgoingFork.lane) : x(segment.to)
 }
 
-function fitHorizontally(): void {
-    horizontalZoom.value = 1
-    if (scrollRef.value) scrollRef.value.scrollLeft = 0
-}
-
 function onScroll(): void {
     if (!scrollRef.value) return
     viewportLeft.value = scrollRef.value.scrollLeft
@@ -337,23 +397,17 @@ function clampTooltipY(preferred: number, tooltipHeight: number): number {
     return Math.max(min, Math.min(max, preferred))
 }
 
-async function onWheel(event: WheelEvent): Promise<void> {
+function onWheel(event: WheelEvent): void {
     const scroller = scrollRef.value
-    if (!scroller || props.segments.length === 0) return
-    const oldWidth = width.value
-    const pointerX = event.clientX - scroller.getBoundingClientRect().left
-    const contentRatio = (scroller.scrollLeft + pointerX) / oldWidth
-    const factor = event.deltaY < 0 ? 1.16 : 1 / 1.16
-    const nextZoom = Math.min(MAX_ZOOM, Math.max(1, horizontalZoom.value * factor))
-    if (nextZoom === horizontalZoom.value) return
-    horizontalZoom.value = nextZoom
-    await nextTick()
-    scroller.scrollLeft = contentRatio * width.value - pointerX
+    if (!scroller) return
+    // A wheel always moves through schedule rows. In particular, Shift must not
+    // silently turn the gesture into horizontal scrolling.
+    scroller.scrollTop += event.deltaY || event.deltaX
 }
 
 function onPointerDown(event: PointerEvent): void {
     const target = event.target as Element | null
-    if (event.button !== 0 || target?.closest('.primitive-sign, .collapse-control, .detail-flag')) return
+    if (event.button !== 0 || target?.closest('.primitive-sign, .collapse-control, .detail-flag, .lineage-branch, .lineage-hit, .collapsed-summary, .fork path')) return
     const scroller = scrollRef.value
     if (!scroller) return
     const canPan = scroller.scrollWidth > scroller.clientWidth || scroller.scrollHeight > scroller.clientHeight
@@ -396,14 +450,42 @@ function togglePinned(id: number): void {
     pinnedIds.value = next
 }
 
+function expandSignStack(stackKey: string): void {
+    expandedSignStacks.value = new Set(expandedSignStacks.value).add(stackKey)
+}
+
 function hoverLineage(path: string, operatorPath: string | null = null): void {
     hoveredPath.value = path
     hoveredOperatorPath.value = operatorPath
+    viewerStore.setHoveredRectModel(null, path)
+    viewerStore.setHoveredOperator(operatorPath)
+}
+
+function hoverSpline(path: string): void {
+    hoveredPath.value = path
+    hoveredOperatorPath.value = null
+    viewerStore.setHoveredRectModel(null, path)
+    viewerStore.setHoveredOperator(null)
 }
 
 function clearLineageHover(): void {
     hoveredPath.value = null
     hoveredOperatorPath.value = null
+    viewerStore.setHoveredRectModel(null, null)
+    viewerStore.setHoveredOperator(null)
+}
+
+function hoverModel(segment: TimelineSegment): void {
+    hoveredId.value = segment.id
+    viewerStore.setHoveredRectModel(segment.from < segment.to ? segment.model_path : null, segment.execution_path)
+    viewerStore.setHoveredInstantModel(segment.from === segment.to ? segment.model_path : null)
+    viewerStore.setHoveredOperator(null)
+}
+
+function clearModelHover(): void {
+    hoveredId.value = null
+    viewerStore.setHoveredRectModel(null, null)
+    viewerStore.setHoveredInstantModel(null)
 }
 
 function nodeY(path: string): number {
@@ -442,9 +524,15 @@ function pathsShareLineage(a: string, b: string): boolean {
 }
 
 function pathClass(path: string): Record<string, boolean> {
+    const selected = viewerStore.selectedLineagePath !== null
+        && pathsShareLineage(viewerStore.selectedLineagePath, path)
+    const hasHover = hoveredPath.value !== null
     return {
-        highlighted: hoveredPath.value !== null && pathRelated(hoveredPath.value, path),
-        dimmed: hoveredPath.value !== null && !pathRelated(hoveredPath.value, path),
+        highlighted: hasHover && pathRelated(hoveredPath.value!, path),
+        selected,
+        dimmed: hasHover
+            ? !pathRelated(hoveredPath.value!, path)
+            : viewerStore.selectedLineagePath !== null && !selected,
     }
 }
 
@@ -471,15 +559,27 @@ function modelExtent(seed: TimelineSegment): TimelineSegment[] {
 
 function detailLines(segment: TimelineSegment): string[] {
     const label = segment.label.trim()
-    const repeatsType = label.toLocaleLowerCase().startsWith(segment.model_type.toLocaleLowerCase())
-    return [label || segment.model_type, repeatsType ? '' : segment.model_type, segment.execution_path].filter(Boolean)
+    const labelLines = label.split('\n').map(line => line.trim()).filter(Boolean)
+    const semanticKind = segment.model_kind || segment.model_type
+    const repeatsType = label.toLocaleLowerCase().startsWith(semanticKind.toLocaleLowerCase())
+    return [
+        ...(labelLines.length ? labelLines : [semanticKind]),
+        repeatsType ? '' : semanticKind,
+        segment.from < segment.to ? `genes: ${segment.gene_count}` : '',
+        segment.execution_path,
+    ].filter(Boolean)
 }
 
 function operatorLines(operator: ScheduleOperator): string[] {
-    const kind = operator.kind === 'each' ? 'Each' : 'List'
-    const binding = operator.binding ? ` · ${operator.binding}` : ''
+    const title = operator.kind === 'each' ? 'Each' : 'List'
     const count = `${operator.child_paths.length} ${operator.child_paths.length === 1 ? 'branch' : 'branches'}`
-    return [operator.label, `${kind}${binding} · ${count}`].filter(Boolean)
+    return [
+        title,
+        operator.label ? `label: ${operator.label}` : '',
+        operator.binding ? `as: "${operator.binding}"` : '',
+        count,
+        operator.path,
+    ].filter(Boolean)
 }
 
 function textWidth(lines: string[], minimum = 118, maximum = 340): number {
@@ -509,17 +609,6 @@ function overlayStyle(x: number, y: number, width: number, maxHeight?: number): 
         width: `${width}px`,
         ...(maxHeight ? { maxHeight: `${maxHeight}px` } : {}),
     }
-}
-
-function detailX(segment: TimelineSegment, index: number, tooltipWidth: number): number {
-    const side = index % 2 === 0 ? 12 : -tooltipWidth - 12
-    return clampTooltipX(segmentX(segment) + side, tooltipWidth)
-}
-
-function detailY(segment: TimelineSegment, index: number): number {
-    const y = segmentY(segment)
-    const offset = Math.floor(index / 2) * 12
-    return y < 145 ? y + 16 + offset : y - 82 - offset
 }
 
 function signY(segment: TimelineSegment, index: number): number {
@@ -558,14 +647,19 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
 </script>
 
 <template>
-    <section class="schedule-view" :style="{ '--schedule-purple': JULIA_COLOURS.purple }">
+    <section
+        class="schedule-view"
+        :style="{
+            '--schedule-purple': PURPLE[400],
+            '--schedule-red': RED[400],
+        }"
+    >
         <div
             ref="scrollRef"
             class="schedule-scroll"
             :class="{ dragging }"
             @scroll="onScroll"
             @wheel.prevent="onWheel"
-            @dblclick="fitHorizontally"
             @pointerdown="onPointerDown"
             @pointermove="onPointerMove"
             @pointerup="stopDragging"
@@ -588,6 +682,7 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                     :y1="prelude.y" :y2="prelude.y"
                     @mouseenter="hoverLineage(prelude.path)"
                     @mouseleave="clearLineageHover"
+                    @click.stop="viewerStore.selectLineage(prelude.path)"
                 />
                 <g v-for="fork in layout.forks" :key="fork.path" class="fork">
                     <template v-if="Number.isFinite(fork.time)">
@@ -596,8 +691,9 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                             :key="fork.childPaths[index]"
                             :class="pathClass(fork.childPaths[index]!)"
                             :d="forkPath(fork, childY, fork.childPaths[index]!)"
-                            @mouseenter="hoverLineage(fork.childPaths[index]!)"
+                            @mouseenter="hoverSpline(fork.childPaths[index]!)"
                             @mouseleave="clearLineageHover"
+                            @click.stop="viewerStore.selectLineage(fork.childPaths[index]!)"
                         />
                     </template>
                 </g>
@@ -605,10 +701,11 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                 <g
                     v-for="branch in branchSpans"
                     v-show="pathVisible(branch.path)"
-                    :key="branch.path"
+                    :key="`${branch.path}-${branch.from}-${branch.to}`"
                     :class="pathClass(branch.path)"
                     @mouseenter="branch.interactive && hoverLineage(branch.path)"
                     @mouseleave="clearLineageHover"
+                    @click.stop="viewerStore.selectLineage(branch.path)"
                 >
                     <line
                         class="lineage-branch"
@@ -622,8 +719,13 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                     />
                 </g>
 
-                <g v-if="hoveredBranch" class="lineage-detail">
-                    <line class="lineage-leader" :x1="branchStartX(hoveredBranch)" :y1="nodeY(hoveredBranch.path)" :x2="clampTooltipX(branchStartX(hoveredBranch) + 8, 180)" :y2="clampTooltipY(nodeY(hoveredBranch.path) - 54, 48) + 26" />
+                <g v-if="hoveredBranch && hoveredId === null" class="lineage-detail">
+                    <line
+                        class="segment-hover-highlight"
+                        :x1="branchStartX(hoveredBranch)" :x2="branchEndX(hoveredBranch)"
+                        :y1="nodeY(hoveredBranch.path)" :y2="nodeY(hoveredBranch.path)"
+                    />
+                    <line class="lineage-leader" :x1="branchStartX(hoveredBranch)" :y1="nodeY(hoveredBranch.path)" :x2="branchStartX(hoveredBranch)" :y2="nodeY(hoveredBranch.path) + 16" />
                 </g>
 
                 <g
@@ -632,6 +734,7 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                     :class="pathClass(summary.path)"
                     @mouseenter="hoverLineage(summary.path)"
                     @mouseleave="clearLineageHover"
+                    @click.stop="viewerStore.selectLineage(summary.path)"
                 >
                     <line
                         class="collapsed-summary"
@@ -669,13 +772,13 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                 <!-- Poles are one shared back layer so stacked signs always mask them. -->
                 <g class="sign-poles">
                     <g
-                        v-for="{ segment, index } in signs"
+                        v-for="{ segment, index } in signsInPolePaintOrder"
                         v-show="pathVisible(segment.execution_path)"
                         :key="`pole-${segment.id}`"
                         class="sign-pole-group"
                         :class="[segment.from < segment.to ? 'duration-sign' : 'instant-sign', pathClass(segment.execution_path), { active: hoveredId === segment.id || pinnedIds.has(segment.id) }]"
                     >
-                        <line class="sign-pole" :x1="segmentX(segment)" :x2="segmentX(segment)" :y1="segment.from < segment.to ? signY(segment, index) - 7 : signY(segment, index) + 5" :y2="segmentY(segment)" />
+                        <line class="sign-pole" :x1="segmentX(segment)" :x2="segmentX(segment)" :y1="segment.from < segment.to ? signY(segment, index) - 7 : signY(segment, index) + 7" :y2="segmentY(segment)" />
                     </g>
                 </g>
 
@@ -685,8 +788,8 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                     :key="segment.id"
                     class="primitive-sign"
                     :class="[segment.from < segment.to ? 'duration-sign' : 'instant-sign', pathClass(segment.execution_path), { active: hoveredId === segment.id || pinnedIds.has(segment.id), pinned: pinnedIds.has(segment.id) }]"
-                    @mouseenter="hoveredId = segment.id"
-                    @mouseleave="hoveredId = null"
+                    @mouseenter="hoverModel(segment)"
+                    @mouseleave="clearModelHover"
                     @click.stop="togglePinned(segment.id)"
                 >
                     <template v-if="segment.from < segment.to">
@@ -705,6 +808,19 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                 </g>
 
                 <g
+                    v-for="summary in signStackSummaries"
+                    v-show="pathVisible(summary.segment.execution_path)"
+                    :key="`sign-summary-${summary.stackKey}`"
+                    class="sign-stack-summary"
+                    :transform="`translate(${segmentX(summary.segment)} ${signY(summary.segment, summary.index)})`"
+                    @click.stop="expandSignStack(summary.stackKey)"
+                >
+                    <circle r="8" />
+                    <text text-anchor="middle" dominant-baseline="central">+{{ summary.hiddenCount }}</text>
+                    <title>{{ summary.hiddenCount }} more signs — click to show</title>
+                </g>
+
+                <g
                     v-for="control in collapseControls"
                     :key="`collapse-${control.path}`"
                     v-show="pathVisible(control.path)"
@@ -714,24 +830,28 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                     @mouseleave="clearLineageHover"
                     @click.stop="toggleCollapseGroup(control.paths)"
                 >
-                    <foreignObject x="-7" y="-7" width="14" height="14">
-                        <div class="collapse-icon"><i :class="groupCollapsed(control.paths) ? 'pi pi-angle-right' : 'pi pi-angle-down'" /></div>
-                    </foreignObject>
+                    <circle class="collapse-icon" cx="0" cy="0" r="7" />
+                    <path
+                        class="collapse-chevron"
+                        :d="groupCollapsed(control.paths)
+                            ? 'M -2.5 -3.5 L 1.5 0 L -2.5 3.5'
+                            : 'M -3.5 -2.5 L 0 1.5 L 3.5 -2.5'"
+                    />
                 </g>
 
                 <g v-for="placement in detailPlacements" v-show="pathVisible(placement.segment.execution_path)" :key="`detail-${placement.segment.id}`" class="detail-flag" :class="placement.segment.from < placement.segment.to ? 'duration-detail' : 'instant-detail'">
-                    <line class="flag-leader" :x1="segmentX(placement.segment)" :y1="signY(placement.segment, placement.stackIndex)" :x2="placement.x" :y2="placement.y + 12" />
+                    <line class="flag-leader" :x1="segmentX(placement.segment)" :y1="signY(placement.segment, placement.stackIndex) + (placement.segment.from < placement.segment.to ? 5 : 7)" :x2="placement.x" :y2="placement.y + 4" />
                 </g>
             </svg>
             <div v-else class="schedule-empty">No schedule segments</div>
         </div>
         <div class="schedule-overlays">
             <div
-                v-if="hoveredBranch && hoveredLineageInfo"
+                v-if="hoveredBranch && hoveredLineageInfo && hoveredId === null"
                 class="grs-tooltip schedule-tooltip lineage-tooltip overlay-tooltip"
                 :style="overlayStyle(
-                    clampTooltipX(branchStartX(hoveredBranch) + 8, textWidth(hoveredLineageInfo.lines)),
-                    clampTooltipY(nodeY(hoveredBranch.path) - 54, 48),
+                    branchStartX(hoveredBranch),
+                    nodeY(hoveredBranch.path) + 12,
                     textWidth(hoveredLineageInfo.lines),
                 )"
             >
@@ -746,7 +866,11 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                     textWidth(operatorLines(hoveredOperator)),
                 )"
             >
-                <div v-for="line in operatorLines(hoveredOperator)" :key="line">{{ line }}</div>
+                <div
+                    v-for="(line, index) in operatorLines(hoveredOperator)"
+                    :key="line"
+                    :class="{ 'tooltip-detail-line': index > 0 && index < operatorLines(hoveredOperator).length - 1 }"
+                >{{ line }}</div>
             </div>
             <div
                 v-for="placement in detailPlacements"
@@ -756,32 +880,40 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                 :class="placement.segment.from < placement.segment.to ? 'duration-detail' : 'instant-detail'"
                 :style="overlayStyle(placement.x, placement.y, placement.width, placement.height)"
             >
-                <div class="grs-tooltip schedule-tooltip overlay-tooltip">{{ detail(placement.segment) }}</div>
+                <div class="grs-tooltip schedule-tooltip overlay-tooltip model-tooltip">
+                    <div
+                        v-for="(line, index) in detailLines(placement.segment)"
+                        :key="`${placement.segment.id}-${index}`"
+                        :class="{ 'tooltip-detail-line': index > 0 && index < detailLines(placement.segment).length - 1 }"
+                    >{{ line }}</div>
+                </div>
             </div>
         </div>
     </section>
 </template>
 
 <style scoped>
-.schedule-view { position: relative; color: var(--p-text-color); background: transparent; border: 1px solid var(--p-surface-border); border-radius: 10px; overflow: hidden; }
-.schedule-scroll { min-height: 0; min-width: 0; overflow: scroll; scrollbar-gutter: stable; background: transparent; cursor: grab; }.schedule-scroll.dragging { cursor: grabbing; }
+.schedule-view { position: relative; display: flex; flex-direction: column; color: var(--p-text-color); background: transparent; border: 1px solid var(--p-surface-border); border-radius: 10px; overflow: hidden; }
+.schedule-scroll { flex: 1; min-height: 0; min-width: 0; overflow: scroll; scrollbar-gutter: stable; background: transparent; cursor: grab; }.schedule-scroll.dragging { cursor: grabbing; }
 .schedule-scroll::-webkit-scrollbar { width: 11px; height: 11px; }.schedule-scroll::-webkit-scrollbar-track { background: var(--p-surface-100); }.schedule-scroll::-webkit-scrollbar-thumb { background: var(--p-surface-400); border: 2px solid var(--p-surface-100); border-radius: 8px; }
 svg { display: block; font-family: Montserrat, sans-serif; }
-.fork path, .lineage-branch { stroke: var(--p-surface-400); fill: none; transition: opacity .12s, stroke .12s, stroke-width .12s; }.fork path { stroke-width: 2.2; stroke-linecap: round; }.lineage-branch { stroke-width: 4; pointer-events: stroke; }
-.fork path.highlighted, .lineage-branch.highlighted, g.highlighted .lineage-branch, g.highlighted .collapsed-summary { stroke: var(--p-surface-700); stroke-width: 4.5; }.fork path.dimmed, .lineage-branch.dimmed, g.dimmed .lineage-branch, g.dimmed .collapsed-summary, .primitive-sign.dimmed { opacity: .3; }
+.fork path, .lineage-branch { stroke: var(--p-surface-400); fill: none; transition: opacity .12s, stroke .12s, stroke-width .12s; }.fork path { stroke-width: 2.2; stroke-linecap: round; }.lineage-branch { stroke-width: 2.2; stroke-linecap: round; pointer-events: stroke; }
+.fork path.highlighted, .fork path.selected, .lineage-branch.highlighted, .lineage-branch.selected, g.highlighted .lineage-branch, g.highlighted .collapsed-summary, g.selected .lineage-branch, g.selected .collapsed-summary { stroke: var(--p-surface-700); stroke-width: 4.5; }.fork path.dimmed, .lineage-branch.dimmed, g.dimmed .lineage-branch, g.dimmed .collapsed-summary, .primitive-sign.dimmed, .sign-pole-group.dimmed { opacity: .3; }
 .lineage-hit { stroke: transparent; stroke-width: 14; pointer-events: stroke; }
-.collapsed-summary { stroke: var(--p-surface-400); stroke-width: 2; }
-.primitive-sign { cursor: pointer; transition: opacity .12s; }.sign-pole-group .sign-pole { stroke-width: 2.2; stroke-linecap: round; transition: stroke-width .1s; }.sign-pole-group.active .sign-pole { stroke-width: 4.5; }.primitive-sign circle { stroke-width: 1.4; transition: .1s; }
+.collapsed-summary { stroke: var(--p-surface-400); stroke-width: 2; stroke-linecap: round; }
+.primitive-sign { cursor: pointer; transition: opacity .12s; }.sign-pole-group { transition: opacity .12s; }.sign-pole-group .sign-pole { stroke-width: 2.2; stroke-linecap: round; }.primitive-sign circle { stroke-width: 1.4; transition: .1s; }
 .duration-sign > line { stroke: var(--schedule-purple); }.duration-sign .play-flag { fill: var(--schedule-purple); stroke: none; }
 .duration-sign.active .play-flag { fill: var(--schedule-purple); stroke-width: 2; }
-.instant-sign .sign-pole, .instant-sign circle { stroke: var(--p-red-500); }.instant-sign circle { fill: color-mix(in srgb, var(--p-red-500) 82%, white); }.instant-sign .plus { stroke: white; stroke-width: 1.7; }
-.instant-sign.active circle { fill: var(--p-red-500); stroke-width: 2.8; }
+.instant-sign .sign-pole { stroke: var(--schedule-red); }.instant-sign circle { fill: color-mix(in srgb, var(--schedule-red) 82%, white); stroke: none; }.instant-sign .plus { stroke: white; stroke-width: 1.7; }
+.instant-sign.active circle { fill: var(--schedule-red); }
 .instant-icon { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: white; font-size: 6px; pointer-events: none; }
-.duration-highlight line, .duration-highlight path { stroke: var(--schedule-purple); stroke-width: 7; opacity: 1; stroke-linecap: butt; fill: none; pointer-events: none; }
-.detail-flag { pointer-events: none; }.flag-leader { stroke-width: 1.5; stroke-dasharray: 3 3; }.duration-detail .flag-leader { stroke: var(--schedule-purple); }.instant-detail .flag-leader { stroke: var(--p-red-500); }.schedule-tooltip { display: block; width: 100%; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; box-shadow: 0 3px 7px rgba(0,0,0,.22); }.duration-detail .schedule-tooltip { background: var(--schedule-purple); color: white; }.instant-detail .schedule-tooltip { background: var(--p-red-500); color: white; }
+.sign-stack-summary { cursor: pointer; }.sign-stack-summary circle { fill: var(--p-surface-200); stroke: var(--p-surface-400); stroke-width: 1; }.sign-stack-summary text { fill: var(--p-text-muted-color); font-size: 7px; font-weight: 600; pointer-events: none; }
+.duration-highlight line, .duration-highlight path { stroke: var(--schedule-purple); stroke-width: 5; opacity: 1; stroke-linecap: butt; fill: none; pointer-events: none; }
+.detail-flag { pointer-events: none; }.flag-leader { stroke-width: 2.2; stroke-linecap: round; }.duration-detail .flag-leader { stroke: var(--schedule-purple); }.instant-detail .flag-leader { stroke: var(--schedule-red); }.schedule-tooltip { display: block; width: 100%; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; box-shadow: 0 3px 7px rgba(0,0,0,.22); }.duration-detail .schedule-tooltip { background: var(--schedule-purple); color: white; }.instant-detail .schedule-tooltip { background: var(--schedule-red); color: white; }
+.tooltip-detail-line { padding-left: .65rem; }
 .schedule-overlays { position: absolute; inset: 0 11px 11px 0; overflow: hidden; pointer-events: none; z-index: 4; }.schedule-overlays > .overlay-tooltip, .detail-overlay { position: absolute; }.detail-overlay { overflow: visible; }.detail-overlay .overlay-tooltip { position: static; max-height: inherit; overflow: auto; }
-.lineage-detail { pointer-events: none; }.lineage-leader { stroke: var(--p-surface-500); stroke-width: 1.2; }.lineage-tooltip { background: var(--grs-tooltip-bg); color: var(--grs-tooltip-fg); }
+.lineage-detail { pointer-events: none; }.segment-hover-highlight { stroke: var(--p-surface-400); stroke-width: 4.2; opacity: .4; stroke-linecap: round;}.lineage-leader { stroke: var(--p-surface-500); stroke-width: 2.2; stroke-linecap: round; }.lineage-tooltip { background: var(--grs-tooltip-bg); color: var(--grs-tooltip-fg); }
 .operator-tooltip { background: var(--grs-tooltip-bg); color: var(--grs-tooltip-fg); }
-.collapse-control { cursor: pointer; opacity: .65; }.collapse-control:hover { opacity: 1; }.collapse-icon { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--p-text-muted-color); background: var(--p-content-background); border: 1px solid var(--p-surface-300); border-radius: 50%; font-size: 8px; pointer-events: none; }
+.collapse-control { cursor: pointer; opacity: .65; }.collapse-control:hover { opacity: 1; }.collapse-icon { fill: var(--p-content-background); stroke: var(--p-surface-300); stroke-width: 1; }.collapse-chevron { fill: none; stroke: var(--p-text-muted-color); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .schedule-empty { padding: 2rem; color: var(--p-text-muted-color); text-align: center; font-size: .8rem; }
 </style>

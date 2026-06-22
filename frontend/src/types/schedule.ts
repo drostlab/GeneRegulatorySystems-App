@@ -32,12 +32,13 @@ export interface TimelineSegment {
     id: number
     execution_path: string
     model_path: string
-    /** JSONPath segments (string | 0-based index) for locating the model definition in the source JSON. */
-    json_path: (string | number)[]
     from: number
     to: number
     /** Unwrapped GRS model type, used by the schedule view's glyph map. */
     model_type: string
+    /** Authored definition provenance, when more useful than the runtime type. */
+    model_kind: string
+    gene_count: number
     label: string
     /** Authored labels belong to execution scopes, not model definitions. */
     scope_label: string
@@ -221,7 +222,7 @@ export function matchesPathPrefix(executionPath: string, prefix: string): boolea
     if (executionPath === prefix) return true
     if (!executionPath.startsWith(prefix)) return false
     const nextChar = executionPath[prefix.length]!
-    return nextChar === '/' || nextChar === '+' || nextChar === '-'
+    return nextChar === '/' || nextChar === '+' || nextChar === '-' || nextChar === '.'
 }
 
 /** Filter segments to those whose execution_path matches a path prefix. */

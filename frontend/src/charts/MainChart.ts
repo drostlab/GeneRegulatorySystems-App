@@ -60,6 +60,7 @@ export class MainChart {
     private phaseSpacePathSelectCallback?: (path: string) => void
     private phaseSpaceHoverCallback?: (info: HoverInfo | null) => void
     private timeseriesPathHoverCallback?: (path: string | null) => void
+    private timeseriesPathSelectCallback?: (path: string) => void
     private timeseriesGeneHoverCallback?: (gene: string | null) => void
 
     private isDark = false
@@ -133,6 +134,7 @@ export class MainChart {
         // Wire timeseries hover callbacks to all timeseries panels
         for (const { panel } of this.getTimeseriesPanels()) {
             panel.onPathHover(path => this.timeseriesPathHoverCallback?.(path))
+            panel.onPathSelect(path => this.timeseriesPathSelectCallback?.(path))
             panel.onGeneHover(gene => this.timeseriesGeneHoverCallback?.(gene))
         }
 
@@ -157,6 +159,11 @@ export class MainChart {
         this.timeseriesPathHoverCallback = callback
     }
 
+    /** Register a callback for persistent trajectory-path selection. */
+    onTimeseriesPathSelect(callback: (path: string) => void): void {
+        this.timeseriesPathSelectCallback = callback
+    }
+
     /** Register a callback for when the user hovers over a gene in a timeseries panel. */
     onTimeseriesGeneHover(callback: (gene: string | null) => void): void {
         this.timeseriesGeneHoverCallback = callback
@@ -166,7 +173,7 @@ export class MainChart {
      * Dim all series in every panel except those belonging to `path`.
      * Pass null to restore all panels to full opacity.
      */
-    highlightPath(path: string | null): void {
+    highlightPath(path: ReadonlySet<string> | string | null): void {
         for (const { panel } of this.tracks) {
             panel.highlightPath(path)
         }
@@ -183,6 +190,10 @@ export class MainChart {
             panel.highlightGene(gene)
         }
         this.phaseSpacePanel?.highlightGene(gene)
+    }
+
+    setScheduleBrush(range: { from: number; to: number } | null): void {
+        for (const { panel } of this.tracks) panel.setScheduleBrush(range)
     }
 
     private getTimeseriesPanels(): Array<{ id: string; panel: TimeseriesPanel }> {

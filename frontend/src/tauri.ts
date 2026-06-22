@@ -379,16 +379,6 @@ export async function setupAppMenu(): Promise<void> {
 
     const viewerStore = useViewerStore()
 
-    const editorHighlightItem = await CheckMenuItem.new({
-        id: 'toggle-editor-highlight',
-        text: 'Highlight Editor on Hover',
-        checked: viewerStore.editorHighlightEnabled,
-        action: async () => {
-            viewerStore.editorHighlightEnabled = !viewerStore.editorHighlightEnabled
-            await editorHighlightItem.setChecked(viewerStore.editorHighlightEnabled)
-        },
-    })
-
     const resizeByExpressionItem = await CheckMenuItem.new({
         id: 'toggle-resize-by-expression',
         text: 'Resize Genes by Expression',
@@ -415,7 +405,6 @@ export async function setupAppMenu(): Promise<void> {
     const viewMenu = await Submenu.new({
         text: 'View',
         items: [
-            editorHighlightItem,
             resizeByExpressionItem,
         ],
     })

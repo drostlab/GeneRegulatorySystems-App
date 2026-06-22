@@ -38,6 +38,15 @@ function _label(desc::Descriptions)
     i !== nothing ? _label(desc.descriptions[i]) : ""
 end
 
+model_kind(primitive::Primitive) = model_kind(primitive.f!)
+model_kind(wrapped::Models.Wrapped) = model_kind(wrapped.definition, wrapped)
+model_kind(::V1.Definition, ::Models.Wrapped) = "V1"
+model_kind(::KroneckerNetworks.Definition, ::Models.Wrapped) = "Kronecker"
+model_kind(::Differentiation.Definition, ::Models.Wrapped) = "Differentiation"
+model_kind(::RandomDifferentiation.Definition, ::Models.Wrapped) = "Random differentiation"
+model_kind(::Any, wrapped::Models.Wrapped) = model_kind(wrapped.model)
+model_kind(::Any) = ""
+
 """Human-readable label derived from a model's type name."""
 function _type_label(x)::String
     name = string(nameof(typeof(x)))
@@ -156,14 +165,16 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
         scope_label = get(primitive!.bindings, :label, "")
         stage = get(primitive!.bindings, :stage, "")
         model_path = primitive!.path
+        model_genes = isfinite(Δt) && Δt > 0.0 ? collect(_gene_names(primitive!)) : Any[]
         push!(segments, TimelineSegment(
             id = next_id[],
             execution_path = path,
             model_path = model_path,
-            json_path = model_path_to_json_path(model_path),
             from = x.t,
             to = x.t + (isfinite(Δt) ? Δt : 0.0),
             model_type = string(nameof(typeof(Models.unwrap(primitive!)))),
+            model_kind = model_kind(primitive!),
+            gene_count = length(model_genes),
             label = label,
             scope_label = scope_label isa AbstractString ? scope_label : "",
             stage = stage isa AbstractString ? stage : string(stage),
@@ -172,7 +183,7 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
 
         if model_path ∉ seen_model_paths && isfinite(Δt) && Δt > 0.0
             push!(seen_model_paths, model_path)
-            for name in _gene_names(primitive!)
+            for name in model_genes
                 s = string(name)
                 if s ∉ genes_seen
                     push!(genes_seen, s)
@@ -204,6 +215,8 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
            seg.label == current.label &&
            seg.model_path == current.model_path &&
            seg.model_type == current.model_type &&
+           seg.model_kind == current.model_kind &&
+           seg.gene_count == current.gene_count &&
            seg.scope_label == current.scope_label &&
            seg.stage == current.stage &&
            seg.from == current.to
@@ -211,10 +224,11 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
                 id = current.id,
                 execution_path = current.execution_path,
                 model_path = current.model_path,
-                json_path = current.json_path,
                 from = current.from,
                 to = seg.to,
                 model_type = current.model_type,
+                model_kind = current.model_kind,
+                gene_count = current.gene_count,
                 label = current.label,
                 scope_label = current.scope_label,
                 stage = current.stage,
@@ -230,10 +244,11 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
         id = i,
         execution_path = seg.execution_path,
         model_path = seg.model_path,
-        json_path = seg.json_path,
         from = seg.from,
         to = seg.to,
         model_type = seg.model_type,
+        model_kind = seg.model_kind,
+        gene_count = seg.gene_count,
         label = seg.label,
         scope_label = seg.scope_label,
         stage = seg.stage,

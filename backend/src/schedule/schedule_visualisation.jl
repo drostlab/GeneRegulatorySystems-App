@@ -99,7 +99,6 @@ Single execution segment from a dryrun pass.
 - `id`: auto-increment unique identifier
 - `execution_path`: dryrun `path` kwarg (not unique for repeating scopes)
 - `model_path`: `primitive!.path` (spec location, used for network loading)
-- `json_path`: JSONPath segments for locating the model definition in the source JSON
 - `from`/`to`: time range (from == to for instant models)
 - `model_type`: the unwrapped GRS model's type name (e.g. `"Adjust"`); the frontend
   maps this to a glyph. Instant-ness is carried by `from == to`, not `model_type`.
@@ -109,10 +108,11 @@ Single execution segment from a dryrun pass.
     id::Int
     execution_path::String
     model_path::String
-    json_path::Vector{Any}
     from::Float64
     to::Float64
     model_type::String
+    model_kind::String = ""
+    gene_count::Int = 0
     label::String
     scope_label::String = ""
     stage::String = ""

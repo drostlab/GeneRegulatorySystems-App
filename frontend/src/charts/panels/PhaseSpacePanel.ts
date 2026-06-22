@@ -245,7 +245,7 @@ export class PhaseSpacePanel extends BasePanel {
      */
     protected override _applyHighlightFilters(): void {
         if (this.hoverModifier.isHovering) return
-        const path = this._highlightedPath
+        const paths = this._highlightedPaths
         for (const rs of this.surface.renderableSeries.asArray()) {
             const name = rs.dataSeries?.dataSeriesName ?? ''
             if (name.startsWith('__')) continue
@@ -253,13 +253,13 @@ export class PhaseSpacePanel extends BasePanel {
             const isScatter = name.startsWith('scatter:')
             if (!isLine && !isScatter) continue
             const seriesPath = name.substring(name.indexOf(':') + 1)
-            const matches = path === null || seriesPath === path
+            const matches = paths === null || paths.has(seriesPath)
             rs.opacity = matches ? 1 : PATH_DIM_OPACITY
             if (isLine && rs instanceof FastLineRenderableSeries) {
-                rs.strokeThickness = (matches && path !== null) ? LINE_THICKNESS_HOVER : LINE_THICKNESS_NORMAL
+                rs.strokeThickness = (matches && paths !== null) ? LINE_THICKNESS_HOVER : LINE_THICKNESS_NORMAL
             }
             if (isScatter && rs instanceof XyScatterRenderableSeries && rs.pointMarker) {
-                const sz = path === null ? POINT_SIZE : (matches ? POINT_SIZE_HOVER : POINT_SIZE_DIM)
+                const sz = paths === null ? POINT_SIZE : (matches ? POINT_SIZE_HOVER : POINT_SIZE_DIM)
                 rs.pointMarker.width = sz
                 rs.pointMarker.height = sz
             }

@@ -11,6 +11,7 @@ import { type SpeciesType } from '@/types'
 import { getPathsForSegmentIds, getModelPathAtTime, getGeneFromSpeciesName, getActivePathsAtTime, filterSegmentsByPrefix } from '@/types/schedule'
 import { useScheduleStore } from './scheduleStore'
 import { useSimulationStore } from './simulationStore'
+import { buildTrie, childrenAreParallel, type TrieNode } from '@/schedule/executionTrie'
 
 export const useViewerStore = defineStore('viewer', () => {
     const currentTimepoint = ref<number>(0)
@@ -19,13 +20,12 @@ export const useViewerStore = defineStore('viewer', () => {
     const selectedOtherSpecies = ref<string[]>([])
     const selectedSpeciesTypes = ref<SpeciesType[]>([])
     const selectedSegmentIds = ref<Set<number> | null>(null)
+    const selectedLineagePath = ref<string | null>(null)
     /** Execution-path prefix filter (empty = show all). Mirrors inspect tool's items_prefix. */
     const pathFilter = ref<string>('')
 
     /** Maximum genes to fetch/render at once (selection can exceed this). */
     const maxRenderedGenes = ref<number>(10)
-    /** Whether hovering timeline segments highlights the corresponding JSON in the editor. */
-    const editorHighlightEnabled = ref<boolean>(false)
     /**
      * Whether gene nodes are dynamically resized by their simulation protein
      * counts. Disabled by default — when off, DynamicsSync skips its watcher
@@ -56,6 +56,8 @@ export const useViewerStore = defineStore('viewer', () => {
     const hoveredExecutionPath = ref<string | null>(null)
     /** Model path of the instant annotation currently hovered (null when not hovering). */
     const hoveredInstantModelPath = ref<string | null>(null)
+    const hoveredOperatorPath = ref<string | null>(null)
+    const hoveredTimeRange = ref<{ from: number; to: number } | null>(null)
     /** Gene id currently hovered in the network diagram (null when not hovering). */
     const hoveredGeneId = ref<string | null>(null)
 
@@ -69,16 +71,6 @@ export const useViewerStore = defineStore('viewer', () => {
         const segments = scheduleStore.segments
         if (!segments.length) return null
         return getModelPathAtTime(segments, currentTimepoint.value)
-    })
-
-    /**
-     * Model path to highlight in the schedule editor.
-     * Instant hover takes priority when present, otherwise follows rect hover.
-     * Never falls back to timepoint — only set during explicit hover.
-     */
-    const editorHighlightModelPath = computed((): string | null => {
-        if (!editorHighlightEnabled.value) return null
-        return hoveredInstantModelPath.value ?? hoveredRectModelPath.value
     })
 
     const selectedPaths = computed((): Set<string> | null => {
@@ -164,6 +156,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
     function selectSegments(ids: Set<number> | null): void {
         selectedSegmentIds.value = ids
+        selectedLineagePath.value = null
     }
 
     /** Select all timeline segments belonging to a given execution path. */
@@ -175,6 +168,53 @@ export const useViewerStore = defineStore('viewer', () => {
                 .map(s => s.id)
         )
         selectedSegmentIds.value = matchIds.size > 0 ? matchIds : null
+        selectedLineagePath.value = selectedSegmentIds.value ? executionPath : null
+    }
+
+    /** Toggle the complete lineage containing an execution path. */
+    function selectLineage(executionPath: string): void {
+        if (selectedLineagePath.value === executionPath) {
+            selectedLineagePath.value = null
+            selectedSegmentIds.value = null
+            return
+        }
+        const scheduleStore = useScheduleStore()
+        const root = buildTrie(
+            scheduleStore.segments.map(segment => segment.execution_path),
+            scheduleStore.eachPrefixes,
+        )
+        const choices = new Map<string, ReadonlyMap<string, string>>()
+
+        function visit(node: TrieNode, inherited: ReadonlyMap<string, string>): void {
+            choices.set(node.path, inherited)
+            const parallel = childrenAreParallel(node)
+            for (const child of node.children) {
+                const childChoices = new Map(inherited)
+                if (parallel) childChoices.set(node.path, child.path)
+                visit(child, childChoices)
+            }
+        }
+
+        visit(root, new Map())
+        const selectedChoices = choices.get(executionPath) ?? new Map<string, string>()
+        const sharesLineage = (path: string): boolean => {
+            const candidateChoices = choices.get(path) ?? new Map<string, string>()
+            for (const [fork, child] of selectedChoices) {
+                const candidateChild = candidateChoices.get(fork)
+                if (candidateChild !== undefined && candidateChild !== child) return false
+            }
+            for (const [fork, child] of candidateChoices) {
+                const selectedChild = selectedChoices.get(fork)
+                if (selectedChild !== undefined && selectedChild !== child) return false
+            }
+            return true
+        }
+
+        const matchIds = new Set(scheduleStore.segments
+            .filter(segment => sharesLineage(segment.execution_path))
+            .map(segment => segment.id))
+        selectedLineagePath.value = matchIds.size === 0 ? null : executionPath
+        selectedSegmentIds.value = matchIds.size === 0 ? null : matchIds
     }
 
     function setHoveredRectModel(path: string | null, executionPath: string | null = null): void {
@@ -184,6 +224,14 @@ export const useViewerStore = defineStore('viewer', () => {
 
     function setHoveredInstantModel(path: string | null): void {
         hoveredInstantModelPath.value = path
+    }
+
+    function setHoveredOperator(path: string | null): void {
+        hoveredOperatorPath.value = path
+    }
+
+    function setHoveredTimeRange(range: { from: number; to: number } | null): void {
+        hoveredTimeRange.value = range
     }
 
     function setHoveredGene(gene: string | null): void {
@@ -200,8 +248,11 @@ export const useViewerStore = defineStore('viewer', () => {
         selectedSpeciesNodes.value = []
         selectedOtherSpecies.value = []
         selectedSegmentIds.value = null
+        selectedLineagePath.value = null
         hoveredRectModelPath.value = null
         hoveredInstantModelPath.value = null
+        hoveredOperatorPath.value = null
+        hoveredTimeRange.value = null
         hoveredExecutionPath.value = null
         hoveredGeneId.value = null
         pathFilter.value = ''
@@ -214,26 +265,30 @@ export const useViewerStore = defineStore('viewer', () => {
         selectedOtherSpecies,
         selectedSpeciesTypes,
         selectedSegmentIds,
+        selectedLineagePath,
         pathFilter,
         maxRenderedGenes,
-        editorHighlightEnabled,
         resizeByExpressionEnabled,
         filteredSegments,
         filteredPaths,
         hoveredExecutionPath,
+        hoveredOperatorPath,
         hoveredGeneId,
+        hoveredTimeRange,
         activeModelPath,
-        editorHighlightModelPath,
         selectedPaths,
         proteinCountsAtTimepoint,
         maxProteinCounts,
         setTimepoint,
         setHoveredRectModel,
         setHoveredInstantModel,
+        setHoveredOperator,
+        setHoveredTimeRange,
         setHoveredGene,
         setPathFilter,
         selectSegments,
         selectExecutionPath,
+        selectLineage,
         reset
     }
 })

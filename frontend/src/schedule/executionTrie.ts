@@ -86,3 +86,37 @@ export function buildTrie(paths: Iterable<string>, eachPrefixes: Iterable<string
 export function childrenAreParallel(node: TrieNode): boolean {
     return node.children.length > 0 && (node.each || node.children[0]!.sep === '/')
 }
+
+/** All concrete paths compatible with the same set of parallel-branch choices. */
+export function compatibleExecutionPaths(
+    paths: Iterable<string>,
+    target: string,
+    eachPrefixes: Iterable<string> = [],
+): Set<string> {
+    const concretePaths = [...new Set(paths)]
+    const root = buildTrie([...concretePaths, target], eachPrefixes)
+    const choices = new Map<string, ReadonlyMap<string, string>>()
+    function visit(node: TrieNode, inherited: ReadonlyMap<string, string>): void {
+        choices.set(node.path, inherited)
+        const parallel = childrenAreParallel(node)
+        for (const child of node.children) {
+            const childChoices = new Map(inherited)
+            if (parallel) childChoices.set(node.path, child.path)
+            visit(child, childChoices)
+        }
+    }
+    visit(root, new Map())
+    const targetChoices = choices.get(target) ?? new Map<string, string>()
+    return new Set(concretePaths.filter(path => {
+        const pathChoices = choices.get(path) ?? new Map<string, string>()
+        for (const [fork, child] of targetChoices) {
+            const other = pathChoices.get(fork)
+            if (other !== undefined && other !== child) return false
+        }
+        for (const [fork, child] of pathChoices) {
+            const other = targetChoices.get(fork)
+            if (other !== undefined && other !== child) return false
+        }
+        return true
+    }))
+}

@@ -1,4 +1,4 @@
-import { buildTrie, childrenAreParallel, type TrieNode } from '@/charts/layout/executionTrie'
+import { buildTrie, childrenAreParallel, type TrieNode } from './executionTrie'
 import type { TimelineSegment } from '@/types/schedule'
 
 export interface PositionedNode {
@@ -26,7 +26,7 @@ export interface ScheduleLayout {
 }
 
 /** Room for the track and a short stack of instant-event signs above it. */
-export const SCHEDULE_ROW_HEIGHT = 82
+export const SCHEDULE_ROW_HEIGHT = 60
 
 function visibleChildren(node: TrieNode, collapsed: ReadonlySet<string>): TrieNode[] {
     return collapsed.has(node.path) ? [] : node.children

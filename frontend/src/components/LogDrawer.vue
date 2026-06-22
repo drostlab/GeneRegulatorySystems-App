@@ -3,7 +3,7 @@ import { ref, watch, nextTick, computed } from 'vue'
 import Button from 'primevue/button'
 import SelectButton from 'primevue/selectbutton'
 import { useLogStore, type LogLine } from '@/stores/logStore'
-import { JULIA_COLOURS } from '@/config/theme'
+import { GREEN, PURPLE, RED } from '@/config/theme'
 
 const store = useLogStore()
 const scrollContainer = ref<HTMLDivElement>()
@@ -144,11 +144,11 @@ watch(() => store.lines.length, async () => {
 }
 
 .log-line--frontend .log-source {
-    color: v-bind('JULIA_COLOURS.purple');
+    color: v-bind('PURPLE[400]');
 }
 
 .log-line--backend .log-source {
-    color: v-bind('JULIA_COLOURS.green');
+    color: v-bind('GREEN[400]');
 }
 
 .log-line--debug .log-text {
@@ -161,7 +161,7 @@ watch(() => store.lines.length, async () => {
 }
 
 .log-line--error .log-text {
-    color: v-bind('JULIA_COLOURS.red');
+    color: v-bind('RED[400]');
 }
 
 .log-empty {

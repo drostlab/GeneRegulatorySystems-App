@@ -5,7 +5,8 @@ import Button from 'primevue/button'
 import ScheduleEditor from './components/ScheduleEditor.vue'
 import NetworkDiagram from './components/NetworkDiagram.vue'
 import SimulationViewer from './components/TrackViewer.vue'
-import ScheduleViewer from './components/schedule/ScheduleViewer.vue'
+import ScheduleViewer from './components/ScheduleViewer.vue'
+import LoadingOverlay from './components/LoadingOverlay.vue'
 import LogDrawer from './components/LogDrawer.vue'
 import { nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useTheme } from './composables/useTheme'
@@ -20,8 +21,6 @@ const logStore = useLogStore()
 const networkDiagramRef = ref<InstanceType<typeof NetworkDiagram>>()
 const simulationViewerRef = ref<InstanceType<typeof SimulationViewer>>()
 const rootSplitterRef = ref<{ initializePanels: () => void }>()
-// Phase-D schedule exploration: keep SciChart out of the visual iteration loop.
-const showTrackViewer = false
 
 watch(() => logStore.drawerVisible, async () => {
     await nextTick()
@@ -70,8 +69,19 @@ onBeforeUnmount(() => {
                             </SplitterPanel>
 
                             <SplitterPanel style="display: flex; flex-direction: column; width: 100%" :size="55" :minSize="20">
-                                <ScheduleViewer class="schedule-pane" />
-                                <SimulationViewer v-if="showTrackViewer" ref="simulationViewerRef" class="track-pane" />
+                                <div class="schedule-pane-host">
+                                    <ScheduleViewer
+                                        class="schedule-pane"
+                                        :segments="scheduleStore.segments"
+                                        :each-prefixes="scheduleStore.eachPrefixes"
+                                        :operators="scheduleStore.scheduleOperators"
+                                    />
+                                    <LoadingOverlay
+                                        v-if="scheduleStore.isLoading"
+                                        label="Loading schedule…"
+                                    />
+                                </div>
+                                <SimulationViewer ref="simulationViewerRef" class="track-pane" />
                             </SplitterPanel>
                         </Splitter>
                     </SplitterPanel>
@@ -103,6 +113,18 @@ onBeforeUnmount(() => {
 .schedule-pane {
     flex: 1 1 auto;
     min-height: 0;
+}
+
+.schedule-pane-host {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    padding: .5rem;
+    overflow: hidden;
+    background: var(--p-surface-ground);
 }
 
 .track-pane {

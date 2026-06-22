@@ -20,9 +20,7 @@
 import { ref, reactive, onMounted, computed, watch, onBeforeUnmount } from 'vue'
 import { useScheduleStore } from '@/stores/scheduleStore'
 import { useSimulationStore } from '@/stores/simulationStore'
-import { useViewerStore } from '@/stores/viewerStore'
 import { useMonacoEditor } from '@/composables/useMonacoEditor'
-import { findRangeForJsonPath } from '@/utils/jsonPathUtils'
 import Button from 'primevue/button'
 import Select, { type SelectChangeEvent } from 'primevue/select'
 import InputText from 'primevue/inputtext'
@@ -32,7 +30,6 @@ import { parseScheduleKey } from '@/types/schedule'
 
 const store = useScheduleStore()
 const simulationStore = useSimulationStore()
-const viewerStore = useViewerStore()
 
 const isLoading = computed(() => store.isLoading)
 const shortcutModifier = navigator.platform.toUpperCase().includes('MAC') ? '⌘' : 'Ctrl+'
@@ -52,9 +49,11 @@ const editor = reactive<EditorState>({
 })
 const isSaving = ref(false)
 const editorContent = ref('')
+let scheduleSelectionGeneration = 0
+let activeSpecRequest: AbortController | null = null
 
 // Monaco editor 
-const { init: initMonaco, setValue: setCurrentJson, getContent: getCurrentJson, highlightScope, clearScopeHighlight, dispose: disposeMonaco } = useMonacoEditor(
+const { init: initMonaco, setValue: setCurrentJson, getContent: getCurrentJson, dispose: disposeMonaco } = useMonacoEditor(
     'schedule-editor-monaco',
     content => { editorContent.value = content }
 )
@@ -112,8 +111,33 @@ async function handleScheduleSelect(event: SelectChangeEvent) {
         return
     }
 
+    const generation = ++scheduleSelectionGeneration
+    activeSpecRequest?.abort()
+    const specController = new AbortController()
+    activeSpecRequest = specController
+    const { source, name } = parseScheduleKey(scheduleKey)
+
+    // The raw JSON endpoint is deliberately cheap. Show it as soon as it arrives
+    // while the backend continues parsing and expanding the schedule.
+    const specRequest = scheduleService.getScheduleSpec(scheduleKey, { signal: specController.signal })
+        .then(spec => {
+            if (generation !== scheduleSelectionGeneration) return
+            editor.currentName = name
+            editor.originalName = name
+            editor.originalSource = source
+            editor.isNew = false
+            setCurrentJson(spec)
+        })
+        .catch(error => {
+            if (!specController.signal.aborted) {
+                console.warn('[ScheduleEditor] Failed to fetch schedule JSON preview:', error)
+            }
+        })
+
     const loaded = await store.loadScheduleByKey(scheduleKey)
-    if (loaded) simulationStore.clearResult()
+    if (loaded && generation === scheduleSelectionGeneration) simulationStore.clearResult()
+    await specRequest
+    if (activeSpecRequest === specController) activeSpecRequest = null
 }
 
 watch (
@@ -203,31 +227,6 @@ function handleEditorShortcut(event: KeyboardEvent) {
     }
 }
 
-// ============================================================================
-// Scope highlight: sync Monaco editor with timeline hover / selection
-// ============================================================================
-
-/**
- * Resolve the json_path to highlight from the active model path.
- * Mirrors the same computed used by NetworkDiagram / ModelFilter.
- */
-const activeHighlightPath = computed((): (string | number)[] | null => {
-    // Only highlight when something is explicitly hovered — never for timepoint fallback.
-    if (!viewerStore.editorHighlightModelPath) return null
-    const seg = store.segments.find(s => s.model_path === viewerStore.editorHighlightModelPath)
-    return seg?.json_path ?? null
-})
-
-watch(activeHighlightPath, (path) => {
-    if (!path) {
-        clearScopeHighlight()
-        return
-    }
-    const range = findRangeForJsonPath(getCurrentJson(), path)
-    if (!range) return
-    highlightScope(range.startOffset, range.endOffset, true)
-})
-
 onMounted(async () => {
     try {
         availableScheduleKeys.value = await scheduleService.fetchAvailableSchedules()
@@ -241,6 +240,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+    activeSpecRequest?.abort()
     window.removeEventListener('keydown', handleEditorShortcut, true)
     disposeMonaco()
 })
@@ -406,6 +406,9 @@ onBeforeUnmount(() => {
     display: flex;
     flex-direction: column;
     height: 100%;
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
     background: var(--p-surface-ground);
     position: relative;
     container-type: inline-size;

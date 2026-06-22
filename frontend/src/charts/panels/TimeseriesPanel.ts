@@ -26,6 +26,11 @@ export abstract class TimeseriesPanel extends BasePanel {
         this.hoverModifier.onPathHover(cb)
     }
 
+    /** Register a callback fired when a trajectory path is clicked. */
+    onPathSelect(cb: (path: string) => void): void {
+        this.hoverModifier.onPathSelect(cb)
+    }
+
     /** Register a callback fired with the gene id on hover (null on leave). */
     onGeneHover(cb: (gene: string | null) => void): void {
         this.hoverModifier.onGeneHover(cb)

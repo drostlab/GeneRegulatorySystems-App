@@ -1,5 +1,5 @@
-import { ChartModifierBase2D, NumberRange, SciChartSubSurface, type SciChartSurface, type TSciChart } from "scichart";
-import { getTheme, type ThemeMode } from "@/config/theme";
+import { BoxAnnotation, ChartModifierBase2D, ECoordinateMode, NumberRange, SciChartSubSurface, type SciChartSurface, type TSciChart } from "scichart";
+import { getTheme, PURPLE, type ThemeMode } from "@/config/theme";
 
 export const PATH_DIM_OPACITY = 0.05
 
@@ -20,9 +20,10 @@ export abstract class BasePanel {
     protected theme: ThemeMode
 
     /** Currently active path filter (null = no filter). */
-    protected _highlightedPath: string | null = null
+    protected _highlightedPaths: ReadonlySet<string> | null = null
     /** Currently active gene filter (null = no filter). */
     protected _highlightedGene: string | null = null
+    private scheduleBrush: BoxAnnotation | null = null
 
     constructor({parentSurface, wasmContext, isDark, modifiers = []}: BasePanelOptions) {
         this.parentSurface = parentSurface
@@ -82,8 +83,14 @@ export abstract class BasePanel {
      * Dim all series except those belonging to `path`. Pass null to restore.
      * Composes with gene filter via `_applyHighlightFilters()`.
      */
-    highlightPath(path: string | null): void {
-        this._highlightedPath = path
+    highlightPath(paths: ReadonlySet<string> | string | null): void {
+        this._highlightedPaths = paths === null
+            ? null
+            : typeof paths === 'string'
+                ? new Set([paths])
+                : typeof paths.has === 'function'
+                    ? paths
+                    : new Set(paths as Iterable<string>)
         this._applyHighlightFilters()
     }
 
@@ -96,6 +103,30 @@ export abstract class BasePanel {
         this._applyHighlightFilters()
     }
 
+    /** Show the schedule glyph's time occupancy on this panel's own x-axis. */
+    setScheduleBrush(range: { from: number; to: number } | null): void {
+        if (this.scheduleBrush) {
+            this.surface.annotations.remove(this.scheduleBrush)
+            this.scheduleBrush.delete()
+            this.scheduleBrush = null
+        }
+        if (!range) return
+        const to = range.to > range.from ? range.to : range.from + Number.EPSILON
+        this.scheduleBrush = new BoxAnnotation({
+            x1: range.from,
+            x2: to,
+            y1: 0,
+            y2: 1,
+            xCoordinateMode: ECoordinateMode.DataValue,
+            yCoordinateMode: ECoordinateMode.Relative,
+            fill: PURPLE[400],
+            opacity: 0.14,
+            strokeThickness: 0,
+            isEditable: false,
+        })
+        this.surface.annotations.add(this.scheduleBrush)
+    }
+
     /**
      * Determine whether a series matches ALL active highlight filters.
      * Returns true if the series should be shown at full opacity.
@@ -104,9 +135,9 @@ export abstract class BasePanel {
         if (name.startsWith('__') || name.startsWith('segment:')) return true
         const colonIdx = name.indexOf(':')
         if (colonIdx < 0) return true
-        if (this._highlightedPath !== null) {
+        if (this._highlightedPaths !== null) {
             const seriesPath = name.substring(colonIdx + 1)
-            if (seriesPath !== this._highlightedPath) return false
+            if (!this._highlightedPaths.has(seriesPath)) return false
         }
         if (this._highlightedGene !== null) {
             const seriesGene = name.substring(0, colonIdx)
@@ -117,7 +148,7 @@ export abstract class BasePanel {
 
     /** Whether any highlight filter is currently active. */
     protected get _hasActiveFilter(): boolean {
-        return this._highlightedPath !== null || this._highlightedGene !== null
+        return this._highlightedPaths !== null || this._highlightedGene !== null
     }
 
     /**

@@ -16,6 +16,13 @@ const networkView = new NetworkView()
 const { isDark, onThemeChange } = useTheme()
 const isDetailVisible = ref(false)
 
+function fetchNetwork(): void {
+    if (!scheduleStore.isLoaded) return
+    scheduleStore.fetchUnionNetwork().catch(error => {
+        console.error('[NetworkDiagram] Failed to fetch union network:', error)
+    })
+}
+
 const contextMenuItems = computed(() => {
     const net = scheduleStore.unionNetwork
     const allGenes = scheduleStore.allGenes ?? []
@@ -82,6 +89,7 @@ const activeModelLabel = computed(() => {
 onMounted(() => {
     networkView.init(containerRef, isDark.value)
     onThemeChange((dark) => networkView.applyTheme(dark))
+    fetchNetwork()
 
     // Resolve parameter values against the active model. Read fresh on each
     // call so tooltips and inline chips reflect whichever model is active.
@@ -130,6 +138,10 @@ watch(() => scheduleStore.unionNetwork, (network) => {
         networkView.setNetwork(network, scheduleStore.geneColours ?? {})
         isDetailVisible.value = networkView.isDetailVisible
     }
+})
+
+watch(() => scheduleStore.schedule.data, () => {
+    fetchNetwork()
 })
 
 function toggleDetail(): void {

@@ -25,6 +25,7 @@ import { contrastTextColour } from '@/utils/colorUtils'
 import type { TimeseriesData } from '@/types/simulation'
 import { extractPaths, matchesPathPrefix, getTimeExtent } from '@/types/schedule'
 import LoadingOverlay from '@/components/LoadingOverlay.vue'
+import { compatibleExecutionPaths } from '@/schedule/executionTrie'
 
 const simulationStore = useSimulationStore()
 const scheduleStore = useScheduleStore()
@@ -288,11 +289,6 @@ watch(
                 return
             }
 
-            // Fire network fetch without blocking (chart already rendered)
-            scheduleStore.fetchUnionNetwork().catch(e => {
-                console.error('[TrackViewer] Failed to fetch union network:', e)
-            })
-
             // Only refresh if schedule hasn't changed during the above
             if (scheduleStore.schedule.spec === specAtStart) {
                 refreshSimulationData()
@@ -444,9 +440,6 @@ function _hydrateFromPersistedState(): void {
     if (segments.length > 0 && metadata) {
         console.debug(`[TrackViewer] Hydrating chart from persisted state: ${segments.length} segments`)
         chart.setScheduleData(segments, metadata)
-        scheduleStore.fetchUnionNetwork().catch(e => {
-            console.error('[TrackViewer] Failed to fetch union network:', e)
-        })
     }
 }
 
@@ -471,11 +464,6 @@ onMounted(async () => {
     chart.onViewportChange((vp) => { refreshSimulationData(vp) })
 
     chart.onSelectionChange((selectedGenes: string[]) => {
-        // A path may still be selected via the phase-space view; clear it when the
-        // gene selection changes from the chart.
-        if (viewerStore.selectedSegmentIds) {
-            viewerStore.selectSegments(null)
-        }
         if (selectedGenes.length > 0) {
             // Save the full selection before narrowing (only on first narrowing)
             if (!previousGeneSelection.value) {
@@ -507,6 +495,10 @@ onMounted(async () => {
     // Timeseries panel path hover -> store (bidirectional sync)
     chart.onTimeseriesPathHover((path: string | null) => {
         viewerStore.setHoveredRectModel(null, path)
+    })
+
+    chart.onTimeseriesPathSelect((path: string) => {
+        viewerStore.selectLineage(path)
     })
 
     // Timeseries panel gene hover -> store (bidirectional sync with network)
@@ -713,7 +705,11 @@ function handleEscapeKey(event: KeyboardEvent) {
 // dim all panels to highlight just that path. null restores full opacity.
 watch(
     () => viewerStore.hoveredExecutionPath,
-    (path) => chart.highlightPath(path ?? null),
+    (path) => chart.highlightPath(path === null ? null : compatibleExecutionPaths(
+        scheduleStore.segments.map(segment => segment.execution_path),
+        path,
+        scheduleStore.eachPrefixes,
+    )),
 )
 
 // Gene highlight sync: when hoveredGeneId changes (from network hover),
@@ -721,6 +717,11 @@ watch(
 watch(
     () => viewerStore.hoveredGeneId,
     (gene) => chart.highlightGene(gene ?? null),
+)
+
+watch(
+    () => viewerStore.hoveredTimeRange,
+    (range) => chart.setScheduleBrush(range),
 )
 
 watch(

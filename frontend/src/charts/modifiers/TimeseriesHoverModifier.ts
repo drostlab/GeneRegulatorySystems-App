@@ -18,12 +18,14 @@ import { hitTestNearest, shouldProcessEvent } from "./hitTestUtils"
 const HIT_TEST_RADIUS_CSS = 8
 
 type PathHoverCallback = (path: string | null) => void
+type PathSelectCallback = (path: string) => void
 type GeneHoverCallback = (gene: string | null) => void
 
 export class TimeseriesHoverModifier extends ChartModifierBase2D {
     public type = EChart2DModifierType.Custom
     private tooltipDiv: HTMLDivElement | null = null
     private pathHoverCallback?: PathHoverCallback
+    private pathSelectCallback?: PathSelectCallback
     private geneHoverCallback?: GeneHoverCallback
     private hoveredPath: string | null = null
     private hoveredGene: string | null = null
@@ -31,6 +33,11 @@ export class TimeseriesHoverModifier extends ChartModifierBase2D {
     /** Register a callback fired with the execution path on hover (null on leave). */
     onPathHover(cb: PathHoverCallback): void {
         this.pathHoverCallback = cb
+    }
+
+    /** Register a callback fired when the currently hovered trajectory is clicked. */
+    onPathSelect(cb: PathSelectCallback): void {
+        this.pathSelectCallback = cb
     }
 
     /** Register a callback fired with the gene id on hover (null on leave). */
@@ -95,6 +102,13 @@ export class TimeseriesHoverModifier extends ChartModifierBase2D {
             this.hoveredGene = null
             this.geneHoverCallback?.(null)
         }
+    }
+
+    override modifierMouseDown(args: ModifierMouseArgs): void {
+        super.modifierMouseDown(args)
+        if (!shouldProcessEvent(this.parentSurface, args)) return
+        if (args.nativeEvent?.button !== 0 || !this.hoveredPath) return
+        this.pathSelectCallback?.(this.hoveredPath)
     }
 
     dispose(): void {

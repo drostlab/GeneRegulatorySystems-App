@@ -532,11 +532,14 @@ function _load_events_as_timeseries(
                     push!(path_series, (gap_start - 1e-9, Int64(-1)))
                 end
 
-                # Duplicate the first snapshot back to its bridging run start.
-                if isnan(prev_end) && !isnan(predecessor_from) &&
-                   predecessor_from < ep_from - 1e-9 && !isempty(points) &&
-                   predecessor_from < first(points)[1] - 1e-9
-                    pushfirst!(points, (predecessor_from, first(points)[2]))
+                # Events only record changes, so the first event can occur after
+                # the scheduled episode boundary. Carry its initial observed
+                # value back to that boundary so adjacent schedule segments do
+                # not render with a spurious hole between their trajectories.
+                episode_start = isnan(predecessor_from) ? ep_from : predecessor_from
+                if !isnan(episode_start) && !isempty(points) &&
+                   episode_start < first(points)[1] - 1e-9
+                    pushfirst!(points, (episode_start, first(points)[2]))
                 end
 
                 # Inject endpoint at scheduled segment boundary
