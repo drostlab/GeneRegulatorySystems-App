@@ -39,6 +39,6 @@ export abstract class TimeseriesPanel extends BasePanel {
         this.pathTimeRanges = ranges
     }
 
-    abstract setData(timeseries: TimeseriesData, animate?: boolean): void
+    abstract setData(timeseries: TimeseriesData, opts?: { animate?: boolean }): void
 
 }

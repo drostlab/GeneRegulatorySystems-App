@@ -1,4 +1,4 @@
-import { EXyDirection, MouseWheelZoomModifier, SciChartSurface, ZoomExtentsModifier, ZoomPanModifier, SeriesSelectionModifier, type TSciChart } from "scichart"
+import { EXyDirection, MouseWheelZoomModifier, NumberRange, SciChartSurface, ZoomExtentsModifier, ZoomPanModifier, SeriesSelectionModifier, type TSciChart } from "scichart"
 import { toBlob } from 'html-to-image'
 import { saveFile } from '@/utils/saveFile'
 import { compositCanvasesToBlob } from '@/utils/canvasExport'
@@ -20,7 +20,7 @@ import { ChartLayout, type GroupNode, type LayoutNode } from "./layout/ChartLayo
 import { collectPathYRanges } from "./layout/rectangleLayout"
 import { getPathTimeRanges } from "@/types/schedule"
 import type { StructureNode, TimelineSegment, TimeseriesData, TimeseriesMetadata } from "@/types"
-import type { PhaseSpaceResult } from "@/types/simulation"
+import type { LiveSimulationSnapshot, PhaseSpaceResult } from "@/types/simulation"
 import { type SpeciesType } from "@/types/schedule"
 import { useScheduleStore } from "@/stores/scheduleStore"
 
@@ -289,6 +289,7 @@ export class MainChart {
     }
 
     dispose(): void {
+        this.stopLiveStream()
         this.tracks?.forEach(({ panel }) => panel.dispose())
         this.phaseSpacePanel?.dispose()
         this.chartLayout?.dispose()
@@ -351,8 +352,12 @@ export class MainChart {
             if (!panel.isVisible) continue
             const xAxis = panel.surface.xAxes.get(0)
             if (!xAxis) continue
+            // seriesViewRect is undefined until the surface has been laid out;
+            // a result can load before the panels are sized, so skip until ready.
+            const viewRect = panel.surface.seriesViewRect
+            if (!viewRect) continue
             const range = xAxis.visibleRange
-            const widthPx = Math.max(1, Math.round(panel.surface.seriesViewRect.width))
+            const widthPx = Math.max(1, Math.round(viewRect.width))
             if (!Number.isFinite(range.min) || !Number.isFinite(range.max) || range.max <= range.min) continue
             return { t0: range.min, t1: range.max, widthPx }
         }
@@ -386,7 +391,7 @@ export class MainChart {
      * pass `fitAxes: false` for adaptive viewport refreshes, which keep the user's
      * current zoom/pan and only swap the data at the new resolution.
      */
-    setSimulationData(timeseries: TimeseriesData, { fitAxes = true, animate = true }: { fitAxes?: boolean; animate?: boolean } = {}): void {
+    setSimulationData(timeseries: TimeseriesData, { fitAxes = true, animate = true, resetY = fitAxes }: { fitAxes?: boolean; animate?: boolean; resetY?: boolean } = {}): void {
         const scheduleStore = useScheduleStore()
         const timeseriesPanels = this.getTimeseriesPanels()
 
@@ -401,7 +406,7 @@ export class MainChart {
                 for (const points of Object.values(pathData)) pointCount += points.length
             }
             performance.mark('set-data-start')
-            panel.setData(filteredTimeseries, animate)
+            panel.setData(filteredTimeseries, { animate })
             const totalSeries = panel.surface.renderableSeries.size()
             performance.measure(`grs:set-data:${id}`, {
                 start: 'set-data-start',
@@ -411,7 +416,16 @@ export class MainChart {
             // user's zoom/pan (the x-range *is* the query that produced this data).
             // y is still re-fit so spikes surfaced at the new resolution stay framed.
             if (panel.surface.renderableSeries.asArray().length > 0) {
+                const yAxis = panel.surface.yAxes.get(0)
+                // Within a live branch, only ever grow the y-range -- re-fitting to
+                // each batch makes the axis jitter as transient maxima come and go.
+                // `resetY` (fresh load, or a branch cut) re-fits from scratch.
+                const prev = resetY ? undefined : yAxis?.visibleRange
                 panel.surface.zoomExtentsY()
+                if (prev && yAxis) {
+                    const fit = yAxis.visibleRange
+                    yAxis.visibleRange = new NumberRange(Math.min(prev.min, fit.min), Math.max(prev.max, fit.max))
+                }
                 if (fitAxes) panel.surface.zoomExtentsX()
             }
         })
@@ -435,12 +449,43 @@ export class MainChart {
         this.selectSyncModifier?.reapplySelection()
     }
 
-    /** Replace one bounded live snapshot and move every time axis atomically per poll. */
-    setLiveSnapshot(timeseries: TimeseriesData, windowStart: number, currentTime: number): void {
-        this.setSimulationData(timeseries, { fitAxes: false })
-        if (currentTime <= windowStart) return
-        this.tracks.forEach(({ panel }) => panel.setVisibleTimeRange(windowStart, currentTime))
-        this.timeCursorModifier?.setCursorTime(currentTime)
+    // ------------------------------------------------------------------
+    // Live streaming
+    //
+    // The backend keeps a bounded, lineage-aware, *pruned* window of live points
+    // (see SimulationController): data only ever exists in [window_start,
+    // current_time], everything older is discarded. So the visible time range is
+    // snapped to exactly that window each poll -- the data and the view advance
+    // together. A lagging/eased follower would point at already-pruned time and
+    // render empty, so we don't ease: smoothing a translating, pruned window would
+    // require predicting the leading edge, not trailing it.
+    // ------------------------------------------------------------------
+
+    private liveLineage?: string
+
+    /**
+     * Render one live snapshot and snap the time window onto it. `resetY` only on
+     * a lineage cut so a fresh branch reframes vertically; within a branch y just
+     * ratchets upward as new extrema arrive.
+     */
+    pushLiveSnapshot(snapshot: LiveSimulationSnapshot): void {
+        const cut = snapshot.active_lineage !== this.liveLineage
+        this.liveLineage = snapshot.active_lineage
+
+        this.setSimulationData(snapshot.series, { fitAxes: false, animate: false, resetY: cut })
+
+        const { window_start: min, current_time: max } = snapshot
+        if (max > min) this.applyLiveWindow(min, max)
+    }
+
+    private applyLiveWindow(min: number, max: number): void {
+        this.tracks.forEach(({ panel }) => panel.setVisibleTimeRange(min, max))
+        this.timeCursorModifier?.setCursorTime(max)
+    }
+
+    /** Forget live-stream state (on completion / clear / dispose). */
+    stopLiveStream(): void {
+        this.liveLineage = undefined
     }
 
     setScheduleData(structure: StructureNode, segments: TimelineSegment[], metadata: TimeseriesMetadata, maxTimelinePaths?: number): void {
@@ -463,6 +508,7 @@ export class MainChart {
     }
 
     clearSimulationData(): void {
+        this.stopLiveStream()
         this.selectSyncModifier?.clearSelection()
         this.timeCursorModifier?.hideCursor()
         this.getTimeseriesPanels().forEach(({ panel }) => panel.clearData())

@@ -710,18 +710,19 @@ function startLivePolling(resultId: string): void {
 
             if (snapshot.status === 'running' || snapshot.status === 'paused'
                 || snapshot.status === 'cancelling' || snapshot.status === 'finalizing') {
-                chart.setLiveSnapshot(snapshot.series, snapshot.window_start, snapshot.current_time)
+                chart.pushLiveSnapshot(snapshot)
                 if (snapshot.current_time > 0) viewerStore.setTimepoint(snapshot.current_time)
                 livePollTimer = setTimeout(poll, LIVE_POLL_INTERVAL_MS)
                 return
             }
 
             chart.setZoomEnabled(true)
+            chart.stopLiveStream()
             livePollTimer = null
-            if (snapshot.status === 'completed') {
+            if (snapshot.status === 'completed' || snapshot.status === 'cancelled') {
                 isFinalizingSimulation.value = true
                 try {
-                    await loadResults()
+                    void loadResults()
                     // Skip the sweep animation on the final full load: the data was
                     // just shown live, and a fresh animation whose axis range is
                     // yanked mid-flight by the fit/copy churn freezes partially
