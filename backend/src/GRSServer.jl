@@ -253,6 +253,10 @@ end
 
 @kwdef struct LiveRequest
     species::Vector{String} = String[]
+    # Incremental cursor: the client's last-seen time and lineage. When the
+    # lineage still matches, only points after `since` are returned.
+    since::Union{Float64, Nothing} = nothing
+    lineage::Union{String, Nothing} = nothing
 end
 
 @post "/simulations/{id}/live" function(req, id::String, data::Json{LiveRequest})
@@ -264,7 +268,7 @@ end
             error isa ArgumentError || rethrow()
             return HTTP.Response(400, sprint(showerror, error))
         end
-        snapshot = live_snapshot(ctrl)
+        snapshot = live_snapshot(ctrl; since=data.payload.since, lineage=data.payload.lineage)
         status = is_finalizing(ctrl) ? "finalizing" : is_paused(ctrl) ? "paused" : "running"
         return merge(snapshot, (status = status,))
     end

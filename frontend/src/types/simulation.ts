@@ -20,6 +20,9 @@ export interface LiveSimulationSnapshot {
     total_progress: number
     active_lineage: string
     active_path: string
+    /** When true the window was resent in full (first poll or a branch cut);
+     *  otherwise `series` carries only points newer than the requested cursor. */
+    reset: boolean
     series: TimeseriesData
     error?: string | null
 }

@@ -18,6 +18,7 @@ import OverlayPanel from 'primevue/overlaypanel'
 import Checkbox from 'primevue/checkbox'
 import * as simulationService from '@/services/simulationService'
 import { MainChart, type Viewport } from '@/charts/MainChart'
+import { LiveBuffer } from '@/charts/liveBuffer'
 import { useTheme } from '@/composables/useTheme'
 import { buildClientPhaseSpace, recolourPhaseSpace } from '@/charts/phaseSpaceBuilder'
 import { GREEN, RED } from '@/config/theme'
@@ -32,7 +33,7 @@ const viewerStore = useViewerStore()
 const { isDark, onThemeChange } = useTheme()
 
 const DEFAULT_SELECTED_GENES_COUNT = 5
-const LIVE_POLL_INTERVAL_MS = 500
+const LIVE_POLL_INTERVAL_MS = 150
 
 const containerRef = ref<HTMLDivElement>()
 const results = ref<SimulationResult[]>([])
@@ -50,6 +51,7 @@ const isFinalizingSimulation = ref(false)
 const chart = new MainChart()
 let livePollGeneration = 0
 let livePollTimer: ReturnType<typeof setTimeout> | null = null
+const liveBuffer = new LiveBuffer()
 let phasePollTimer: ReturnType<typeof setTimeout> | null = null
 
 const OTHER_SPECIES_COLOUR = '#9e9e9e'
@@ -699,13 +701,21 @@ function pollPhaseSpace(resultId: string, generation: number): void {
 function startLivePolling(resultId: string): void {
     stopLivePolling()
     const generation = ++livePollGeneration
+    liveBuffer.reset()
     chart.setZoomEnabled(false)
 
+    let speciesKey = ''
     const poll = async () => {
         if (generation !== livePollGeneration || simulationStore.currentResultId !== resultId) return
         try {
-            const snapshot = await simulationService.fetchLive(resultId, selectedLiveSpecies())
+            const species = selectedLiveSpecies()
+            // A change to the monitored set adds/removes whole series; resync in
+            // full so the buffer doesn't keep deltas against a stale selection.
+            const key = [...species].sort().join('\n')
+            if (key !== speciesKey) { liveBuffer.reset(); speciesKey = key }
+            const delta = await simulationService.fetchLive(resultId, species, liveBuffer.cursor)
             if (generation !== livePollGeneration) return
+            const snapshot = liveBuffer.ingest(delta)
             simulationStore.applyLiveSnapshot(snapshot)
 
             if (snapshot.status === 'running' || snapshot.status === 'paused'

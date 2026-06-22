@@ -214,19 +214,33 @@ function update_live_progress!(ctrl::SimulationController, current_time::Float64
     nothing
 end
 
-"""Return a JSON-friendly, internally consistent copy of the live state."""
-function live_snapshot(ctrl::SimulationController)
+"""
+    live_snapshot(ctrl; since, lineage)
+
+Return a JSON-friendly, internally consistent copy of the live state.
+
+The live window is mostly unchanged between polls, so we send it incrementally:
+when the caller passes the `since`/`lineage` cursor it last saw and that lineage
+still matches, only points newer than `since` are encoded (`reset = false`).
+A missing cursor or a lineage change (a branch cut) yields the whole window with
+`reset = true`, telling the client to replace its buffer rather than append.
+
+Points are returned raw; extending the active path's last value to `current_time`
+is a rendering concern owned by the client.
+"""
+function live_snapshot(ctrl::SimulationController;
+                       since::Union{Float64, Nothing}=nothing,
+                       lineage::Union{AbstractString, Nothing}=nothing)
     live = ctrl.live
     lock(live.lock) do
+        is_reset = isnothing(since) || isnothing(lineage) || lineage != live.active_lineage
         series = Dict{String, Dict{String, Vector{Vector{Any}}}}()
         for (species, path_series) in live.series
             encoded_paths = Dict{String, Vector{Vector{Any}}}()
             for (path, points) in path_series
-                encoded_paths[path] = [Any[t, value] for (t, value) in points]
-                if path == live.active_path && !isempty(points) &&
-                   points[end][1] < live.current_time
-                    push!(encoded_paths[path], Any[live.current_time, points[end][2]])
-                end
+                encoded_paths[path] = is_reset ?
+                    [Any[t, value] for (t, value) in points] :
+                    [Any[t, value] for (t, value) in points if t > since]
             end
             series[String(species)] = encoded_paths
         end
@@ -237,6 +251,7 @@ function live_snapshot(ctrl::SimulationController)
             total_progress = live.total_progress,
             active_lineage = live.active_lineage,
             active_path = live.active_path,
+            reset = is_reset,
             series,
         )
     end
