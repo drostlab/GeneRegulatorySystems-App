@@ -51,7 +51,7 @@ export class CountsPanel extends TimeseriesPanel {
         super.clearData()
     }
 
-    setData(timeseries: TimeseriesData): void {
+    setData(timeseries: TimeseriesData, animate = true): void {
         if (!timeseries) {
             this.clearData()
             return
@@ -109,7 +109,7 @@ export class CountsPanel extends TimeseriesPanel {
                         strokeThickness: 1,
                         isDigitalLine: true,
                         drawNaNAs: ELineDrawMode.DiscontinuousLine,
-                        animation: new SweepAnimation({ duration: SWEEP_DURATION_MS })
+                        ...(animate ? { animation: new SweepAnimation({ duration: SWEEP_DURATION_MS }) } : {})
                     })
                     this.surface.renderableSeries.add(lineSeries)
                 }

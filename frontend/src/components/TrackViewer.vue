@@ -433,7 +433,7 @@ watch(
  */
 let viewportRequestGeneration = 0
 
-async function refreshSimulationData(vp?: Viewport, fullExtent = false): Promise<void> {
+async function refreshSimulationData(vp?: Viewport, fullExtent = false, animate = true): Promise<void> {
     if (!simulationStore.isLoaded || simulationStore.isSimulationRunning) return
     const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
     if (genes.length === 0 && viewerStore.selectedOtherSpecies.length === 0) return
@@ -453,7 +453,7 @@ async function refreshSimulationData(vp?: Viewport, fullExtent = false): Promise
         window.t0, window.t1, window.widthPx,
     )
     if (data && generation === viewportRequestGeneration) {
-        chart.setSimulationData(data, { fitAxes: vp === undefined })
+        chart.setSimulationData(data, { fitAxes: vp === undefined, animate })
     }
 }
 
@@ -722,7 +722,12 @@ function startLivePolling(resultId: string): void {
                 isFinalizingSimulation.value = true
                 try {
                     await loadResults()
-                    await refreshSimulationData(undefined, true)
+                    // Skip the sweep animation on the final full load: the data was
+                    // just shown live, and a fresh animation whose axis range is
+                    // yanked mid-flight by the fit/copy churn freezes partially
+                    // drawn -- the artifact that only a real (animation-cancelling)
+                    // zoom cleared.
+                    await refreshSimulationData(undefined, true, false)
                 } finally {
                     isFinalizingSimulation.value = false
                 }

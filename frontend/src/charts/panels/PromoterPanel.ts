@@ -107,7 +107,7 @@ export class PromoterPanel extends TimeseriesPanel {
         super.clearData()
     }
 
-    setData(timeseries: TimeseriesData): void {
+    setData(timeseries: TimeseriesData, animate = true): void {
         if (!timeseries || !this.metadata) {
             this.clearData()
             return
@@ -181,7 +181,7 @@ export class PromoterPanel extends TimeseriesPanel {
                         strokeY1: colour,
                         drawNaNAs: ELineDrawMode.DiscontinuousLine,
                         resamplingMode: EResamplingMode.None,
-                        animation: new SweepAnimation({ duration: SWEEP_DURATION_MS })
+                        ...(animate ? { animation: new SweepAnimation({ duration: SWEEP_DURATION_MS }) } : {})
                     })
                     bandSeries.paletteProvider = this._buildActivityPalette(key, colour)
                     this.surface.renderableSeries.add(bandSeries)

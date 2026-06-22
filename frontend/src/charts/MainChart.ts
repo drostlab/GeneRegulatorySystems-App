@@ -386,7 +386,7 @@ export class MainChart {
      * pass `fitAxes: false` for adaptive viewport refreshes, which keep the user's
      * current zoom/pan and only swap the data at the new resolution.
      */
-    setSimulationData(timeseries: TimeseriesData, { fitAxes = true }: { fitAxes?: boolean } = {}): void {
+    setSimulationData(timeseries: TimeseriesData, { fitAxes = true, animate = true }: { fitAxes?: boolean; animate?: boolean } = {}): void {
         const scheduleStore = useScheduleStore()
         const timeseriesPanels = this.getTimeseriesPanels()
 
@@ -401,7 +401,7 @@ export class MainChart {
                 for (const points of Object.values(pathData)) pointCount += points.length
             }
             performance.mark('set-data-start')
-            panel.setData(filteredTimeseries)
+            panel.setData(filteredTimeseries, animate)
             const totalSeries = panel.surface.renderableSeries.size()
             performance.measure(`grs:set-data:${id}`, {
                 start: 'set-data-start',
