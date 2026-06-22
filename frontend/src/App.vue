@@ -73,6 +73,7 @@ onBeforeUnmount(() => {
                                     <ScheduleViewer
                                         class="schedule-pane"
                                         :segments="scheduleStore.segments"
+                                        :model-activations="scheduleStore.modelActivations"
                                         :each-prefixes="scheduleStore.eachPrefixes"
                                         :operators="scheduleStore.scheduleOperators"
                                     />

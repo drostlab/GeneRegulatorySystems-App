@@ -26,7 +26,7 @@ using ..ScheduleBindings: spec_bindings
 # Exports
 # ============================================================================
 
-export Network, UnionNetwork, ModelExclusions, TimelineSegment, ScheduleData
+export Network, UnionNetwork, ModelExclusions, TimelineSegment, ModelActivation, ScheduleData
 export ScheduleOperator
 export ReifiedSchedule, ValidationMessage
 export reify_schedule, extract_network_for_model_path, extract_union_network, is_valid, get_error_messages
@@ -118,6 +118,14 @@ Single execution segment from a dryrun pass.
     stage::String = ""
 end
 
+"""A duration model becoming active at its authored execution scope."""
+@kwdef struct ModelActivation
+    id::Int
+    segment_id::Int
+    execution_path::String
+    at::Float64
+end
+
 """Evaluated sequence/branch metadata used for semantic schedule annotations."""
 @kwdef struct ScheduleOperator
     path::String
@@ -140,6 +148,7 @@ non-branch `Each` and ordinary `List` items both use the `-i` separator.
 """
 @kwdef struct ScheduleData
     segments::Vector{TimelineSegment}
+    model_activations::Vector{ModelActivation} = ModelActivation[]
     each_prefixes::Vector{String} = String[]
     operators::Vector{ScheduleOperator} = ScheduleOperator[]
     genes::Vector{String} = String[]
@@ -292,7 +301,8 @@ function fill_schedule_data!(entry::SpecCacheEntry, spec_string::String, name::S
             each_prefixes, operators = collect_schedule_metadata(entry.grs_schedule)
             merge!(gene_colours, _extract_spec_gene_colours(spec))
             merged = _merge_contiguous_segments(segments)
-            data = ScheduleData(; segments=merged, each_prefixes, operators, genes, gene_colours)
+            model_activations = collect_model_activations(merged)
+            data = ScheduleData(; segments=merged, model_activations, each_prefixes, operators, genes, gene_colours)
             @info "Schedule visualisation generated" name segments=length(merged) genes=length(genes) elapsed=(time() - vis_start)
         end
     catch e

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ScheduleOperator, TimelineSegment } from '@/types/schedule'
+import type { ModelActivation, ScheduleOperator, TimelineSegment } from '@/types/schedule'
 import { getTimeExtent } from '@/types/schedule'
 import { buildTrie, childrenAreParallel, type TrieNode } from '@/schedule/executionTrie'
 import { collapsiblePaths, groupSegmentsByPath, layoutSchedule, SCHEDULE_ROW_HEIGHT } from '@/schedule/layout'
@@ -9,6 +9,7 @@ import { useViewerStore } from '@/stores/viewerStore'
 
 const props = defineProps<{
     segments: TimelineSegment[]
+    modelActivations: ModelActivation[]
     eachPrefixes: string[]
     operators: ScheduleOperator[]
 }>()
@@ -195,21 +196,20 @@ function stacked<T extends TimelineSegment>(segments: T[]): StackedSign<T>[] {
     return positioned.map(sign => ({ ...sign, stackSize: counts.get(sign.stackKey) ?? 1 }))
 }
 
-// A duration flag denotes a transition to a different execution model. The
-// engine's model_path is the model identity; compatible parent/child paths are
-// one lineage, so a fork inherits its parent's active model without adding a
-// duplicate flag. Returning to the same model after another model still creates
-// a new transition.
+// Instant models are execution events in the segment stream. Duration-model
+// flags come from explicit backend activation records, which retain the scope
+// where `do` became active even when the first timed work occurs below a fork.
 const executionModels = computed(() => {
     const instants = props.segments.filter(segment => segment.from === segment.to)
-    const durations = props.segments.filter(segment => segment.from < segment.to)
-    const transitions = durations.filter(segment => !durations.some(previous =>
-        previous.id !== segment.id &&
-        previous.model_path === segment.model_path &&
-        Math.abs(previous.to - segment.from) < 1e-9 &&
-        pathsShareLineage(previous.execution_path, segment.execution_path)
-    ))
-    return [...instants, ...transitions].sort((a, b) => a.id - b.id)
+    const durations = props.modelActivations.flatMap(activation => {
+        const segment = props.segments.find(candidate => candidate.id === activation.segment_id)
+        return segment ? [{
+            ...segment,
+            execution_path: activation.execution_path,
+            from: activation.at,
+        }] : []
+    })
+    return [...instants, ...durations].sort((a, b) => a.id - b.id)
 })
 
 const forkGroups = computed(() => [...fullLayout.value.forkLaneCounts.entries()]
@@ -220,7 +220,9 @@ const forkGroups = computed(() => [...fullLayout.value.forkLaneCounts.entries()]
             .filter(segment => isPrefixPath(fork.path, segment.execution_path))
             .map(segment => segment.id)))
         const preSigns = executionModels.value
-            .filter(segment => segment.from === time && segment.to === time && segment.id < firstDescendantId)
+            .filter(segment =>
+                (segment.from === time && segment.to === time && segment.id < firstDescendantId) ||
+                (segment.from < segment.to && forks.some(fork => fork.path === segment.execution_path)))
             .map(segment => ({ segment, index: 0 }))
         return { time, lanes, preSigns, preWidth: preSigns.length * PRE_FORK_SIGN_SPACING }
     }))
@@ -264,13 +266,30 @@ const displayedSigns = computed(() => {
 const displayedModelExtents = computed(() => displayedSigns.value
     .filter(({ segment }) => segment.from < segment.to)
     .map(({ segment }) => ({ owner: segment.id, segments: modelExtent(segment) })))
+const displayedModelPreludes = computed(() => displayedSigns.value.flatMap(({ segment }) => {
+    if (segment.from >= segment.to) return []
+    const group = forkGroups.value.find(candidate =>
+        candidate.preSigns.some(sign => sign.segment.id === segment.id))
+    return group ? [{
+        owner: segment.id,
+        x1: segmentX(segment),
+        x2: forkX(group.time, 0),
+        y: segmentY(segment),
+    }] : []
+}))
 const displayedModelForks = computed(() => displayedModelExtents.value.flatMap(extent => fullLayout.value.forks.flatMap(fork =>
     fork.childPaths.flatMap((childPath, index) => {
+        const activation = props.modelActivations.find(candidate => candidate.segment_id === extent.owner)
         const enters = extent.segments.some(segment =>
             Math.abs(segment.from - fork.time) < 1e-9 && pathsShareLineage(segment.execution_path, childPath))
         const leaves = extent.segments.some(segment =>
             Math.abs(segment.to - fork.time) < 1e-9 && pathsShareLineage(segment.execution_path, fork.path))
-        return enters && leaves ? [{ owner: extent.owner, fork, childPath, childY: fork.childYs[index]! }] : []
+        const startsWithinActivationScope = activation !== undefined &&
+            Math.abs(activation.at - fork.time) < 1e-9 &&
+            isPrefixPath(activation.execution_path, fork.path)
+        return enters && (leaves || startsWithinActivationScope)
+            ? [{ owner: extent.owner, fork, childPath, childY: fork.childYs[index]! }]
+            : []
     })
 )))
 const detailPlacements = computed(() => {
@@ -539,7 +558,13 @@ function pathClass(path: string): Record<string, boolean> {
 function modelExtent(seed: TimelineSegment): TimelineSegment[] {
     const candidates = props.segments.filter(segment =>
         segment.from < segment.to && segment.model_path === seed.model_path)
-    const connected = new Set<number>([seed.id])
+    const activation = props.modelActivations.find(candidate => candidate.segment_id === seed.id)
+    const roots = activation
+        ? candidates.filter(candidate =>
+            Math.abs(candidate.from - activation.at) < 1e-9 &&
+            isPrefixPath(activation.execution_path, candidate.execution_path))
+        : candidates.filter(candidate => candidate.id === seed.id)
+    const connected = new Set<number>(roots.map(candidate => candidate.id))
     let changed = true
     while (changed) {
         changed = false
@@ -759,6 +784,14 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                         :key="`extent-${extent.owner}-${segment.id}`"
                         :x1="x(segment.from)" :x2="segmentEndX(segment)"
                         :y1="segmentY(segment)" :y2="segmentY(segment)"
+                    />
+                </g>
+                <g class="duration-highlight model-prelude-highlight">
+                    <line
+                        v-for="prelude in displayedModelPreludes"
+                        :key="`extent-prelude-${prelude.owner}`"
+                        :x1="prelude.x1" :x2="prelude.x2"
+                        :y1="prelude.y" :y2="prelude.y"
                     />
                 </g>
                 <g class="duration-highlight model-fork-highlight">

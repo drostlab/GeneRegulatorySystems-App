@@ -45,6 +45,13 @@ export interface TimelineSegment {
     stage: string
 }
 
+export interface ModelActivation {
+    id: number
+    segment_id: number
+    execution_path: string
+    at: number
+}
+
 export interface ScheduleOperator {
     path: string
     kind: 'each' | 'list'
@@ -58,6 +65,7 @@ export interface ScheduleOperator {
 
 export interface ScheduleData {
     segments: TimelineSegment[]
+    model_activations: ModelActivation[]
     /** Execution prefixes expanded by Each; `execution_path` cannot distinguish these from List. */
     each_prefixes: string[]
     operators: ScheduleOperator[]

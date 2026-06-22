@@ -254,3 +254,94 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
         stage = seg.stage,
     ) for (i, seg) in enumerate(merged)]
 end
+
+"""Return cumulative engine-path token prefixes, including the root scope."""
+function execution_prefixes(path::String)::Vector{String}
+    prefixes = String[""]
+    separators = Set(['+', '-', '/', '.'])
+    i = firstindex(path)
+    while i <= lastindex(path)
+        j = nextind(path, i)
+        while j <= lastindex(path) && path[j] ∉ separators
+            j = nextind(path, j)
+        end
+        push!(prefixes, path[firstindex(path):prevind(path, j)])
+        i = j
+    end
+    return prefixes
+end
+
+"""Deepest execution scope shared by every supplied path."""
+function common_execution_scope(paths::Vector{String})::String
+    isempty(paths) && return ""
+    shared = Set(execution_prefixes(first(paths)))
+    for path in Iterators.drop(paths, 1)
+        intersect!(shared, Set(execution_prefixes(path)))
+    end
+    return isempty(shared) ? "" : argmax(length, shared)
+end
+
+function execution_branch_choices(path::String)::Dict{String, String}
+    prefixes = execution_prefixes(path)
+    choices = Dict{String, String}()
+    for i in 2:length(prefixes)
+        parent = prefixes[i - 1]
+        child = prefixes[i]
+        token_start = isempty(parent) ? firstindex(path) : nextind(path, lastindex(parent))
+        token_start <= lastindex(path) && path[token_start] == '/' && (choices[parent] = child)
+    end
+    return choices
+end
+
+function execution_paths_share_lineage(a::String, b::String)::Bool
+    a_choices = execution_branch_choices(a)
+    b_choices = execution_branch_choices(b)
+    for (fork, child) in a_choices
+        haskey(b_choices, fork) && b_choices[fork] != child && return false
+    end
+    return true
+end
+
+"""
+Create explicit duration-model activation events from normalized dry-run output.
+
+Segments describe where time executes. Activations describe where a `do` model
+enters scope. Parallel leaf segments that first use the same authored model at
+the same time therefore share one activation at their common execution scope.
+"""
+function collect_model_activations(segments::Vector{TimelineSegment})::Vector{ModelActivation}
+    durations = filter(segment -> segment.from < segment.to, segments)
+    transitions = filter(durations) do segment
+        !any(durations) do previous
+            previous.id != segment.id &&
+            previous.model_path == segment.model_path &&
+            abs(previous.to - segment.from) < 1e-9 &&
+            execution_paths_share_lineage(previous.execution_path, segment.execution_path)
+        end
+    end
+
+    grouped = Dict{Tuple{String, Float64}, Vector{TimelineSegment}}()
+    for segment in transitions
+        push!(get!(grouped, (segment.model_path, segment.from)) do
+            TimelineSegment[]
+        end, segment)
+    end
+
+    activations = ModelActivation[]
+    for group in values(grouped)
+        representative = first(sort(group; by = segment -> segment.id))
+        push!(activations, ModelActivation(
+            id = length(activations) + 1,
+            segment_id = representative.id,
+            execution_path = common_execution_scope([segment.execution_path for segment in group]),
+            at = representative.from,
+        ))
+    end
+    sort!(activations; by = activation -> (activation.at, activation.segment_id))
+    return [ModelActivation(
+        id = id,
+        segment_id = activation.segment_id,
+        execution_path = activation.execution_path,
+        at = activation.at,
+    ) for (id, activation) in enumerate(activations)]
+end
