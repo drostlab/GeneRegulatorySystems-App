@@ -19,9 +19,9 @@ export async function loadScheduleFromKey(key: string, options: RequestOptions =
     return schedule
 }
 
-export async function getScheduleSpec(key: string): Promise<string> {
+export async function getScheduleSpec(key: string, options: RequestOptions = {}): Promise<string> {
     const { source, name } = parseScheduleKey(key)
-    return apiFetchText(`/schedules/${source}/${encodeURIComponent(name)}/spec`)
+    return apiFetchText(`/schedules/${source}/${encodeURIComponent(name)}/spec`, { ...options })
 }
 
 export async function loadScheduleFromSpec(spec: string, name: string, source: ScheduleSource = 'snapshot', options: RequestOptions = {}): Promise<Schedule> {

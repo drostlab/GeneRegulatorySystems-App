@@ -52,6 +52,8 @@ const editor = reactive<EditorState>({
 })
 const isSaving = ref(false)
 const editorContent = ref('')
+let scheduleSelectionGeneration = 0
+let activeSpecRequest: AbortController | null = null
 
 // Monaco editor 
 const { init: initMonaco, setValue: setCurrentJson, getContent: getCurrentJson, highlightScope, clearScopeHighlight, dispose: disposeMonaco } = useMonacoEditor(
@@ -112,8 +114,36 @@ async function handleScheduleSelect(event: SelectChangeEvent) {
         return
     }
 
+    const generation = ++scheduleSelectionGeneration
+    activeSpecRequest?.abort()
+    const specController = new AbortController()
+    activeSpecRequest = specController
+    const { source, name } = parseScheduleKey(scheduleKey)
+
+    // The raw JSON endpoint is deliberately cheap. Show it in the editor as soon
+    // as it arrives while the backend continues parsing and expanding the
+    // schedule. This only touches editor state -- the store's reactive schedule
+    // is left untouched until the full load commits, so the timeline isn't
+    // disturbed by the preview.
+    const specRequest = scheduleService.getScheduleSpec(scheduleKey, { signal: specController.signal })
+        .then(spec => {
+            if (generation !== scheduleSelectionGeneration) return
+            editor.currentName = name
+            editor.originalName = name
+            editor.originalSource = source
+            editor.isNew = false
+            setCurrentJson(spec)
+        })
+        .catch(error => {
+            if (!specController.signal.aborted) {
+                console.warn('[ScheduleEditor] Failed to fetch schedule JSON preview:', error)
+            }
+        })
+
     const loaded = await store.loadScheduleByKey(scheduleKey)
-    if (loaded) simulationStore.clearResult()
+    if (loaded && generation === scheduleSelectionGeneration) simulationStore.clearResult()
+    await specRequest
+    if (activeSpecRequest === specController) activeSpecRequest = null
 }
 
 watch (

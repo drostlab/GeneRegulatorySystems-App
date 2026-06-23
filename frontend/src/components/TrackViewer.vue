@@ -33,7 +33,7 @@ const viewerStore = useViewerStore()
 const { isDark, onThemeChange } = useTheme()
 
 const DEFAULT_SELECTED_GENES_COUNT = 5
-const LIVE_POLL_INTERVAL_MS = 150
+const LIVE_POLL_INTERVAL_MS = 500
 
 const containerRef = ref<HTMLDivElement>()
 const results = ref<SimulationResult[]>([])
