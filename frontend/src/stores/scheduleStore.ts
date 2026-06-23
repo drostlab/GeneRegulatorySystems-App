@@ -154,8 +154,13 @@ export const useScheduleStore = defineStore(
             scheduleGeneration++
             activeScheduleRequest?.abort()
             activeScheduleRequest = null
-            isLoading.value = false
             clearNetwork()
+            // No async fetch here, but committing the schedule still triggers a
+            // union-network refetch + full track re-render downstream. Raise the
+            // same loading flag the fetch path uses so the TrackViewer shows its
+            // "Loading schedule..." overlay; the TrackViewer clears it once the
+            // new tracks have rendered (see its schedule-data watcher).
+            isLoading.value = true
             schedule.value = loaded
             console.debug(`[ScheduleStore] Set schedule directly: ${loaded.source}/${loaded.name}`)
         }

@@ -340,6 +340,7 @@ watch(
                 // Chart rendering is imperative and must not abort Vue's update
                 // cycle (in particular, removal of the loading overlay).
                 console.error('[TrackViewer] Failed to render schedule data:', error)
+                scheduleStore.isLoading = false
                 return
             }
 
@@ -353,6 +354,9 @@ watch(
                 refreshSimulationData()
             }
         }
+        // A direct setSchedule (save/upload) raises isLoading without going
+        // through the fetch path; clear it now that the new tracks have rendered.
+        scheduleStore.isLoading = false
     },
     // The same schedule commit also clears scheduleStore.isLoading. Let Vue
     // render that state before doing the comparatively heavy SciChart update.
