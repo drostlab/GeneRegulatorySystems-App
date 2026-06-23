@@ -52,6 +52,8 @@ const editor = reactive<EditorState>({
 })
 const isSaving = ref(false)
 const editorContent = ref('')
+let scheduleSelectionGeneration = 0
+let activeSpecRequest: AbortController | null = null
 
 // Monaco editor 
 const { init: initMonaco, setValue: setCurrentJson, getContent: getCurrentJson, highlightScope, clearScopeHighlight, dispose: disposeMonaco } = useMonacoEditor(
@@ -112,13 +114,36 @@ async function handleScheduleSelect(event: SelectChangeEvent) {
         return
     }
 
-    // Clear simulation when user selects a new schedule
-    simulationStore.clearResult()
+    const generation = ++scheduleSelectionGeneration
+    activeSpecRequest?.abort()
+    const specController = new AbortController()
+    activeSpecRequest = specController
+    const { source, name } = parseScheduleKey(scheduleKey)
 
-    // Clear editor content immediately so stale JSON isn't visible during loading
-    setCurrentJson('')
-    
-    await store.loadScheduleByKey(scheduleKey)
+    // The raw JSON endpoint is deliberately cheap. Show it in the editor as soon
+    // as it arrives while the backend continues parsing and expanding the
+    // schedule. This only touches editor state -- the store's reactive schedule
+    // is left untouched until the full load commits, so the timeline isn't
+    // disturbed by the preview.
+    const specRequest = scheduleService.getScheduleSpec(scheduleKey, { signal: specController.signal })
+        .then(spec => {
+            if (generation !== scheduleSelectionGeneration) return
+            editor.currentName = name
+            editor.originalName = name
+            editor.originalSource = source
+            editor.isNew = false
+            setCurrentJson(spec)
+        })
+        .catch(error => {
+            if (!specController.signal.aborted) {
+                console.warn('[ScheduleEditor] Failed to fetch schedule JSON preview:', error)
+            }
+        })
+
+    const loaded = await store.loadScheduleByKey(scheduleKey)
+    if (loaded && generation === scheduleSelectionGeneration) await simulationStore.discardActiveSimulation()
+    await specRequest
+    if (activeSpecRequest === specController) activeSpecRequest = null
 }
 
 watch (
@@ -151,6 +176,11 @@ async function saveEdit() {
     if (!hasUnsavedChanges.value) return
 
     isSaving.value = true
+    // The backend builds the schedule-visualisation object during upload, which
+    // is the real wait here. Raise the schedule overlay over the TrackViewer for
+    // the whole save; setSchedule keeps it up and the TrackViewer clears it once
+    // the new tracks render.
+    store.isLoading = true
     try {
         const origin = editor.isNew ? undefined : {
             name: editor.originalName,
@@ -158,12 +188,20 @@ async function saveEdit() {
         }
         const uploaded = await scheduleService.uploadSchedule(currentJson, editor.currentName.trim(), origin)
         store.setSchedule(uploaded)
+        // Saving edits replaces the schedule, so any active/paused run is now
+        // stale -- cancel it (freeing the backend slot for a possible auto-run).
+        await simulationStore.discardActiveSimulation()
         availableScheduleKeys.value = await scheduleService.fetchAvailableSchedules()
         resetEditor()
 
         if (simulationStore.autoRunOnSave) {
             simulationStore.pendingAutoRun = true
         }
+    } catch (error) {
+        // On success setSchedule keeps the overlay up until the tracks render;
+        // on failure nothing renders, so clear it here to avoid a stuck overlay.
+        store.isLoading = false
+        throw error
     } finally {
         isSaving.value = false
     }
@@ -171,8 +209,9 @@ async function saveEdit() {
 
 async function createNewSchedule() {
     const name = uniqueScheduleName('untitled')
-    simulationStore.clearResult()
-    await store.loadScheduleBySpec('{\n}\n', name, 'user')
+    const loaded = await store.loadScheduleBySpec('{\n}\n', name, 'user')
+    if (!loaded) return
+    await simulationStore.discardActiveSimulation()
     editor.isNew = true
     editor.currentName = name
     editor.originalName = ''
@@ -182,8 +221,9 @@ async function createNewSchedule() {
 async function duplicateSchedule() {
     if (!store.schedule.spec) return
     const name = uniqueScheduleName(`${store.schedule.name || 'untitled'} copy`)
-    simulationStore.clearResult()
-    await store.loadScheduleBySpec(getCurrentJson(), name, 'user')
+    const loaded = await store.loadScheduleBySpec(getCurrentJson(), name, 'user')
+    if (!loaded) return
+    await simulationStore.discardActiveSimulation()
     editor.isNew = true
     editor.currentName = name
     editor.originalName = ''

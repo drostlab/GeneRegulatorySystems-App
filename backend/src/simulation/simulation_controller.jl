@@ -1,95 +1,94 @@
 """
-    SimulationController
+    SimulationControl
 
-Manages the lifecycle of a running simulation: pause/resume, gene subscriptions,
-and progress reporting via WebSocket.
+Thread-safe lifecycle control and the in-process live trajectory tail for the
+single running simulation.
 """
 module SimulationControl
 
-using JSON
-using HTTP
-import HTTP: send
 using Logging
 
-export SimulationController, check_pause!, subscribe_genes!, is_paused, pause!, resume!
-export send_progress, send_timeseries, send_status
+export SimulationController, SimulationCancelled
+export check_control!, is_paused, pause!, resume!, cancel!, finalize!, is_finalizing
+export set_live_species!, enter_path!, record_live_event!, update_live_progress!
+export live_snapshot, lineage_of
+
+const DEFAULT_FRAME_WINDOW = 20
+const MAX_LIVE_SPECIES = 128
+
+"""Raised cooperatively at a trace boundary when a run is cancelled."""
+struct SimulationCancelled <: Exception end
+
+Base.showerror(io::IO, ::SimulationCancelled) = print(io, "simulation cancelled")
 
 """
-    SimulationController
+    lineage_of(path)
 
-Controls a running simulation's pause/resume state and gene subscriptions.
-
-The sink checks `check_pause!()` at each trace callback. If paused, the
-simulation thread blocks on a `Condition` until resumed.
-
-# Fields
-- `paused::Bool`: Whether the simulation is currently paused
-- `pause_condition::Threads.Condition`: Condition variable for blocking on pause
-- `subscribed_species::Set{Symbol}`: Species names to stream via WS
-- `result_path::String`: Path to result directory (for metadata updates)
-- `simulation_id::String`: ID for WS message tagging
-- `ws_ref::Ref{Union{HTTP.WebSocket, Nothing}}`: shared ref to current WS client (looked up lazily on each send)
-- `ws_lock::ReentrantLock`: lock protecting `ws_ref` access
+Return the execution-path prefix through the last branching `/n` component.
+This is the same branch identity used by GRS InspectTool: sequential `+` and
+`-n` descent stays within a lineage, while entering a nested or sibling branch
+changes it.
 """
-mutable struct SimulationController
-    paused::Bool
-    pause_condition::Threads.Condition
-    subscribed_species::Set{Symbol}
+function lineage_of(path::AbstractString)::String
+    matched = match(r"^(?:.*/\d+)?", path)
+    isnothing(matched) ? "" : String(matched.match)
+end
+
+const LivePoints = Vector{Tuple{Float64, Int64}}
+const LiveSeries = Dict{Symbol, Dict{String, LivePoints}}
+
+"""Mutable live state. Every field is protected by `lock`."""
+@kwdef mutable struct LiveTail
+    lock::ReentrantLock = ReentrantLock()
+    active_lineage::String = ""
+    active_path::String = ""
+    current_time::Float64 = 0.0
+    frame_count::Int = 0
+    total_progress::Float64 = 0.0
+    latest_values::Dict{Symbol, Int64} = Dict{Symbol, Int64}()
+    selected_species::Set{Symbol} = Set{Symbol}()
+    series::LiveSeries = LiveSeries()
+    # Retain the last `frame_window` progress frames rather than a fixed slice of
+    # simulation time. `frame_times` holds the recent frame-boundary times and
+    # `window_start` caches the start of the retained span (recomputed each frame).
+    frame_window::Int = DEFAULT_FRAME_WINDOW
+    # Seeded with the lineage start so a young branch shows from its beginning
+    # rather than from its first frame boundary (which would prune the start).
+    frame_times::Vector{Float64} = Float64[0.0]
+    window_start::Float64 = 0.0
+    peak_points::Int = 0
+end
+
+"""Lifecycle controller shared by the simulation task and HTTP handlers."""
+@kwdef mutable struct SimulationController
+    paused::Bool = false
+    cancelled::Bool = false
+    finalizing::Bool = false
+    pause_condition::Threads.Condition = Threads.Condition()
     result_path::String
     simulation_id::String
-    ws_ref::Ref{Union{HTTP.WebSocket, Nothing}}
-    ws_lock::ReentrantLock
-
-    function SimulationController(;
-        result_path::String,
-        simulation_id::String,
-        ws_ref::Ref{Union{HTTP.WebSocket, Nothing}} = Ref{Union{HTTP.WebSocket, Nothing}}(nothing),
-        ws_lock::ReentrantLock = ReentrantLock(),
-        subscribed_species::Set{Symbol} = Set{Symbol}()
-    )
-        new(false, Threads.Condition(), subscribed_species, result_path, simulation_id, ws_ref, ws_lock)
-    end
+    live::LiveTail = LiveTail()
 end
 
-"""Look up the current WebSocket client from the shared ref."""
-function _get_ws(ctrl::SimulationController)::Union{HTTP.WebSocket, Nothing}
-    lock(ctrl.ws_lock) do
-        ctrl.ws_ref[]
-    end
-end
-
-"""
-    check_pause!(ctrl) -> nothing
-
-Called by the streaming sink at each trace callback.
-Blocks if the simulation is paused until `resume!()` is called.
-"""
-function check_pause!(ctrl::SimulationController)
+"""Block while paused and throw at a safe trace boundary when cancelled."""
+function check_control!(ctrl::SimulationController)
     lock(ctrl.pause_condition) do
-        while ctrl.paused
+        while ctrl.paused && !ctrl.cancelled
             @info "[SimulationController] Simulation paused, waiting..." id=ctrl.simulation_id
             wait(ctrl.pause_condition)
         end
+        ctrl.cancelled && throw(SimulationCancelled())
     end
+    nothing
 end
 
-"""
-    pause!(ctrl)
-
-Pause the simulation. The next `check_pause!()` call will block.
-"""
 function pause!(ctrl::SimulationController)
     lock(ctrl.pause_condition) do
-        ctrl.paused = true
+        ctrl.cancelled || (ctrl.paused = true)
     end
     @info "[SimulationController] Paused" id=ctrl.simulation_id
 end
 
-"""
-    resume!(ctrl)
-
-Resume a paused simulation. Unblocks the thread waiting in `check_pause!()`.
-"""
 function resume!(ctrl::SimulationController)
     lock(ctrl.pause_condition) do
         ctrl.paused = false
@@ -98,101 +97,187 @@ function resume!(ctrl::SimulationController)
     @info "[SimulationController] Resumed" id=ctrl.simulation_id
 end
 
-is_paused(ctrl::SimulationController) = ctrl.paused
-
-"""
-    subscribe_genes!(ctrl, species)
-
-Update the set of species to stream via WebSocket.
-"""
-function subscribe_genes!(ctrl::SimulationController, species::Vector{String})
-    ctrl.subscribed_species = Set(Symbol.(species))
-    @debug "[SimulationController] Updated subscriptions" species=species count=length(species)
-end
-
-"""
-    send_progress(ctrl, current_time, frame_count; total_progress=nothing)
-
-Send a progress message to the WebSocket client.
-"""
-function send_progress(ctrl::SimulationController, current_time::Float64, frame_count::Int;
-                       total_progress::Union{Float64, Nothing} = nothing)
-    ws = _get_ws(ctrl)
-    isnothing(ws) && return
-
-    msg = Dict{String, Any}(
-        "type" => "progress",
-        "simulation_id" => ctrl.simulation_id,
-        "current_time" => current_time,
-        "frame_count" => frame_count
-    )
-    !isnothing(total_progress) && (msg["total_progress"] = total_progress)
-
-    try
-        send(ws, JSON.json(msg))
-    catch e
-        @warn "[SimulationController] Failed to send progress" exception=string(e)
+function cancel!(ctrl::SimulationController)
+    lock(ctrl.pause_condition) do
+        ctrl.cancelled = true
+        ctrl.paused = false
+        notify(ctrl.pause_condition)
     end
+    @info "[SimulationController] Cancellation requested" id=ctrl.simulation_id
 end
 
-"""
-    send_timeseries(ctrl, timeseries_data)
+is_paused(ctrl::SimulationController) = lock(ctrl.pause_condition) do
+    ctrl.paused
+end
 
-Send incremental timeseries data for subscribed species via WebSocket.
-`timeseries_data` is Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}
-(species -> segment_id -> [(t, count)]).
-"""
-function send_timeseries(ctrl::SimulationController, timeseries_data::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}})
-    isempty(timeseries_data) && return
-    ws = _get_ws(ctrl)
-    isnothing(ws) && return
+"""Mark the controller as finalizing — the run has finished computing and is now
+building the viewport pyramids, before its status flips to `completed`."""
+finalize!(ctrl::SimulationController) = (ctrl.finalizing = true; nothing)
 
-    # Convert to JSON-friendly format: { species: { segmentId: [[t, v], ...] } }
-    data = Dict{String, Dict{String, Vector{Vector{Any}}}}()
-    for (species, seg_data) in timeseries_data
-        species_str = String(species)
-        data[species_str] = Dict{String, Vector{Vector{Any}}}()
-        for (seg_key, points) in seg_data
-            data[species_str][seg_key] = [[t, v] for (t, v) in points]
+is_finalizing(ctrl::SimulationController) = ctrl.finalizing
+
+function seed_species!(live::LiveTail, species::Symbol)
+    value = get(live.latest_values, species, nothing)
+    isnothing(value) && return
+    path_series = get!(live.series, species) do
+        Dict{String, LivePoints}()
+    end
+    points = get!(path_series, live.active_path) do
+        LivePoints()
+    end
+    isempty(points) && push!(points, (live.current_time, value))
+end
+
+"""Replace the desired live species, seeding newly selected values at `now`."""
+function set_live_species!(ctrl::SimulationController, species::Vector{String})
+    length(species) <= MAX_LIVE_SPECIES || throw(ArgumentError(
+        "at most $MAX_LIVE_SPECIES species can be monitored live"
+    ))
+    desired = Set(Symbol.(species))
+    live = ctrl.live
+    lock(live.lock) do
+        for removed in setdiff(live.selected_species, desired)
+            delete!(live.series, removed)
+        end
+        added = setdiff(desired, live.selected_species)
+        live.selected_species = desired
+        for name in added
+            seed_species!(live, name)
         end
     end
+    nothing
+end
 
-    msg = Dict(
-        "type" => "timeseries",
-        "simulation_id" => ctrl.simulation_id,
-        "data" => data
-    )
+"""Set the current path, clearing live history only when its lineage changes."""
+function enter_path!(ctrl::SimulationController, path::AbstractString, from::Float64)
+    live = ctrl.live
+    path_string = String(path)
+    lineage = lineage_of(path_string)
+    lock(live.lock) do
+        if lineage != live.active_lineage
+            empty!(live.series)
+            empty!(live.latest_values)
+            # Reseed the frame window at the new branch's start (see LiveTail).
+            empty!(live.frame_times)
+            push!(live.frame_times, from)
+            live.window_start = from
+            live.active_lineage = lineage
+            live.current_time = from
+        end
+        live.active_path = path_string
+    end
+    nothing
+end
 
-    try
-        send(ws, JSON.json(msg))
-    catch e
-        @warn "[SimulationController] Failed to send timeseries" exception=string(e)
+function prune_points!(points::LivePoints, cutoff::Float64)
+    isempty(points) && return
+
+    # Keep one value at the left edge so quiet sparse series remain visible.
+    first_after = findfirst(point -> point[1] >= cutoff, points)
+    if isnothing(first_after)
+        last_value = points[end][2]
+        empty!(points)
+        push!(points, (cutoff, last_value))
+    elseif first_after > 1
+        baseline = points[first_after - 1][2]
+        deleteat!(points, 1:first_after-1)
+        points[1][1] > cutoff && pushfirst!(points, (cutoff, baseline))
     end
 end
 
-"""
-    send_status(ctrl, status; error=nothing)
+"""Push the current frame boundary, drop frames older than `frame_window`, and
+return the cached `window_start` (the start of the retained span)."""
+function advance_frame_window!(live::LiveTail)::Float64
+    push!(live.frame_times, live.current_time)
+    # Keep one extra boundary so `window_start` is the start of the oldest
+    # *retained* frame, not its end.
+    excess = length(live.frame_times) - (live.frame_window + 1)
+    excess > 0 && deleteat!(live.frame_times, 1:excess)
+    live.window_start = first(live.frame_times)
+end
 
-Send a status change message via WebSocket.
-"""
-function send_status(ctrl::SimulationController, status::String; error::Union{String, Nothing} = nothing)
-    ws = _get_ws(ctrl)
-    if isnothing(ws)
-        @warn "[SimulationController] send_status: ws is nothing, cannot send" status=status id=ctrl.simulation_id
-        return
+"""Record one raw event in the latest-value map and, if selected, its live tail.
+Pruning happens once per frame in `update_live_progress!`, so this just appends."""
+function record_live_event!(ctrl::SimulationController, path::AbstractString,
+                            t::Float64, name::Symbol, value::Int64)
+    live = ctrl.live
+    lock(live.lock) do
+        live.current_time = max(live.current_time, t)
+        live.latest_values[name] = value
+        name in live.selected_species || return
+        path_series = get!(live.series, name) do
+            Dict{String, LivePoints}()
+        end
+        points = get!(path_series, String(path)) do
+            LivePoints()
+        end
+        push!(points, (t, value))
     end
+    nothing
+end
 
-    msg = Dict{String, Any}(
-        "type" => "status",
-        "simulation_id" => ctrl.simulation_id,
-        "status" => status
-    )
-    !isnothing(error) && (msg["error"] = error)
+function update_live_progress!(ctrl::SimulationController, current_time::Float64,
+                               frame_count::Int, total_progress::Float64)
+    live = ctrl.live
+    lock(live.lock) do
+        live.current_time = max(live.current_time, current_time)
+        live.frame_count = frame_count
+        live.total_progress = total_progress
+        cutoff = advance_frame_window!(live)
+        for path_series in values(live.series), points in values(path_series)
+            prune_points!(points, cutoff)
+        end
+        # Diagnostic: surface live-tail density so we can size the budget on real
+        # runs. Logs only on a new high, then goes quiet. Remove once tuned.
+        peak = maximum((length(p) for ps in values(live.series) for p in values(ps)); init=0)
+        if peak > live.peak_points
+            live.peak_points = peak
+            @info "[LiveTail] peak points/series" peak frames=frame_count
+        end
+    end
+    nothing
+end
 
-    try
-        send(ws, JSON.json(msg))
-    catch e
-        @warn "[SimulationController] Failed to send status" exception=string(e)
+"""
+    live_snapshot(ctrl; since, lineage)
+
+Return a JSON-friendly, internally consistent copy of the live state.
+
+The live window is mostly unchanged between polls, so we send it incrementally:
+when the caller passes the `since`/`lineage` cursor it last saw and that lineage
+still matches, only points newer than `since` are encoded (`reset = false`).
+A missing cursor or a lineage change (a branch cut) yields the whole window with
+`reset = true`, telling the client to replace its buffer rather than append.
+
+Points are returned raw; extending the active path's last value to `current_time`
+is a rendering concern owned by the client.
+"""
+function live_snapshot(ctrl::SimulationController;
+                       since::Union{Float64, Nothing}=nothing,
+                       lineage::Union{AbstractString, Nothing}=nothing)
+    live = ctrl.live
+    lock(live.lock) do
+        is_reset = isnothing(since) || isnothing(lineage) || lineage != live.active_lineage
+        series = Dict{String, Dict{String, Vector{Vector{Any}}}}()
+        for (species, path_series) in live.series
+            encoded_paths = Dict{String, Vector{Vector{Any}}}()
+            for (path, points) in path_series
+                encoded_paths[path] = is_reset ?
+                    [Any[t, value] for (t, value) in points] :
+                    [Any[t, value] for (t, value) in points if t > since]
+            end
+            series[String(species)] = encoded_paths
+        end
+        return (
+            current_time = live.current_time,
+            window_start = live.window_start,
+            frame_count = live.frame_count,
+            total_progress = live.total_progress,
+            active_lineage = live.active_lineage,
+            active_path = live.active_path,
+            reset = is_reset,
+            series,
+        )
     end
 end
 

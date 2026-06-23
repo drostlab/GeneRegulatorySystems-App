@@ -19,6 +19,7 @@ export type {
     TimeseriesMetadata,
     SimulationStatus,
     SimulationResult,
+    LiveSimulationSnapshot,
     PhaseSpacePoint,
     PhaseSpaceResult
 } from './simulation'

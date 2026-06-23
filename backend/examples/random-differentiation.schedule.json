@@ -16,8 +16,8 @@
             "step": [
                 {"{add}": {"polymerases": 5e5, "ribosomes": 2e6, "proteasomes": 1e6}},
                 {"{bootstrap/differentiation}": {"$": "do"}},
-                {"each": {"length": 20}, "branch": true, "step": {
-                    "to": 800000.0, "step": 2000.0
+                {"each": {"length": 5}, "branch": true, "step": {
+                    "to": 100000.0, "step": 10.0
                 }}
             ],
             "do": {"{regulation/random-differentiation}": {

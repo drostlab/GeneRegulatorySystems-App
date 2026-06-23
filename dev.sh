@@ -186,7 +186,7 @@ for PORT in 1420 8000; do
     fi
 done
 
-(cd "$BACKEND_DIR" && julia --project=. run.jl) &
+(cd "$BACKEND_DIR" && julia --threads=auto --project=. run.jl) &
 BACKEND_PID=$!
 
 (cd "$FRONTEND_DIR" && npm run dev) &

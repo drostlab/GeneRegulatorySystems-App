@@ -15,12 +15,6 @@ export const config = {
         return `${apiProtocol}://${apiHost}`
     },
 
-    /** WebSocket URL for persistent connection */
-    getWebSocketUrl: () => {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        return `${protocol}//${apiHost}/ws`
-    },
-
     /** Whether the backend has been confirmed ready */
     backendReady: false,
 }

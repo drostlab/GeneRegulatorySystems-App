@@ -28,18 +28,19 @@ export async function apiFetch(endpoint: string, options: FetchOptions = {}): Pr
 
             if (!response.ok && response.status >= 500 && attempt < maxRetries) {
                 console.warn(`[API] Retrying ${url} (attempt ${attempt + 1}/${maxRetries}) — status ${response.status}`)
-                await delay(retryDelay * Math.pow(2, attempt))
+                await delay(retryDelay * Math.pow(2, attempt), fetchOptions.signal)
                 continue
             }
 
             return response
         } catch (error) {
+            if (fetchOptions.signal?.aborted || isAbortError(error)) throw error
             lastError = error instanceof Error ? error : new Error(String(error))
 
             if (attempt === maxRetries) break
 
             console.warn(`[API] Retrying ${url} (attempt ${attempt + 1}/${maxRetries}) — ${lastError.message}`)
-            await delay(retryDelay * Math.pow(2, attempt))
+            await delay(retryDelay * Math.pow(2, attempt), fetchOptions.signal)
         }
     }
 
@@ -49,8 +50,24 @@ export async function apiFetch(endpoint: string, options: FetchOptions = {}): Pr
 /**
  * Helper to delay for retry backoff
  */
-function delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms))
+export function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+    if (signal?.aborted) return true
+    return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError'
+}
+
+function delay(ms: number, signal?: AbortSignal | null): Promise<void> {
+    if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort)
+            resolve()
+        }, ms)
+        const onAbort = () => {
+            clearTimeout(timer)
+            reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+        }
+        signal?.addEventListener('abort', onAbort, { once: true })
+    })
 }
 
 /**

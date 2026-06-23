@@ -1,11 +1,11 @@
 """
     StreamingSink
 
-Direct Arrow storage with WebSocket streaming for simulation events.
+Direct Arrow storage with an in-process live tail for simulation events.
 
 Implements columnar Arrow storage (matching ExperimentTool format) with:
 1. Time-window-based progress reporting via SimulationController
-2. Filtered timeseries streaming (only subscribed species)
+2. A bounded live tail for selected species
 3. Pause/resume checkpoint at each trace callback
 4. Direct file I/O (no dependency on ExperimentTool.artifact system)
 
@@ -18,14 +18,10 @@ module StreamingSink
 using GeneRegulatorySystems
 using GeneRegulatorySystems.Models
 using GeneRegulatorySystems.Models.Scheduling
-using HTTP
-import HTTP: send
-using JSON
 using Logging
 using Arrow
 using Tables
-
-import ..GapTracking: GapTracker, register_episode!, check_gap, check_synthetic_start
+import ..SimulationControl: check_control!, enter_path!, record_live_event!, update_live_progress!
 
 export StreamingSimulationSink, flush!
 
@@ -58,24 +54,23 @@ Matches ExperimentTool.Channel format for efficient Arrow columnar storage.
 end
 
 """
-    SegmentProgress
+    ProgressSegment
 
-Per-segment progress tracking info.
+One scheduled segment on the execution-ordered progress timeline.
 
-- `from`/`to`: time range of the segment
+- `from`/`to`: absolute simulation-time range of the segment
 - `duration`: `to - from` (precomputed)
 """
-@kwdef struct SegmentProgress
+@kwdef struct ProgressSegment
     from::Float64
     to::Float64
     duration::Float64
-    completed::Bool = false
 end
 
 """
     StreamingSimulationSink
 
-Direct Arrow sink with optional WebSocket streaming via SimulationController.
+Direct Arrow sink with optional live state via SimulationController.
 
 # Fields
 - `location::String`: Directory for Arrow files
@@ -83,17 +78,13 @@ Direct Arrow sink with optional WebSocket streaming via SimulationController.
 - `index::Vector`: Execution segment metadata
 - `threshold::Int`: Event buffer size before flush (default 200k)
 - `channels::Dict{String, Channel}`: Buffered events by channel
-- `controller`: SimulationController for pause/progress/timeseries (duck-typed)
+- `controller`: SimulationController for pause/progress/live timeseries (duck-typed)
 - `i_to_path::Dict{Int, String}`: Episode index to path mapping
-- `stream_interval_ns::UInt64`: Minimum nanoseconds between WS streaming updates (wall-clock)
-- `last_stream_ns::UInt64`: Wall-clock time (ns) of the last stream update
-- `pending_timeseries::Dict`: Accumulated timeseries for subscribed species since last stream
 - `frame_count::Int`: Running count of frames for progress reporting
-- `gap_tracker::GapTracker`: Shared gap detection logic for timeseries continuity
-- `segment_progress::Dict{Tuple{String,Float64}, SegmentProgress}`: Per-segment progress keyed by (execution_path, from)
-- `total_duration::Float64`: Sum of all segment durations (for computing total progress)
-- `completed_duration::Float64`: Sum of completed segment durations (for fast progress computation)
-- `current_segment_key::Union{Tuple{String,Float64}, Nothing}`: Key of the currently active segment
+- `progress_segments::Vector{ProgressSegment}`: Scheduled segments in execution order
+- `progress_prefix::Vector{Float64}`: Cumulative duration *before* each segment (prefix sum)
+- `total_duration::Float64`: Sum of all segment durations (denominator for total progress)
+- `committed_duration::Float64`: Scheduled duration executed so far, accumulated per traced segment
 """
 @kwdef mutable struct StreamingSimulationSink
     location::String
@@ -103,73 +94,66 @@ Direct Arrow sink with optional WebSocket streaming via SimulationController.
     channels::Dict{String, Channel} = Dict{String, Channel}()
     controller::Any = nothing
     i_to_path::Dict{Int, String} = Dict{Int, String}()
-    stream_interval_ns::UInt64 = UInt64(500_000_000)  # 500ms wall-clock
-    last_stream_ns::UInt64 = time_ns()
-    pending_timeseries::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}} = Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}()
     frame_count::Int = 0
-    gap_tracker::GapTracker = GapTracker()
-    segment_progress::Dict{Tuple{String,Float64}, SegmentProgress} = Dict{Tuple{String,Float64}, SegmentProgress}()
+    progress_segments::Vector{ProgressSegment} = ProgressSegment[]
+    progress_prefix::Vector{Float64} = Float64[]
     total_duration::Float64 = 0.0
-    completed_duration::Float64 = 0.0
-    current_segment_key::Union{Tuple{String,Float64}, Nothing} = nothing
-    """Per-(species, path) prev_end tracker for species-level gap detection, matching the HTTP path."""
-    species_path_prev_end::Dict{Tuple{Symbol, String}, Float64} = Dict{Tuple{Symbol, String}, Float64}()
+    committed_duration::Float64 = 0.0
 end
 
 """
     set_segments!(sink, segments)
 
-Initialise per-segment progress tracking from the schedule's timeline segments.
-Each segment is a NamedTuple or struct with `execution_path`, `from`, `to`.
+Initialise progress tracking from the schedule's execution-ordered timeline
+segments. Each segment is a NamedTuple or struct with `from`/`to`. The segments
+are collected by a dryrun in execution order, so progress can be located by
+cumulative scheduled duration — robust to branch time-resets (where a later
+branch restarts at an earlier absolute time) and to contiguous-segment merging.
 """
 function set_segments!(sink::StreamingSimulationSink, segments)
-    empty!(sink.segment_progress)
-    sink.total_duration = 0.0
-    sink.completed_duration = 0.0
+    empty!(sink.progress_segments)
+    empty!(sink.progress_prefix)
+    sink.committed_duration = 0.0
+    acc = 0.0
     for seg in segments
         dur = max(seg.to - seg.from, 0.0)
-        key = (seg.execution_path, seg.from)
-        sink.segment_progress[key] = SegmentProgress(from=seg.from, to=seg.to, duration=dur)
-        sink.total_duration += dur
+        push!(sink.progress_segments, ProgressSegment(from=seg.from, to=seg.to, duration=dur))
+        push!(sink.progress_prefix, acc)
+        acc += dur
     end
-    @debug "[StreamingSink] Segment progress initialised" n_segments=length(segments) total_duration=sink.total_duration
+    sink.total_duration = acc
+    @debug "[StreamingSink] Progress segments initialised" n_segments=length(segments) total_duration=sink.total_duration
 end
 
 """
-    _compute_total_progress(sink, current_time) -> Float64
+    compute_total_progress(sink, current_time) -> Float64
 
-Compute overall simulation progress (0.0–1.0) from per-segment tracking.
+Compute overall simulation progress (0.0–1.0).
+
+`committed_duration` is the scheduled duration of all fully traced segments, so
+it locates the currently executing segment on the execution-ordered timeline
+(by cumulative duration, not absolute time). `current_time` — the integrator
+time from a mid-segment `consolidated_progress` tick, or a segment's end time at
+a trace boundary — then adds smooth intra-segment progress on top.
 """
-function _compute_total_progress(sink::StreamingSimulationSink, current_time::Float64)::Float64
+function compute_total_progress(sink::StreamingSimulationSink, current_time::Float64)::Float64
     sink.total_duration <= 0.0 && return 0.0
+    elapsed = sink.committed_duration
 
-    # Start with already completed segments
-    progress_duration = sink.completed_duration
-
-    # Add partial progress for the current segment
-    key = sink.current_segment_key
-    if key !== nothing
-        seg = get(sink.segment_progress, key, nothing)
-        if seg !== nothing && !seg.completed && seg.duration > 0.0
-            frac = clamp((current_time - seg.from) / seg.duration, 0.0, 1.0)
-            progress_duration += seg.duration * frac
-        end
+    if !isempty(sink.progress_segments)
+        # The active segment is the last one whose prefix does not exceed what
+        # has been committed so far. Locate by committed (execution-order) duration
+        # rather than absolute time -- parallel branches reuse the same absolute
+        # time range, so a time-based scan would over-count sibling branches.
+        k = clamp(searchsortedlast(sink.progress_prefix, elapsed + 1e-9),
+                  1, length(sink.progress_segments))
+        seg = sink.progress_segments[k]
+        already = clamp(elapsed - sink.progress_prefix[k], 0.0, seg.duration)
+        intra = clamp(current_time - seg.from, 0.0, seg.duration)
+        elapsed = sink.progress_prefix[k] + max(already, intra)
     end
 
-    return clamp(progress_duration / sink.total_duration, 0.0, 1.0)
-end
-
-"""
-    _mark_segment_completed!(sink, key)
-
-Mark a segment as completed and accumulate its duration.
-"""
-function _mark_segment_completed!(sink::StreamingSimulationSink, key::Tuple{String,Float64})
-    seg = get(sink.segment_progress, key, nothing)
-    seg === nothing && return
-    seg.completed && return
-    sink.segment_progress[key] = SegmentProgress(from=seg.from, to=seg.to, duration=seg.duration, completed=true)
-    sink.completed_duration += seg.duration
+    return clamp(elapsed / sink.total_duration, 0.0, 1.0)
 end
 
 # ============================================================================
@@ -180,7 +164,7 @@ end
     (sink::StreamingSimulationSink)(state; path, primitive!, from, into, _...)
 
 Sink interface (callable struct). Called for each state transition.
-Accumulates events, checks pause, reports progress, and streams filtered timeseries.
+Accumulates events, checks lifecycle control, and updates live progress/timeseries.
 """
 function (sink::StreamingSimulationSink)(;
     path,
@@ -200,22 +184,17 @@ function (sink::StreamingSimulationSink)(
     into = nothing,
     _...,
 )
-    # Check pause before processing
-    _check_pause_if_needed(sink)
-
-    # Track which segment is currently executing
-    segment_key = (path, from)
-    if haskey(sink.segment_progress, segment_key)
-        # Mark previous segment completed if switching
-        prev = sink.current_segment_key
-        if prev !== nothing && prev !== segment_key
-            _mark_segment_completed!(sink, prev)
-        end
-        sink.current_segment_key = segment_key
-    end
+    check_control_if_needed(sink)
+    !isnothing(sink.controller) && enter_path!(sink.controller, path, Float64(from))
 
     sink.i += 1
     to = Models.t(state)
+
+    # Account this segment's scheduled duration towards overall progress. Trace
+    # callbacks fire in execution order, one per primitive, so this advances the
+    # progress front through the timeline (raw segments, not the merged ones used
+    # for the denominator — but both sum to the same total duration).
+    sink.committed_duration += max(to - Float64(from), 0.0)
     model = primitive!.path
     label = haskey(primitive!.bindings, :label) ? primitive!.bindings[:label] : ""
 
@@ -225,45 +204,19 @@ function (sink::StreamingSimulationSink)(
         push!(sink.index, (; sink.i, path, from, to, model, label, count = 0, into = ""))
         sink.i_to_path[sink.i] = path
 
-        # Register with gap tracker for bridging runs (step-based schedules).
-        # Do NOT call register_episode! for output episodes here — that happens below.
-        if from < to
-            register_episode!(sink.gap_tracker, path, from, to)
-        end
+        update_live!(sink, to)
         return
     end
 
     # Accumulate events from this state
     channel = get!(Channel, sink.channels, into)
     count = 0
-    episode_species = Set{Symbol}()  # species that produced events in this episode
-
-    # Per-species gap detection + synthetic start + endpoint injection.
-    # Mirrors _load_events_as_timeseries which iterates per (species, path) with its own prev_end.
-    if !isnothing(sink.controller)
-        for sp in sink.controller.subscribed_species
-            sp_prev_end = get(sink.species_path_prev_end, (sp, path), NaN)
-
-            # Gap detection
-            (insert_gap, gap_t_start, gap_t_end) = check_gap(sink.gap_tracker, path, from, sp_prev_end)
-            if insert_gap
-                species_dict = get!(sink.pending_timeseries, sp) do
-                    Dict{String, Vector{Tuple{Float64, Int}}}()
-                end
-                series = get!(species_dict, path) do; Tuple{Float64, Int}[] end
-                if isempty(series) || series[end][2] != Int64(-1)
-                    push!(series, (gap_t_start, Int64(-1)))
-                    push!(series, (gap_t_end, Int64(-1)))
-                end
-            end
-        end
-    end
 
     Models.each_event(state) do t::Float64, name::Symbol, value::Int64
         # Flush buffer if threshold reached
         if length(channel.values) >= sink.threshold
             @debug "[StreamingSink] Flushing channel (threshold)" into=into
-            _flush_channel!(sink, into)
+            flush_channel!(sink, into)
             channel = sink.channels[into] = Channel()
         end
 
@@ -273,167 +226,35 @@ function (sink::StreamingSimulationSink)(
         push!(channel.values, value)
         count += 1
 
-        _accumulate_subscribed(sink, name, path, t, value, episode_species)
-
-        # Stream inside the event loop on wall-clock interval
-        if time_ns() - sink.last_stream_ns >= sink.stream_interval_ns
-            _check_pause_if_needed(sink)
-            _stream_update(sink, t)
-        end
+        !isnothing(sink.controller) && record_live_event!(sink.controller, path, t, name, value)
     end
 
     sink.frame_count += 1
-
-    # Synthetic start-point: for the first episode on a path, duplicate the first
-    # real data point back to the bridging run start.
-    if !isnothing(sink.controller)
-        for sp in sink.controller.subscribed_species
-            sp_prev_end = get(sink.species_path_prev_end, (sp, path), NaN)
-            (insert_start, start_t) = check_synthetic_start(sink.gap_tracker, path, from, sp_prev_end)
-            if insert_start
-                sd = get(sink.pending_timeseries, sp, nothing)
-                isnothing(sd) && continue
-                series = get(sd, path, nothing)
-                (isnothing(series) || isempty(series)) && continue
-                series[1][2] == Int64(-1) && continue
-                pushfirst!(series, (start_t, series[1][2]))
-            end
-        end
-    end
-
-    # Endpoint injection: hold each subscribed species' last value to the episode end time.
-    # Only for species that actually produced events in THIS episode.
-    if !isnothing(sink.controller) && to > from
-        for sp in episode_species
-            sd = get(sink.pending_timeseries, sp, nothing)
-            isnothing(sd) && continue
-            series = get(sd, path, nothing)
-            (isnothing(series) || isempty(series)) && continue
-            last_t, last_v = series[end]
-            if last_v != Int64(-1) && last_t < to
-                push!(series, (to, last_v))
-            end
-        end
-    end
-
-    # Update per-(species, path) prev_end only for species that had events in this episode.
-    if !isnothing(sink.controller)
-        for sp in episode_species
-            sink.species_path_prev_end[(sp, path)] = to > 0.0 ? to : from
-        end
-    end
 
     # Record execution segment metadata
     push!(sink.index, (; sink.i, path, from, to, model, label, count, into))
     sink.i_to_path[sink.i] = path
 
-    # Register episode with gap tracker
-    register_episode!(sink.gap_tracker, path, from, to)
-
-    # Stream at episode boundary if wall-clock interval elapsed.
-    if time_ns() - sink.last_stream_ns >= sink.stream_interval_ns
-        _stream_update(sink, to)
-    end
+    update_live!(sink, to)
 end
 
 # ============================================================================
 # Pause Support
 # ============================================================================
 
-function _check_pause_if_needed(sink::StreamingSimulationSink)
+function check_control_if_needed(sink::StreamingSimulationSink)
     isnothing(sink.controller) && return
-    ctrl = sink.controller
-    ctrl.paused || return
-
-    # Flush buffered events to disk before blocking so paused results are loadable
-    @info "[StreamingSink] Flushing before pause"
-    for into in collect(keys(sink.channels))
-        _flush_channel!(sink, into)
-    end
-
-    lock(ctrl.pause_condition) do
-        while ctrl.paused
-            @info "[StreamingSink] Simulation paused, blocking..."
-            wait(ctrl.pause_condition)
-        end
-    end
+    check_control!(sink.controller)
 end
 
 # ============================================================================
-# Subscribed Species Streaming
+# Live progress
 # ============================================================================
 
-"""
-Accumulate a data point for subscribed species into the pending buffer.
-"""
-function _accumulate_subscribed(sink::StreamingSimulationSink, name::Symbol, path::String, t::Float64, value::Int64, episode_species::Set{Symbol})
+function update_live!(sink::StreamingSimulationSink, current_time::Float64)
     isnothing(sink.controller) && return
-    name in sink.controller.subscribed_species || return
-
-    species_dict = get!(sink.pending_timeseries, name) do
-        Dict{String, Vector{Tuple{Float64, Int}}}()
-    end
-    series = get!(species_dict, path) do; Tuple{Float64, Int}[] end
-    push!(series, (t, value))
-    push!(episode_species, name)
-end
-
-"""
-Send accumulated timeseries + progress to WS client, then clear the buffer.
-"""
-function _stream_update(sink::StreamingSimulationSink, current_time::Float64)
-    isnothing(sink.controller) && return
-    ctrl = sink.controller
-    ws = lock(ctrl.ws_lock) do; ctrl.ws_ref[]; end
-    isnothing(ws) && return
-
-    sink.last_stream_ns = time_ns()
-
-    # Send progress
-    total_progress = _compute_total_progress(sink, current_time)
-    @info "[StreamingSink] Streaming update" current_time=current_time frame_count=sink.frame_count total_progress=total_progress subscribed=length(ctrl.subscribed_species) pending=length(sink.pending_timeseries)
-    _ws_send(ws, Dict(
-        "type" => "progress",
-        "simulation_id" => ctrl.simulation_id,
-        "current_time" => current_time,
-        "frame_count" => sink.frame_count,
-        "total_progress" => total_progress
-    ))
-
-    # Send timeseries if any accumulated
-    if !isempty(sink.pending_timeseries)
-        n_points = sum(sum(length(pts) for pts in values(pd)) for pd in values(sink.pending_timeseries))
-        @info "[StreamingSink] Sending timeseries" species=length(sink.pending_timeseries) points=n_points
-        _ws_send_timeseries(ws, ctrl.simulation_id, sink.pending_timeseries)
-        empty!(sink.pending_timeseries)
-    end
-end
-
-function _ws_send(ws::HTTP.WebSocket, data::Dict)
-    try
-        send(ws, JSON.json(data))
-    catch e
-        @warn "[StreamingSink] WS send failed" exception=string(e)
-    end
-end
-
-function _ws_send_timeseries(ws::HTTP.WebSocket, simulation_id::String,
-                             timeseries::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}})
-    # Convert to JSON-friendly: { species: { path: [[t, v], ...] } }
-    data = Dict{String, Dict{String, Vector{Vector{Any}}}}()
-    for (species, path_data) in timeseries
-        sp = String(species)
-        data[sp] = Dict{String, Vector{Vector{Any}}}()
-        for (path, points) in path_data
-            data[sp][path] = [[t, v] for (t, v) in points]
-        end
-    end
-
-    _ws_send(ws, Dict(
-        "type" => "timeseries",
-        "simulation_id" => simulation_id,
-        "data" => data
-    ))
+    total_progress = compute_total_progress(sink, current_time)
+    update_live_progress!(sink.controller, current_time, sink.frame_count, total_progress)
 end
 
 # ============================================================================
@@ -444,36 +265,24 @@ end
     flush!(sink)
 
 Flush matching event channels to Arrow files. When `finalize` is true, also
-complete progress tracking and send the final timeseries update.
+complete progress tracking.
 """
 function flush!(sink::StreamingSimulationSink; matching = nothing, finalize::Bool = true)
     sink.i > 0 || return
     @info "[StreamingSink] Flushing channels" matching finalize
 
-    # Mark the final segment as completed only when finalizing the whole sink.
-    if finalize && sink.current_segment_key !== nothing
-        _mark_segment_completed!(sink, sink.current_segment_key)
-        sink.current_segment_key = nothing
-    end
-
     for into in keys(sink.channels)
         if matching === nothing || startswith(into, matching)
-            _flush_channel!(sink, into)
+            flush_channel!(sink, into)
         end
     end
 
-    _write_index!(sink)
+    write_index!(sink)
 
     finalize || return
 
-    # Final timeseries flush
-    if !isempty(sink.pending_timeseries) && !isnothing(sink.controller)
-        ctrl = sink.controller
-        ws = lock(ctrl.ws_lock) do; ctrl.ws_ref[]; end
-        if !isnothing(ws)
-            _ws_send_timeseries(ws, ctrl.simulation_id, sink.pending_timeseries)
-        end
-        empty!(sink.pending_timeseries)
+    if !isnothing(sink.controller) && !isempty(sink.index)
+        update_live!(sink, maximum(row.to for row in sink.index))
     end
 end
 
@@ -481,7 +290,7 @@ end
 Write the current index metadata to `index.arrow`, overwriting any previous version.
 Called incrementally on every channel flush and at final flush.
 """
-function _write_index!(sink::StreamingSimulationSink)
+function write_index!(sink::StreamingSimulationSink)
     isempty(sink.index) && return
     index = Tables.columntable(sink.index)
     index_file = joinpath(sink.location, "index.arrow")
@@ -501,7 +310,7 @@ end
 """
 Flush a single channel's buffered events to disk.
 """
-function _flush_channel!(sink::StreamingSimulationSink, into::String)
+function flush_channel!(sink::StreamingSimulationSink, into::String)
     channel = pop!(sink.channels, into)
     filename = joinpath(sink.location, "events$into.stream.arrow")
 
@@ -520,7 +329,7 @@ function _flush_channel!(sink::StreamingSimulationSink, into::String)
         Arrow.write(filename, events, file = false)
     end
 
-    _write_index!(sink)
+    write_index!(sink)
 end
 
 end # module

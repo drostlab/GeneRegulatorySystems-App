@@ -4,8 +4,7 @@
         {
             "step": {
                 "label": "SKG-k14",
-                "to": 500.0,
-                "step": 10.0,
+                "to": 50000.0,
                 "do": {"{regulation/kronecker}": {
                     "seed": "kronecker-${rootseed}",
                     "base_rates": {"$": ["defaults", "gene", "base_rates"]},
@@ -15,7 +14,7 @@
                                 [0.8, 0.6],
                                 [0.4, 0.2]
                             ],
-                            "power": 14,
+                            "power": 7,
                             "expected_links_per_gene": 0.4
                         },
                         "at": ["LogNormal", 2.0, 1.0]
@@ -26,7 +25,7 @@
                                 [0.6, 0.5],
                                 [0.4, 0.2]
                             ],
-                            "power": 14,
+                            "power": 7,
                             "expected_links_per_gene": 0.4
                         },
                         "at": ["LogNormal", 2.0, 1.0]

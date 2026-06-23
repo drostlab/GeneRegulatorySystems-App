@@ -51,7 +51,7 @@ export class CountsPanel extends TimeseriesPanel {
         super.clearData()
     }
 
-    setData(timeseries: TimeseriesData): void {
+    setData(timeseries: TimeseriesData, { animate = true }: { animate?: boolean } = {}): void {
         if (!timeseries) {
             this.clearData()
             return
@@ -63,10 +63,6 @@ export class CountsPanel extends TimeseriesPanel {
 
         // Build set of keys that should exist after this call
         const incomingKeys = new Set<string>()
-        const speciesList = Object.keys(timeseries)
-        const firstSpeciesPathSample = speciesList[0] ? Object.keys(timeseries[speciesList[0]]!).slice(0, 5) : []
-        const totalPaths = speciesList[0] ? Object.keys(timeseries[speciesList[0]]!).length : 0
-        console.debug(`[CountsPanel] setData input: ${speciesList.length} species, ${totalPaths} paths each. Sample paths:`, firstSpeciesPathSample)
         for (const [species, pathData] of Object.entries(timeseries)) {
             for (const path of Object.keys(pathData)) {
                 const label = getGeneFromSpeciesName(species) ?? species
@@ -82,7 +78,6 @@ export class CountsPanel extends TimeseriesPanel {
         }
 
         // Add or update series
-        let created = 0
         this.surface.suspendUpdates()
         for (const [species, pathData] of Object.entries(timeseries)) {
             for (const [path, series] of Object.entries(pathData)) {
@@ -114,64 +109,13 @@ export class CountsPanel extends TimeseriesPanel {
                         strokeThickness: 1,
                         isDigitalLine: true,
                         drawNaNAs: ELineDrawMode.DiscontinuousLine,
-                        animation: new SweepAnimation({ duration: SWEEP_DURATION_MS })
+                        animation: animate ? new SweepAnimation({ duration: SWEEP_DURATION_MS }) : undefined
                     })
                     this.surface.renderableSeries.add(lineSeries)
-                    created++
                 }
             }
         }
         this.surface.resumeUpdates()
-        console.debug(`[CountsPanel] setData: created=${created} reused=${incomingKeys.size - created} total=${this.surface.renderableSeries.size()}`)
-    }
-
-    appendStreamingData(timeseries: TimeseriesData): void {
-        if (!this.metadata) return
-
-        this.surface.suspendUpdates()
-        for (const [species, pathData] of Object.entries(timeseries)) {
-            for (const [path, points] of Object.entries(pathData)) {
-                const label = getGeneFromSpeciesName(species) ?? species
-                const key = `${label}:${path}`
-
-                let xySeries = this.seriesMap.get(key)
-                if (!xySeries) {
-                    xySeries = this._createStreamingSeries(key, label)
-                }
-
-                const len = points.length
-                const time = new Float64Array(len)
-                const counts = new Float64Array(len)
-                for (let i = 0; i < len; i++) {
-                    time[i] = points[i]![0]
-                    // -1 is the gap marker between non-contiguous episodes
-                    counts[i] = points[i]![1] === -1 ? NaN : points[i]![1]
-                }
-                xySeries.appendRange(time as unknown as number[], counts as unknown as number[])
-            }
-        }
-        this.surface.resumeUpdates()
-    }
-
-    /** Create a new XyDataSeries + FastLineRenderableSeries for a streaming key. */
-    private _createStreamingSeries(key: string, label: string): XyDataSeries {
-        const colour = this.metadata!.gene_colours[label] ?? this.theme.chart.fallbackSeries
-        const xySeries = new XyDataSeries(this.wasmContext, {
-            isSorted: true,
-            containsNaN: true,
-            dataSeriesName: key
-        })
-        this.seriesMap.set(key, xySeries)
-
-        const lineSeries = new FastLineRenderableSeries(this.wasmContext, {
-            dataSeries: xySeries,
-            stroke: colour,
-            strokeThickness: 1,
-            isDigitalLine: true,
-            drawNaNAs: ELineDrawMode.DiscontinuousLine
-        })
-        this.surface.renderableSeries.add(lineSeries)
-        return xySeries
     }
 
     /** Remove a renderable series (and its data series) by key. */

@@ -2,22 +2,21 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useScheduleStore } from './scheduleStore'
 import { useViewerStore } from './viewerStore'
-import type { SimulationResult, TimeseriesData, PhaseSpaceResult } from '@/types/simulation'
+import type { SimulationResult, TimeseriesData, PhaseSpaceResult, LiveSimulationSnapshot } from '@/types/simulation'
 import { formatResultLabel, getProgress } from '@/types/simulation'
 import { getTimeExtent } from '@/types/schedule'
 import * as simulationService from '@/services/simulationService'
-import { getSimulationStream } from '@/composables/useSimulationStream'
 
 const DEFAULT_STREAM_GENE_COUNT = 5
 
 /**
  * Simulation Store -- manages simulation results with lazy per-gene timeseries loading
- * and live WebSocket streaming during runs.
+ * and HTTP-polled live snapshots during runs.
  *
  * Architecture:
  * - `loadResult(id)` loads metadata only (no timeseries)
  * - `fetchGeneTimeseries(genes)` fetches species for those genes via HTTP
- * - `runSimulation()` starts async simulation, receives progress + timeseries via WS
+ * - `runSimulation()` starts async simulation; TrackViewer polls its live tail
  * - `pauseSimulation()` / `resumeSimulation()` control running simulation
  * - `progress` computed gives 0-1 fraction from current_time / max_time
  */
@@ -53,9 +52,6 @@ export const useSimulationStore = defineStore(
 
         /** Currently in-flight gene fetch (prevents concurrent fetches). */
         const isFetchingTimeseries = ref(false)
-
-        /** Latest streaming delta from WS (consumed by TrackViewer for appendStreamingData). */
-        const streamingDelta = ref<TimeseriesData | null>(null)
 
         /** Phase-space embedding result, available once server has finished computing it. */
         const phaseSpaceResult = ref<PhaseSpaceResult | null>(null)
@@ -184,95 +180,66 @@ export const useSimulationStore = defineStore(
             ) as TimeseriesData
         }
 
-        // =====================================================================
-        // STREAMING (WS)
-        // =====================================================================
-
-        function _onProgress(currentTime: number, frameCount: number, totalProgress: number | null): void {
-            if (!currentResult.value) {
-                console.warn('[SimulationStore] _onProgress called but no currentResult')
-                return
-            }
-            isPreparingSimulation.value = false
-            currentResult.value = {
-                ...currentResult.value,
-                current_time: currentTime,
-                frame_count: frameCount,
-                total_progress: totalProgress,
-            }
-        }
-
-        function _onTimeseries(data: TimeseriesData): void {
-            // During streaming, skip merging into timeseriesCache — the cache is
-            // cleared on completion and re-fetched via HTTP. Only forward the
-            // delta so TrackViewer can push it to SciChart.
-            streamingDelta.value = data
-        }
-
-        function _onStatus(status: string, error?: string): void {
-            console.debug(`[SimulationStore] _onStatus: status=${status} error=${error ?? 'none'} hasResult=${!!currentResult.value}`)
-            if (!currentResult.value) return
-            isPreparingSimulation.value = false
-            currentResult.value = {
-                ...currentResult.value,
-                status: status as SimulationResult['status'],
-                ...(error ? { error } : {}),
-            }
-            if (status === 'completed' || status === 'error') {
-                isSimulationRunning.value = false
-                isPaused.value = false
-
-                // Register phase-space callback BEFORE untrack() so the WS connection is still open
-                if (status === 'completed') {
-                    const simId = currentResult.value.id
-                    isPhaseSpacePending.value = true
-                    getSimulationStream().trackPhaseSpace(simId, (id) => { _onPhaseSpaceReady(id) })
-                }
-
-                getSimulationStream().untrack()
-
-                // Refetch definitive timeseries from server (replaces streaming cache)
-                if (status === 'completed') {
-                    clearTimeseriesCache()
-                    const scheduleStore = useScheduleStore()
-                    const viewerStore = useViewerStore()
-                    const genes = viewerStore.selectedGenes.length > 0
-                        ? viewerStore.selectedGenes
-                        : (scheduleStore.allGenes ?? []).slice(0, DEFAULT_STREAM_GENE_COUNT)
-                    if (genes.length > 0) {
-                        fetchGeneTimeseries(genes)
-                    }
-                    const otherSpecies = viewerStore.selectedOtherSpecies
-                    if (otherSpecies.length > 0) {
-                        fetchOtherSpeciesTimeseries(otherSpecies)
-                    }
-                }
-            }
-            if (status === 'paused') {
-                isPaused.value = true
-            }
-            if (status === 'running') {
-                isPaused.value = false
-            }
-        }
-
-        async function _onPhaseSpaceReady(simId: string): Promise<void> {
-            const data = await simulationService.fetchPhaseSpace(simId)
-            phaseSpaceResult.value = data
-            isPhaseSpacePending.value = false
-            getSimulationStream().clearPhaseSpaceTracking()
-            console.debug(`[SimulationStore] Phase space loaded: ${data?.n_cells ?? 0} cells, method=${data?.method ?? 'n/a'}`)
-        }
-
-        /** Update the set of species streamed via WS based on selected genes + other species. */
-        function updateStreamSubscription(genes: string[], otherSpecies: string[] = []): void {
-            if (!isSimulationRunning.value) return
+        /**
+         * Fetch screen-resolution data for a finished result via the server pyramid.
+         * View-scoped (not merged into the cache): returns ≲2·width_px points per
+         * (species, path) for the window [t0, t1]. Resolves species from gene ids +
+         * direct other-species names.
+         */
+        async function fetchViewport(
+            genes: string[],
+            otherSpecies: string[],
+            paths: string[] | null,
+            t0: number,
+            t1: number,
+            widthPx: number,
+        ): Promise<TimeseriesData | null> {
+            const resultId = currentResultId.value
+            if (!resultId) return null
             const scheduleStore = useScheduleStore()
             const species = [
-                ...genes.flatMap(gene => scheduleStore.getSpeciesForGeneId(gene)),
+                ...genes.flatMap(g => scheduleStore.getSpeciesForGeneId(g)),
                 ...otherSpecies,
             ]
-            getSimulationStream().subscribe(species)
+            if (species.length === 0) return {}
+            return simulationService.fetchViewport(resultId, {
+                species, paths, t0, t1, width_px: widthPx,
+            })
+        }
+
+        // =====================================================================
+        // LIVE SNAPSHOTS (HTTP polling is owned by TrackViewer)
+        // =====================================================================
+
+        function applyLiveSnapshot(snapshot: LiveSimulationSnapshot): void {
+            if (!currentResult.value) return
+            const terminal = ['completed', 'error', 'cancelled'].includes(snapshot.status)
+            const hasLiveData = snapshot.current_time > 0 || Object.keys(snapshot.series).length > 0
+            if (hasLiveData || terminal) isPreparingSimulation.value = false
+            currentResult.value = {
+                ...currentResult.value,
+                status: snapshot.status,
+                current_time: snapshot.current_time,
+                frame_count: snapshot.frame_count,
+                total_progress: snapshot.total_progress,
+                ...(snapshot.error ? { error: snapshot.error } : {}),
+            }
+
+            if (terminal) {
+                isSimulationRunning.value = false
+                isPaused.value = false
+                snapshot.status === 'completed' && (isPhaseSpacePending.value = true)
+            }
+            isPaused.value = snapshot.status === 'paused'
+        }
+
+        async function loadPhaseSpaceWhenReady(simId: string): Promise<boolean> {
+            const data = await simulationService.fetchPhaseSpace(simId)
+            if (!data) return false
+            phaseSpaceResult.value = data
+            isPhaseSpacePending.value = false
+            console.debug(`[SimulationStore] Phase space loaded: ${data?.n_cells ?? 0} cells, method=${data?.method ?? 'n/a'}`)
+            return true
         }
 
         // =====================================================================
@@ -286,10 +253,11 @@ export const useSimulationStore = defineStore(
                 phaseSpaceResult.value = null
                 isPhaseSpacePending.value = false
                 const result = await simulationService.loadResult(resultId)
-                currentResult.value = result
 
                 const scheduleStore = useScheduleStore()
-                await scheduleStore.loadScheduleBySpec(result.schedule_spec, result.schedule_name)
+                const loadedSchedule = await scheduleStore.loadScheduleBySpec(result.schedule_spec, result.schedule_name)
+                if (!loadedSchedule) return
+                currentResult.value = result
 
                 // When the schedule was already loaded (same spec), allGenes doesn't change
                 // so the selectedGenes watcher never fires and fetchGeneTimeseries is never called.
@@ -327,12 +295,7 @@ export const useSimulationStore = defineStore(
             isPreparingSimulation.value = true
             isPaused.value = false
 
-            // Connect WS before starting (await ensures backend has ws_client)
-            const stream = getSimulationStream()
-            await stream.connect()
-
-            // Compute initial species to subscribe server-side so streaming starts
-            // with the first episode -- uses current selection to preserve user choices.
+            // Supply the initial live selection so the first recorded episode is retained.
             const viewerStore = useViewerStore()
             const selectedGenes = viewerStore.selectedGenes.length > 0
                 ? viewerStore.selectedGenes.slice(0, DEFAULT_STREAM_GENE_COUNT)
@@ -343,70 +306,62 @@ export const useSimulationStore = defineStore(
                 ...selectedOther,
             ]
 
-            const result = await simulationService.runSimulation(
-                scheduleStore.schedule.name,
-                scheduleStore.schedule.spec,
-                getTimeExtent(scheduleStore.segments).max,
-                initialSpecies,
-            )
-            currentResult.value = result
-            console.debug(`[SimulationStore] runSimulation: got result id=${result.id} status=${result.status}`)
-
-            // Track this simulation via WS
-            stream.track(result.id, {
-                onProgress: _onProgress,
-                onTimeseries: _onTimeseries,
-                onStatus: _onStatus,
-            })
-
-            // Subscribe selected genes for live streaming (WS subscription complements
-            // the server-side initial subscription from the run request)
-            if (selectedGenes.length > 0) {
-                updateStreamSubscription(selectedGenes, selectedOther)
-            }
-
-            // Catch fast-simulation race: if the simulation completed before track() was
-            // called, all WS messages were dropped. Poll once to get the current state.
-            const polledResult = await simulationService.loadResult(result.id)
-            currentResult.value = polledResult
-            if (polledResult.status === 'completed' || polledResult.status === 'error') {
-                console.debug(`[SimulationStore] Fast-simulation detected: already ${polledResult.status} before track()`)
-                _onStatus(polledResult.status, polledResult.error ?? undefined)
-            } else {
+            try {
+                const result = await simulationService.runSimulation(
+                    scheduleStore.schedule.name,
+                    scheduleStore.schedule.spec,
+                    getTimeExtent(scheduleStore.segments).max,
+                    initialSpecies,
+                )
+                currentResult.value = result
+                return result
+            } catch (error) {
+                isSimulationRunning.value = false
                 isPreparingSimulation.value = false
+                throw error
             }
-
-            return polledResult
         }
 
-        function pauseSimulation(): void {
-            getSimulationStream().pause()
+        async function pauseSimulation(): Promise<void> {
+            if (!currentResult.value) return
+            await simulationService.pauseSimulation(currentResult.value.id)
             isPaused.value = true
         }
 
-        function resumeSimulation(): void {
-            getSimulationStream().resume()
+        async function resumeSimulation(): Promise<void> {
+            if (!currentResult.value) return
+            await simulationService.resumeSimulation(currentResult.value.id)
             isPaused.value = false
         }
 
-        /** Cancel a running/paused simulation: pause it server-side and clean up. */
-        function cancelSimulation(): void {
-            if (isSimulationRunning.value) {
-                getSimulationStream().pause()
-                getSimulationStream().untrack()
-            }
-            isSimulationRunning.value = false
-            isPaused.value = false
-            isPreparingSimulation.value = false
-            clearTimeseriesCache()
-            currentResult.value = null
+        /** Request cooperative cancellation; the poller observes its terminal state. */
+        async function cancelSimulation(): Promise<void> {
+            if (!isSimulationRunning.value || !currentResult.value) return
+            await simulationService.cancelSimulation(currentResult.value.id)
         }
 
         function clearTimeseriesCache(): void {
             timeseriesCache.value = {}
             fetchedGenes.value = new Set()
             fetchedOtherSpecies.value = new Set()
-            streamingDelta.value = null
+        }
+
+        /**
+         * Abandon the active run before replacing it (e.g. on a schedule switch).
+         * A paused/running simulation still holds the backend's single active slot,
+         * so we cancel it -- the worker finalizes it as an incomplete result and
+         * frees the slot -- then clear local state.
+         */
+        async function discardActiveSimulation(): Promise<void> {
+            const id = currentResult.value?.id
+            if (id && (isSimulationRunning.value || isPaused.value)) {
+                try {
+                    await simulationService.cancelSimulation(id)
+                } catch (error) {
+                    console.warn('[SimulationStore] Failed to cancel active simulation:', error)
+                }
+            }
+            clearResult()
         }
 
         function clearResult(): void {
@@ -458,9 +413,9 @@ export const useSimulationStore = defineStore(
             isLoaded,
             progress,
             timeseries,
-            streamingDelta,
             fetchedGenes,
             getTimeseries,
+            fetchViewport,
             fetchGeneTimeseries,
             fetchOtherSpeciesTimeseries,
             autoRunOnSave,
@@ -470,7 +425,9 @@ export const useSimulationStore = defineStore(
             pauseSimulation,
             resumeSimulation,
             cancelSimulation,
-            updateStreamSubscription,
+            discardActiveSimulation,
+            applyLiveSnapshot,
+            loadPhaseSpaceWhenReady,
             clearResult,
         }
     }

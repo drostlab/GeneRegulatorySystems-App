@@ -20,7 +20,7 @@ Colouring:
   - Otherwise → colour by execution path, using a fixed hue palette.
 
 The result is stored as `phasespace.json` in the simulation result directory
-and the client is notified via WS `{ type: "phasespace_ready", simulation_id }`.
+and the client discovers completion by polling the phase-space endpoint.
 """
 module PhaseSpace
 

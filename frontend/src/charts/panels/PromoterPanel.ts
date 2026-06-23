@@ -1,11 +1,21 @@
-import { EAxisAlignment, ELineDrawMode, EResamplingMode, FastBandRenderableSeries, NumericAxis, SweepAnimation, XyyDataSeries } from "scichart"
+import {
+    EAxisAlignment,
+    EFillPaletteMode,
+    ELineDrawMode,
+    EResamplingMode,
+    FastBandRenderableSeries,
+    NumericAxis,
+    SweepAnimation,
+    XyyDataSeries,
+    parseColorToUIntArgb,
+    type IFillPaletteProvider,
+    type IRenderableSeries,
+} from "scichart"
 import { TimeseriesPanel } from "./TimeseriesPanel"
 import { PATH_DIM_OPACITY, type BasePanelOptions } from "./BasePanel"
 import type { TimeseriesData, TimeseriesMetadata } from "@/types/simulation"
 import { restructureTimeseriesByPathAndGene } from "@/types/simulation"
-import { getGeneFromSpeciesName } from "@/types/schedule"
 import { CHART_FONT_SIZES, AXIS_THICKNESS } from "../chartConstants"
-import { withOpacity } from "@/utils/colorUtils"
 import { setupTimeAxis } from "../timeFormat"
 
 const SWEEP_DURATION_MS = 400
@@ -21,8 +31,11 @@ export class PromoterPanel extends TimeseriesPanel {
     /** Cached band layout params per series key: { yCenter, bandHeight } */
     private bandParams: Map<string, { yCenter: number; bandHeight: number }> = new Map()
 
-    /** Original hex colour per series key — used by highlightPath to dim fills. */
-    private keyColourMap: Map<string, string> = new Map()
+    /** Activity value for each expanded SciChart vertex, used by palette providers. */
+    private keyActivityMap: Map<string, number[]> = new Map()
+
+    /** Highlight opacity multiplier per series key. */
+    private keyHighlightOpacity: Map<string, number> = new Map()
 
     constructor(options: BasePanelOptions) {
         super(options)
@@ -88,11 +101,13 @@ export class PromoterPanel extends TimeseriesPanel {
 
     override clearData(): void {
         this.seriesMap.clear()
+        this.keyActivityMap.clear()
+        this.keyHighlightOpacity.clear()
         // Note: bandParams is NOT cleared here -- it's layout, recomputed from setMetadata/setPathYRanges
         super.clearData()
     }
 
-    setData(timeseries: TimeseriesData): void {
+    setData(timeseries: TimeseriesData, { animate = true }: { animate?: boolean } = {}): void {
         if (!timeseries || !this.metadata) {
             this.clearData()
             return
@@ -125,7 +140,6 @@ export class PromoterPanel extends TimeseriesPanel {
         }
 
         // Add or update series
-        let created = 0
         this.surface.suspendUpdates()
         for (const [path, geneData] of Object.entries(dataByPath)) {
             const yRange = this.pathYRanges.get(path)
@@ -136,7 +150,8 @@ export class PromoterPanel extends TimeseriesPanel {
                 const { colour, series } = geneData[geneId]!
                 const key = `${geneId}:${path}`
                 const { yCenter, bandHeight } = this.bandParams.get(key)!
-                const { xData, yTop, yBottom } = this._buildBandArrays(series, yCenter, bandHeight)
+                const { xData, yTop, yBottom, activity } = this._buildBandArrays(series, yCenter, bandHeight)
+                this.keyActivityMap.set(key, activity)
 
                 const existing = this.seriesMap.get(key)
                 if (existing) {
@@ -157,7 +172,7 @@ export class PromoterPanel extends TimeseriesPanel {
                     }
                     this.seriesMap.set(key, xyyDataSeries)
 
-                    this.keyColourMap.set(key, colour)
+                    this.keyHighlightOpacity.set(key, 1)
                     const bandSeries = new FastBandRenderableSeries(this.wasmContext, {
                         dataSeries: xyyDataSeries,
                         stroke: colour,
@@ -165,74 +180,39 @@ export class PromoterPanel extends TimeseriesPanel {
                         fillY1: colour,
                         strokeY1: colour,
                         drawNaNAs: ELineDrawMode.DiscontinuousLine,
-                        resamplingMode: EResamplingMode.Auto,
-                        animation: new SweepAnimation({ duration: SWEEP_DURATION_MS })
+                        resamplingMode: EResamplingMode.None,
+                        animation: animate ? new SweepAnimation({ duration: SWEEP_DURATION_MS }) : undefined
                     })
+                    bandSeries.paletteProvider = this._buildActivityPalette(key, colour)
                     this.surface.renderableSeries.add(bandSeries)
-                    created++
                 }
             })
-        }
-        this.surface.resumeUpdates()
-        console.debug(`[PromoterPanel] setData: created=${created} reused=${incomingKeys.size - created} total=${this.surface.renderableSeries.size()}`)
-    }
-
-    appendStreamingData(timeseries: TimeseriesData): void {
-        if (!this.metadata) return
-
-        this.surface.suspendUpdates()
-        for (const [species, pathData] of Object.entries(timeseries)) {
-            for (const [path, points] of Object.entries(pathData)) {
-                const label = getGeneFromSpeciesName(species) ?? species
-                const key = `${label}:${path}`
-
-                const params = this.bandParams.get(key)
-                if (!params) {
-                    continue
-                }
-
-                let xyyData = this.seriesMap.get(key)
-                if (!xyyData) {
-                    xyyData = this._createStreamingSeries(key, label)
-                }
-
-                const { yCenter, bandHeight } = params
-
-                // Cross-batch step fix: prepend the last state from the existing series
-                // so _buildBandArrays can generate the step-duplicate at the boundary.
-                let batchPoints: Array<[number, number]> = points
-                const n = xyyData.count()
-                if (n > 0 && points.length > 0 && points[0]![1] !== -1) {
-                    const lastY = xyyData.getNativeYValues().get(n - 1)
-                    // NaN means the last point was a gap marker -- skip step-dup
-                    if (!isNaN(lastY)) {
-                        const lastState = Math.abs(lastY - yCenter) > 0.01 ? 1 : 0
-                        batchPoints = [[points[0]![0], lastState], ...points]
-                    }
-                }
-
-                const { xData, yTop, yBottom } = this._buildBandArrays(batchPoints, yCenter, bandHeight)
-                if (xData.length > 0) {
-                    xyyData.appendRange(xData, yTop, yBottom)
-                }
-            }
         }
         this.surface.resumeUpdates()
     }
 
     /**
-     * Convert raw timeseries points into digital band arrays.
-     * For each transition, we duplicate the point at the new time with the old state
-     * (creating a step), then add the point with the new state.
+     * Convert activity points into band arrays. Exact integer states retain the
+     * original digital-band geometry; fractional viewport values use a narrow,
+     * fixed-height density strip. Step duplication keeps bin edges sharp.
      */
     private _buildBandArrays(
         series: Array<[number, number]>,
         yCenter: number,
         bandHeight: number
-    ): { xData: number[]; yTop: number[]; yBottom: number[] } {
+    ): { xData: number[]; yTop: number[]; yBottom: number[]; activity: number[] } {
         const xData: number[] = []
         const yTop: number[] = []
         const yBottom: number[] = []
+        const activity: number[] = []
+        const isDensity = series.some(([, state]) =>
+            state !== -1 && Math.abs(state - Math.round(state)) > 1e-9
+        )
+        const densityHalfHeight = 0.5 * bandHeight
+
+        const halfHeightFor = (state: number): number => isDensity
+            ? densityHalfHeight
+            : 0.5 * bandHeight * state
 
         for (let i = 0; i < series.length; i++) {
             const [time, state] = series[i]!
@@ -242,6 +222,7 @@ export class PromoterPanel extends TimeseriesPanel {
                 xData.push(time)
                 yTop.push(NaN)
                 yBottom.push(NaN)
+                activity.push(0)
                 continue
             }
 
@@ -249,62 +230,56 @@ export class PromoterPanel extends TimeseriesPanel {
                 const prevState = series[i - 1]![1]
                 // Skip the step-duplicate if the previous point was a gap marker
                 if (prevState !== -1) {
-                    const halfHeight = 0.5 * bandHeight * prevState
+                    const halfHeight = halfHeightFor(prevState)
                     xData.push(time)
                     yTop.push(yCenter + halfHeight)
                     yBottom.push(yCenter - halfHeight)
+                    activity.push(prevState)
                 }
             }
 
-            const halfHeight = 0.5 * bandHeight * state
+            const halfHeight = halfHeightFor(state)
             xData.push(time)
             yTop.push(yCenter + halfHeight)
             yBottom.push(yCenter - halfHeight)
+            activity.push(state)
         }
 
-        return { xData, yTop, yBottom }
+        return { xData, yTop, yBottom, activity }
+    }
+
+    /** Colour the fixed-height activity strip with alpha proportional to occupancy. */
+    private _buildActivityPalette(key: string, colour: string): IFillPaletteProvider {
+        const rgb = parseColorToUIntArgb(colour) & 0x00ffffff
+        return {
+            fillPaletteMode: EFillPaletteMode.SOLID,
+            isRangeIndependant: true,
+            onAttached(_series: IRenderableSeries): void {},
+            onDetached(): void {},
+            shouldUpdatePalette: (): boolean => true,
+            overrideFillArgb: (_x: number, _y: number, index: number): number => {
+                const value = this.keyActivityMap.get(key)?.[index] ?? 0
+                const highlight = this.keyHighlightOpacity.get(key) ?? 1
+                const alpha = Math.round(255 * Math.min(1, Math.max(0, value)) * highlight)
+                return (((alpha << 24) | rgb) >>> 0)
+            },
+        }
     }
 
     /**
-     * Composable highlight for band fills: dims non-matching series.
-     * Overrides BasePanel because FastBandRenderableSeries.opacity does not
-     * affect the fillY1 area -- we must rewrite fillY1 with an alpha channel.
+     * Composable highlight for activity-density fills. Highlight opacity becomes
+     * a multiplier in the per-point palette rather than replacing its alpha.
      */
     protected override _applyHighlightFilters(): void {
         for (const rs of this.surface.renderableSeries.asArray()) {
             if (!(rs instanceof FastBandRenderableSeries)) continue
             const name = rs.dataSeries?.dataSeriesName ?? ''
-            const baseColour = this.keyColourMap.get(name)
-            if (!baseColour) continue
-            const matches = this._seriesMatchesFilters(name)
-            rs.fillY1 = matches ? baseColour : withOpacity(baseColour, PATH_DIM_OPACITY)
-            rs.strokeY1 = rs.fillY1
-            rs.stroke = rs.fillY1
+            this.keyHighlightOpacity.set(
+                name,
+                this._seriesMatchesFilters(name) ? 1 : PATH_DIM_OPACITY,
+            )
         }
-    }
-
-    /** Create a new XyyDataSeries + FastBandRenderableSeries for streaming. */
-    private _createStreamingSeries(key: string, label: string): XyyDataSeries {
-        const colour = this.metadata!.gene_colours[label] ?? this.theme.chart.fallbackSeries
-        this.keyColourMap.set(key, colour)
-        const xyyData = new XyyDataSeries(this.wasmContext, {
-            isSorted: true,
-            containsNaN: true,
-            dataSeriesName: key
-        })
-        this.seriesMap.set(key, xyyData)
-
-        const bandSeries = new FastBandRenderableSeries(this.wasmContext, {
-            dataSeries: xyyData,
-            stroke: colour,
-            strokeThickness: 0.0,
-            fillY1: colour,
-            strokeY1: colour,
-            drawNaNAs: ELineDrawMode.DiscontinuousLine,
-            resamplingMode: EResamplingMode.Auto
-        })
-        this.surface.renderableSeries.add(bandSeries)
-        return xyyData
+        this.surface.invalidateElement()
     }
 
     /** Remove a renderable series (and its data series) by key. */
@@ -320,6 +295,7 @@ export class PromoterPanel extends TimeseriesPanel {
         dataSeries.delete()
         this.seriesMap.delete(key)
         this.bandParams.delete(key)
-        this.keyColourMap.delete(key)
+        this.keyActivityMap.delete(key)
+        this.keyHighlightOpacity.delete(key)
     }
 }

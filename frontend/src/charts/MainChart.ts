@@ -20,9 +20,16 @@ import { ChartLayout, type GroupNode, type LayoutNode } from "./layout/ChartLayo
 import { collectPathYRanges } from "./layout/rectangleLayout"
 import { getPathTimeRanges } from "@/types/schedule"
 import type { StructureNode, TimelineSegment, TimeseriesData, TimeseriesMetadata } from "@/types"
-import type { PhaseSpaceResult } from "@/types/simulation"
+import type { LiveSimulationSnapshot, PhaseSpaceResult } from "@/types/simulation"
 import { type SpeciesType } from "@/types/schedule"
 import { useScheduleStore } from "@/stores/scheduleStore"
+
+/** Visible time window + pixel width driving adaptive (pyramid) data requests. */
+export interface Viewport {
+    t0: number
+    t1: number
+    widthPx: number
+}
 
 export type SelectionChangeCallback = (selectedGenes: string[]) => void
 export type SegmentClickCallback = (segmentId: number, modelPath: string) => void
@@ -243,6 +250,25 @@ export class MainChart {
         this.timeCursorModifier?.onSubChartVisibilityChanged()
     }
 
+    /**
+     * Enable/disable user zoom & pan across all panels. Disabled during live
+     * streaming so the viewport stays put (the animator drives the range); the
+     * full pyramid-backed zoom/pan is available once the run finishes.
+     */
+    setZoomEnabled(enabled: boolean): void {
+        for (const { panel } of this.tracks) {
+            panel.surface.chartModifiers.asArray().forEach(m => {
+                if (
+                    m instanceof ZoomPanModifier ||
+                    m instanceof MouseWheelZoomModifier ||
+                    m instanceof ZoomExtentsModifier
+                ) {
+                    m.isEnabled = enabled
+                }
+            })
+        }
+    }
+
     /** Zoom all visible panels to fit their data on both axes. */
     zoomExtentsAll(): void {
         for (const { panel } of this.tracks) {
@@ -263,6 +289,7 @@ export class MainChart {
     }
 
     dispose(): void {
+        this.stopLiveStream()
         this.tracks?.forEach(({ panel }) => panel.dispose())
         this.phaseSpacePanel?.dispose()
         this.chartLayout?.dispose()
@@ -308,7 +335,63 @@ export class MainChart {
         this.timeCursorModifier.applyColorTheme(isDark)
     }
 
-    setSimulationData(timeseries: TimeseriesData): void {
+    // ------------------------------------------------------------------
+    // Adaptive viewport (server-side decimation)
+    // ------------------------------------------------------------------
+
+    private viewportChangeCallback?: (vp: Viewport) => void
+    private viewportDebounce?: ReturnType<typeof setTimeout>
+
+    /**
+     * Current visible time window + pixel width of the timeseries area, used to
+     * request screen-resolution data from the server pyramid. Reads the shared
+     * (synced) x-axis of the first visible timeseries panel.
+     */
+    getViewport(): Viewport | null {
+        for (const { panel } of this.getTimeseriesPanels()) {
+            if (!panel.isVisible) continue
+            const xAxis = panel.surface.xAxes.get(0)
+            if (!xAxis) continue
+            // seriesViewRect is undefined until the surface has been laid out;
+            // a result can load before the panels are sized, so skip until ready.
+            const viewRect = panel.surface.seriesViewRect
+            if (!viewRect) continue
+            const range = xAxis.visibleRange
+            const widthPx = Math.max(1, Math.round(viewRect.width))
+            if (!Number.isFinite(range.min) || !Number.isFinite(range.max) || range.max <= range.min) continue
+            return { t0: range.min, t1: range.max, widthPx }
+        }
+        return null
+    }
+
+    /**
+     * Fire `cb` (debounced) whenever the user zooms/pans the timeseries x-axis, so
+     * the caller can re-query the pyramid at the new resolution. Wired to every
+     * timeseries panel's x-axis since AxisSyncModifier keeps them in lock-step.
+     */
+    onViewportChange(cb: (vp: Viewport) => void): void {
+        this.viewportChangeCallback = cb
+        for (const { panel } of this.getTimeseriesPanels()) {
+            const xAxis = panel.surface.xAxes.get(0)
+            xAxis?.visibleRangeChanged.subscribe(() => this._scheduleViewportChange())
+        }
+    }
+
+    private _scheduleViewportChange(): void {
+        if (!this.viewportChangeCallback) return
+        if (this.viewportDebounce) clearTimeout(this.viewportDebounce)
+        this.viewportDebounce = setTimeout(() => {
+            const vp = this.getViewport()
+            if (vp) this.viewportChangeCallback!(vp)
+        }, 150)
+    }
+
+    /**
+     * Replace the rendered timeseries. By default fits both axes (initial load);
+     * pass `fitAxes: false` for adaptive viewport refreshes, which keep the user's
+     * current zoom/pan and only swap the data at the new resolution.
+     */
+    setSimulationData(timeseries: TimeseriesData, { fitAxes = true, animate = true, resetY = fitAxes }: { fitAxes?: boolean; animate?: boolean; resetY?: boolean } = {}): void {
         const scheduleStore = useScheduleStore()
         const timeseriesPanels = this.getTimeseriesPanels()
 
@@ -323,21 +406,86 @@ export class MainChart {
                 for (const points of Object.values(pathData)) pointCount += points.length
             }
             performance.mark('set-data-start')
-            panel.setData(filteredTimeseries)
+            panel.setData(filteredTimeseries, { animate })
             const totalSeries = panel.surface.renderableSeries.size()
             performance.measure(`grs:set-data:${id}`, {
                 start: 'set-data-start',
                 detail: { pointCount, totalSeries },
             })
-            // Only zoom if the panel has data to avoid NaN range errors
+            // Fit axes only on a fresh load; viewport refreshes preserve the
+            // user's zoom/pan (the x-range *is* the query that produced this data).
+            // y is still re-fit so spikes surfaced at the new resolution stay framed.
             if (panel.surface.renderableSeries.asArray().length > 0) {
+                const yAxis = panel.surface.yAxes.get(0)
+                // Within a live branch, only ever grow the y-range -- re-fitting to
+                // each batch makes the axis jitter as transient maxima come and go.
+                // `resetY` (fresh load, or a branch cut) re-fits from scratch.
+                const prev = resetY ? undefined : yAxis?.visibleRange
                 panel.surface.zoomExtentsY()
-                panel.surface.zoomExtentsX()
+                if (prev && yAxis) {
+                    const fit = yAxis.visibleRange
+                    yAxis.visibleRange = new NumberRange(Math.min(prev.min, fit.min), Math.max(prev.max, fit.max))
+                }
+                if (fitAxes) panel.surface.zoomExtentsX()
             }
         })
 
+        // The live sweep parks every track (including the timeline panel, which is
+        // not a "timeseries" panel and so isn't fitted above) on the streaming
+        // window. Axis sync only reconciles on user interaction, so on a fresh fit
+        // copy the fitted x-range to all tracks explicitly -- otherwise the result
+        // loaded right after streaming shows misaligned panels until the first
+        // zoom/pan kicks the synchroniser.
+        if (fitAxes) {
+            const fitted = timeseriesPanels
+                .find(({ panel }) => panel.surface.renderableSeries.size() > 0)
+                ?.panel.surface.xAxes.get(0)?.visibleRange
+            if (fitted) {
+                this.tracks.forEach(({ panel }) => panel.setVisibleTimeRange(fitted.min, fitted.max))
+            }
+        }
+
         // Series were recreated -- re-apply selection state so SelectSync stays consistent
         this.selectSyncModifier?.reapplySelection()
+    }
+
+    // ------------------------------------------------------------------
+    // Live streaming
+    //
+    // The backend keeps a bounded, lineage-aware, *pruned* window of live points
+    // (see SimulationController): data only ever exists in [window_start,
+    // current_time], everything older is discarded. So the visible time range is
+    // snapped to exactly that window each poll -- the data and the view advance
+    // together. A lagging/eased follower would point at already-pruned time and
+    // render empty, so we don't ease: smoothing a translating, pruned window would
+    // require predicting the leading edge, not trailing it.
+    // ------------------------------------------------------------------
+
+    private liveLineage?: string
+
+    /**
+     * Render one live snapshot and snap the time window onto it. `resetY` only on
+     * a lineage cut so a fresh branch reframes vertically; within a branch y just
+     * ratchets upward as new extrema arrive.
+     */
+    pushLiveSnapshot(snapshot: LiveSimulationSnapshot): void {
+        const cut = snapshot.active_lineage !== this.liveLineage
+        this.liveLineage = snapshot.active_lineage
+
+        this.setSimulationData(snapshot.series, { fitAxes: false, animate: false, resetY: cut })
+
+        const { window_start: min, current_time: max } = snapshot
+        if (max > min) this.applyLiveWindow(min, max)
+    }
+
+    private applyLiveWindow(min: number, max: number): void {
+        this.tracks.forEach(({ panel }) => panel.setVisibleTimeRange(min, max))
+        this.timeCursorModifier?.setCursorTime(max)
+    }
+
+    /** Forget live-stream state (on completion / clear / dispose). */
+    stopLiveStream(): void {
+        this.liveLineage = undefined
     }
 
     setScheduleData(structure: StructureNode, segments: TimelineSegment[], metadata: TimeseriesMetadata, maxTimelinePaths?: number): void {
@@ -360,81 +508,11 @@ export class MainChart {
     }
 
     clearSimulationData(): void {
+        this.stopLiveStream()
         this.selectSyncModifier?.clearSelection()
         this.timeCursorModifier?.hideCursor()
         this.getTimeseriesPanels().forEach(({ panel }) => panel.clearData())
         this.hidePhaseSpace()
-    }
-
-    /**
-     * Append incremental streaming data to panels (data only, no axis updates).
-     * Returns per-panel y data ranges so the StreamingAnimator can lerp axes smoothly.
-     */
-    appendStreamingDataOnly(timeseries: TimeseriesData): Map<string, { min: number; max: number }> {
-        const scheduleStore = useScheduleStore()
-        const timeseriesPanels = this.getTimeseriesPanels()
-        const yRanges = new Map<string, { min: number; max: number }>()
-
-        timeseriesPanels.forEach(({ id, panel }) => {
-            const speciesIds = new Set(scheduleStore.getSpeciesForSpeciesType(id as SpeciesType))
-            const filteredTimeseries = Object.fromEntries(
-                Object.entries(timeseries)
-                    .filter(([species]) => speciesIds.has(species))
-            ) as TimeseriesData
-
-            if (Object.keys(filteredTimeseries).length > 0) {
-                let pointCount = 0
-                let seriesCount = 0
-                for (const pathData of Object.values(filteredTimeseries)) {
-                    for (const points of Object.values(pathData)) {
-                        seriesCount++
-                        pointCount += points.length
-                    }
-                }
-
-                performance.mark('panel-append-start')
-                panel.appendStreamingData(filteredTimeseries)
-                const totalSeries = panel.surface.renderableSeries.size()
-                performance.measure(`grs:panel-append:${id}`, {
-                    start: 'panel-append-start',
-                    detail: { pointCount, seriesCount, totalSeries },
-                })
-
-                // Extract current y data range for the animator
-                if (panel.surface.renderableSeries.asArray().length > 0) {
-                    const yAxis = panel.surface.yAxes.get(0)
-                    if (yAxis) {
-                        const range = yAxis.getMaximumRange()
-                        yRanges.set(id, { min: range.min, max: range.max })
-                    }
-                }
-            }
-        })
-
-        return yRanges
-    }
-
-    /**
-     * Set visible axis ranges during streaming (called by StreamingAnimator each frame).
-     * Separate from data append to allow smooth interpolated axis updates.
-     */
-    setStreamingRanges(xMin: number, xMax: number, yRanges: Map<string, { min: number; max: number }>): void {
-        // Update x-axis visible range on all tracks (including timeline)
-        this.tracks.forEach(({ panel }) => {
-            panel.setVisibleTimeRange(xMin, xMax)
-        })
-        this.timeCursorModifier?.setCursorTime(xMax)
-
-        // Update y-axis visible range on timeseries panels
-        for (const [panelId, range] of yRanges) {
-            const track = this.tracks.find(({ id }) => id === panelId)
-            if (track) {
-                const yAxis = track.panel.surface.yAxes.get(0)
-                if (yAxis) {
-                    yAxis.visibleRange = new NumberRange(range.min, range.max)
-                }
-            }
-        }
     }
 
     // ------------------------------------------------------------------

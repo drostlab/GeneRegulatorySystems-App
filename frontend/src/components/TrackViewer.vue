@@ -17,14 +17,15 @@ import ProgressBar from 'primevue/progressbar'
 import OverlayPanel from 'primevue/overlaypanel'
 import Checkbox from 'primevue/checkbox'
 import * as simulationService from '@/services/simulationService'
-import { MainChart } from '@/charts/MainChart'
-import { useStreamingController } from '@/composables/useStreamingController'
+import { MainChart, type Viewport } from '@/charts/MainChart'
+import { LiveBuffer } from '@/charts/liveBuffer'
 import { useTheme } from '@/composables/useTheme'
 import { buildClientPhaseSpace, recolourPhaseSpace } from '@/charts/phaseSpaceBuilder'
 import { GREEN, RED } from '@/config/theme'
 import { contrastTextColour } from '@/utils/colorUtils'
 import type { TimeseriesData } from '@/types/simulation'
-import { extractPaths, extractChannels, matchesPathPrefix } from '@/types/schedule'
+import { extractPaths, extractChannels, matchesPathPrefix, getTimeExtent } from '@/types/schedule'
+import LoadingOverlay from '@/components/LoadingOverlay.vue'
 
 const simulationStore = useSimulationStore()
 const scheduleStore = useScheduleStore()
@@ -32,6 +33,7 @@ const viewerStore = useViewerStore()
 const { isDark, onThemeChange } = useTheme()
 
 const DEFAULT_SELECTED_GENES_COUNT = 5
+const LIVE_POLL_INTERVAL_MS = 500
 
 const containerRef = ref<HTMLDivElement>()
 const results = ref<SimulationResult[]>([])
@@ -44,33 +46,74 @@ const previousGeneSelection = ref<string[] | null>(null)
 const showPhaseSpace = ref(false)
 const pathSuggestions = ref<string[]>([])
 const channelSuggestions = ref<string[]>([])
+const isFinalizingSimulation = ref(false)
 
 const chart = new MainChart()
-const streaming = useStreamingController(chart)
+let livePollGeneration = 0
+let livePollTimer: ReturnType<typeof setTimeout> | null = null
+const liveBuffer = new LiveBuffer()
+let phasePollTimer: ReturnType<typeof setTimeout> | null = null
 
 const OTHER_SPECIES_COLOUR = '#9e9e9e'
 
 const isScheduleLoading = computed(() => scheduleStore.isLoading)
-const isSimulationBusy = computed(() => simulationStore.isSimulationRunning || simulationStore.isLoadingResult)
+const isSimulationBusy = computed(() =>
+    simulationStore.isSimulationRunning || simulationStore.isLoadingResult || isFinalizingSimulation.value
+)
 const isUiDisabled = computed(() => isScheduleLoading.value || isSimulationBusy.value)
 
-/** Progress percentage for the progress bar (0-100). */
-const progressPercent = computed(() => Math.round(simulationStore.progress * 100))
+/** The backend reports `finalizing` while it pre-builds the viewport pyramids
+ *  after a run finishes computing but before flipping to `completed`. During that
+ *  window the chart is frozen on the last live frame, so we show the small
+ *  spinner to signal the wait isn't silent. */
+const isFinalizingResult = computed(() => simulationStore.currentResult?.status === 'finalizing')
 
-/** True when timeseries has never been loaded (first fetch needs a full overlay). */
-const isFirstTimeseriesFetch = computed(() =>
-    simulationStore.isFetchingTimeseries && simulationStore.fetchedGenes.size === 0
-)
+/** Smoothly-tweened progress in [0,1]. The store value only refreshes per live
+ *  poll (~500 ms), so the raw value ticks in visible steps. Rather than ease
+ *  *toward* the latest sample (an exponential filter chasing a steadily-rising
+ *  target settles to a constant lag below it, then snaps up at the end — the
+ *  bar reads low the whole way then races to 100%), we linearly tween from the
+ *  previous sample to the new one across one poll interval. That gives steady,
+ *  genuinely proportional motion with no persistent under-read. */
+const displayedProgress = ref(0)
+let progressRaf: number | null = null
+let progressTweenFrom = 0
+let progressTweenTarget = 0
+let progressTweenStart = 0
+
+function animateProgress() {
+    const target = simulationStore.progress
+    if (target !== progressTweenTarget) {
+        // New sample arrived -- start a fresh linear segment from where the bar
+        // currently sits toward the new target.
+        progressTweenFrom = target < progressTweenTarget - 0.001
+            ? target // backwards (new run / reset): snap, don't crawl down.
+            : displayedProgress.value
+        progressTweenTarget = target
+        progressTweenStart = performance.now()
+    }
+    const f = Math.min((performance.now() - progressTweenStart) / LIVE_POLL_INTERVAL_MS, 1)
+    displayedProgress.value = progressTweenFrom + (progressTweenTarget - progressTweenFrom) * f
+    progressRaf = requestAnimationFrame(animateProgress)
+}
+
+/** Bar fill percentage (0-100), fine-grained so the width grows smoothly. */
+const progressPercent = computed(() => Math.round(displayedProgress.value * 1000) / 10)
+
+/** Integer label that grows in step with the eased bar. */
+const progressLabel = computed(() => `${Math.round(displayedProgress.value * 100)}%`)
 
 /** Error message shown as overlay when a result fails to load. */
 const resultError = ref<string | null>(null)
 
 /** Determine which loading overlay to show with priority (only one shown at a time). */
 const activeLoadingState = computed(() => {
-    // Priority order: schedule > timeseries > result > preparing
+    // A result load owns its nested schedule load, so describe the user action
+    // rather than the internal step currently in progress.
+    // Once result metadata and its schedule are ready, hand timeseries loading
+    // over to the small chart spinner instead of keeping the full overlay up.
+    if (simulationStore.isLoadingResult && !simulationStore.isFetchingTimeseries) return 'result'
     if (isScheduleLoading.value) return 'schedule'
-    if (isFirstTimeseriesFetch.value) return 'timeseries'
-    if (simulationStore.isLoadingResult) return 'result'
     if (simulationStore.isPreparingSimulation) return 'preparing'
     return null
 })
@@ -217,6 +260,19 @@ watch(
     }
 )
 
+// A committed schedule replacement invalidates every trajectory panel, even
+// before the associated simulation result is cleared by the initiating view.
+watch(
+    () => scheduleStore.schedule.spec,
+    (spec, previousSpec) => {
+        if (spec === previousSpec) return
+        previousTrackSelection = null
+        chart.clearSimulationData()
+        showPhaseSpace.value = false
+        selectedTracks.value = scheduleStore.isLoaded ? ['schedule'] : []
+    },
+)
+
 /** Active phase-space result: client-side for 1-2 genes, server-precomputed otherwise. */
 const activePhaseSpaceResult = computed(() => {
     const genes = viewerStore.selectedGenes
@@ -273,12 +329,20 @@ watch(
 
 watch(
     () => ({ structure: scheduleStore.schedule.data?.structure, segments: viewerStore.filteredSegments, metadata: scheduleStore.timeseriesMetadata, maxPaths: viewerStore.maxTimelinePaths }),
-    async ({ structure, segments, metadata, maxPaths }) => {
+    ({ structure, segments, metadata, maxPaths }) => {
         if (structure && segments && segments.length > 0 && metadata) {
             // Stale-closure guard: ignore if schedule changed mid-flight
             const specAtStart = scheduleStore.schedule.spec
             console.debug(`[TrackViewer] Schedule data ready: ${segments.length} segments (filter="${viewerStore.pathFilter}")`)
-            chart.setScheduleData(structure, segments, metadata, maxPaths)
+            try {
+                chart.setScheduleData(structure, segments, metadata, maxPaths)
+            } catch (error) {
+                // Chart rendering is imperative and must not abort Vue's update
+                // cycle (in particular, removal of the loading overlay).
+                console.error('[TrackViewer] Failed to render schedule data:', error)
+                scheduleStore.isLoading = false
+                return
+            }
 
             // Fire network fetch without blocking (chart already rendered)
             scheduleStore.fetchUnionNetwork().catch(e => {
@@ -290,7 +354,13 @@ watch(
                 refreshSimulationData()
             }
         }
-    }
+        // A direct setSchedule (save/upload) raises isLoading without going
+        // through the fetch path; clear it now that the new tracks have rendered.
+        scheduleStore.isLoading = false
+    },
+    // The same schedule commit also clears scheduleStore.isLoading. Let Vue
+    // render that state before doing the comparatively heavy SciChart update.
+    { flush: 'post' },
 )
 
 watch(
@@ -321,11 +391,8 @@ watch(
         if (!simulationStore.isLoaded || genes.length === 0) return
         const capped = genes.slice(0, viewerStore.maxRenderedGenes)
 
-        // During streaming, only update WS subscription (HTTP fetch deferred to completion)
-        if (simulationStore.isSimulationRunning) {
-            simulationStore.updateStreamSubscription(capped, viewerStore.selectedOtherSpecies)
-            return
-        }
+        // The next live poll atomically reconciles this selection.
+        if (simulationStore.isSimulationRunning) return
 
         await simulationStore.fetchGeneTimeseries(capped)
         refreshSimulationData()
@@ -353,11 +420,7 @@ watch(
     async (species) => {
         if (!simulationStore.isLoaded || species.length === 0) return
 
-        if (simulationStore.isSimulationRunning) {
-            const capped = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
-            simulationStore.updateStreamSubscription(capped, species)
-            return
-        }
+        if (simulationStore.isSimulationRunning) return
 
         await simulationStore.fetchOtherSpeciesTimeseries(species)
         refreshSimulationData()
@@ -365,16 +428,38 @@ watch(
     { deep: true }
 )
 
-/** Push current simulation data to chart, filtered by selected genes/paths. */
-function refreshSimulationData(): void {
+/**
+ * Push screen-resolution data to the chart for a finished result, filtered by
+ * selected genes/paths. Decimation happens server-side (the pyramid), so the
+ * client only ever holds ~viewport-resolution data per series.
+ *
+ * Called with no argument for a full refresh (gene/path selection change) — fits
+ * both axes over the schedule's full time extent. Called from `onViewportChange`
+ * with a `vp` on zoom/pan — re-queries at the new window and preserves the range.
+ */
+let viewportRequestGeneration = 0
+
+async function refreshSimulationData(vp?: Viewport, fullExtent = false, animate = true): Promise<void> {
     if (!simulationStore.isLoaded || simulationStore.isSimulationRunning) return
     const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
     if (genes.length === 0 && viewerStore.selectedOtherSpecies.length === 0) return
     const paths = viewerStore.selectedPaths ?? viewerStore.filteredPaths
     const pathArray = paths ? [...paths] : null
-    const visibleData = simulationStore.getTimeseries(genes, pathArray, viewerStore.selectedOtherSpecies)
-    if (visibleData) {
-        chart.setSimulationData(visibleData)
+
+    // Window: the user's current view (zoom/pan) or, on a full refresh, the
+    // schedule's whole time extent.
+    const extent = getTimeExtent(scheduleStore.segments)
+    const window = fullExtent
+        ? { t0: extent.min, t1: extent.max, widthPx: 1500 }
+        : vp ?? chart.getViewport() ?? { t0: extent.min, t1: extent.max, widthPx: 1500 }
+
+    const generation = ++viewportRequestGeneration
+    const data = await simulationStore.fetchViewport(
+        genes, viewerStore.selectedOtherSpecies, pathArray,
+        window.t0, window.t1, window.widthPx,
+    )
+    if (data && generation === viewportRequestGeneration) {
+        chart.setSimulationData(data, { fitAxes: vp === undefined, animate })
     }
 }
 
@@ -435,6 +520,7 @@ function _hydrateFromPersistedState(): void {
 
 onMounted(async () => {
     loadResults()
+    progressRaf = requestAnimationFrame(animateProgress)
     const themeAtStart = isDark.value
     await chart.init(containerRef, themeAtStart)
     chart.setVisibleTracks(['schedule'])
@@ -447,6 +533,10 @@ onMounted(async () => {
     chart.onTimepointChange((timepoint: number) => {
         viewerStore.setTimepoint(timepoint)
     })
+
+    // Adaptive rendering: on zoom/pan, re-query the server pyramid at the new
+    // window/resolution and swap the data in place (keeps the user's range).
+    chart.onViewportChange((vp) => { refreshSimulationData(vp) })
 
     chart.onSelectionChange((selectedGenes: string[]) => {
         // Skip deselect when this fires in the same event as a segment click
@@ -534,7 +624,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-    streaming.dispose()
+    stopLivePolling()
+    if (progressRaf !== null) cancelAnimationFrame(progressRaf)
     chart.dispose()
     window.removeEventListener('keydown', handleEscapeKey)
 })
@@ -545,7 +636,7 @@ async function loadResult(event: SelectChangeEvent) {
     if (simulationStore.isSimulationRunning) {
         simulationStore.cancelSimulation()
     }
-    streaming.stop()
+    stopLivePolling()
     simulationStore.clearResult()
     chart.clearSimulationData()
     showPhaseSpace.value = false
@@ -570,17 +661,120 @@ async function loadResult(event: SelectChangeEvent) {
         return
     }
     if (simulationStore.isLoaded) {
+        // Apply the selection before installing the first simulation series.
+        // On the initial load the menu state can settle while the chart still
+        // has its schedule-only layout; the next user toggle would otherwise
+        // be the first call that makes the trajectory panels visible.
+        chart.setVisibleTracks(selectedTracks.value)
         refreshSimulationData()
     }
+}
+
+function selectedLiveSpecies(): string[] {
+    const genes = viewerStore.selectedGenes.slice(0, viewerStore.maxRenderedGenes)
+    return [
+        ...genes.flatMap(gene => scheduleStore.getSpeciesForGeneId(gene)),
+        ...viewerStore.selectedOtherSpecies,
+    ]
+}
+
+function stopLivePolling(): void {
+    livePollGeneration++
+    if (livePollTimer !== null) clearTimeout(livePollTimer)
+    if (phasePollTimer !== null) clearTimeout(phasePollTimer)
+    livePollTimer = null
+    phasePollTimer = null
+    isFinalizingSimulation.value = false
+    chart.setZoomEnabled(true)
+}
+
+function pollPhaseSpace(resultId: string, generation: number): void {
+    const poll = async () => {
+        if (generation !== livePollGeneration || simulationStore.currentResultId !== resultId) return
+        try {
+            const ready = await simulationStore.loadPhaseSpaceWhenReady(resultId)
+            if (ready) return
+        } catch (error) {
+            console.warn('[TrackViewer] Phase-space poll failed:', error)
+        }
+        phasePollTimer = setTimeout(poll, 1000)
+    }
+    void poll()
+}
+
+function startLivePolling(resultId: string): void {
+    stopLivePolling()
+    const generation = ++livePollGeneration
+    liveBuffer.reset()
+    chart.setZoomEnabled(false)
+
+    let speciesKey = ''
+    const poll = async () => {
+        if (generation !== livePollGeneration || simulationStore.currentResultId !== resultId) return
+        try {
+            const species = selectedLiveSpecies()
+            // A change to the monitored set adds/removes whole series; resync in
+            // full so the buffer doesn't keep deltas against a stale selection.
+            const key = [...species].sort().join('\n')
+            if (key !== speciesKey) { liveBuffer.reset(); speciesKey = key }
+            const delta = await simulationService.fetchLive(resultId, species, liveBuffer.cursor)
+            if (generation !== livePollGeneration) return
+            const snapshot = liveBuffer.ingest(delta)
+            simulationStore.applyLiveSnapshot(snapshot)
+
+            if (snapshot.status === 'running' || snapshot.status === 'paused'
+                || snapshot.status === 'cancelling' || snapshot.status === 'finalizing') {
+                chart.pushLiveSnapshot(snapshot)
+                if (snapshot.current_time > 0) viewerStore.setTimepoint(snapshot.current_time)
+                livePollTimer = setTimeout(poll, LIVE_POLL_INTERVAL_MS)
+                return
+            }
+
+            chart.setZoomEnabled(true)
+            chart.stopLiveStream()
+            livePollTimer = null
+            if (snapshot.status === 'completed' || snapshot.status === 'cancelled') {
+                isFinalizingSimulation.value = true
+                try {
+                    void loadResults()
+                    // Skip the sweep animation on the final full load: the data was
+                    // just shown live, and a fresh animation whose axis range is
+                    // yanked mid-flight by the fit/copy churn freezes partially
+                    // drawn -- the artifact that only a real (animation-cancelling)
+                    // zoom cleared.
+                    await refreshSimulationData(undefined, true, false)
+                } finally {
+                    isFinalizingSimulation.value = false
+                }
+                pollPhaseSpace(resultId, generation)
+            } else if (snapshot.error) {
+                await loadResults()
+                resultError.value = snapshot.error
+            } else {
+                await loadResults()
+            }
+        } catch (error) {
+            if (generation !== livePollGeneration) return
+            console.warn('[TrackViewer] Live poll failed:', error)
+            livePollTimer = setTimeout(poll, 1000)
+        }
+    }
+
+    void poll()
 }
 
 async function runSimulation() {
     chart.clearSimulationData()
     showPhaseSpace.value = false
-    streaming.stop()
-    streaming.start()
-    // runSimulation returns immediately (async server-side), then WS streams data
-    simulationStore.runSimulation().then(() => loadResults())
+    stopLivePolling()
+    resultError.value = null
+    try {
+        const result = await simulationStore.runSimulation()
+        await loadResults()
+        startLivePolling(result.id)
+    } catch (error) {
+        resultError.value = error instanceof Error ? error.message : String(error)
+    }
 }
 
 function pauseSimulation() {
@@ -603,7 +797,7 @@ function clearSimulation() {
     if (simulationStore.isSimulationRunning) {
         simulationStore.cancelSimulation()
     }
-    streaming.stop()
+    stopLivePolling()
     chart.clearSimulationData()
     chart.hidePhaseSpace()
     showPhaseSpace.value = false
@@ -779,7 +973,11 @@ defineExpose({
                             :show-value="true"
                             style="height: 20px; width: 300px; font-size: 0.7rem"
                             class="progress-bar-red"
-                        />
+                        >
+                            <!-- Bar width glides on the fine 0.1% value; keep the
+                                 label a clean integer so it doesn't flicker. -->
+                            <template #default>{{ progressLabel }}</template>
+                        </ProgressBar>
                     </div>
                 </div>
 
@@ -956,7 +1154,7 @@ defineExpose({
             <div ref="containerRef" class="chart-container"></div>
 
             <ProgressSpinner
-                v-if="simulationStore.isFetchingTimeseries && !isFirstTimeseriesFetch"
+                v-if="simulationStore.isFetchingTimeseries || isFinalizingSimulation || isFinalizingResult"
                 class="chart-fetch-spinner"
                 style="width: 24px; height: 24px"
                 stroke-width="4"
@@ -974,17 +1172,12 @@ defineExpose({
         </div>
 
         <!-- Single loading overlay - shows only the highest priority loading state -->
-        <div v-if="activeLoadingState" class="loading-overlay">
-            <div class="loading-card">
-                <ProgressSpinner style="width: 50px; height: 50px" stroke-width="3" />
-                <div class="loading-text">
-                    <span v-if="activeLoadingState === 'schedule'">Loading schedule...</span>
-                    <span v-else-if="activeLoadingState === 'timeseries'">Loading timeseries...</span>
-                    <span v-else-if="activeLoadingState === 'result'">Loading result...</span>
-                    <span v-else-if="activeLoadingState === 'preparing'">Preparing simulation...</span>
-                </div>
-            </div>
-        </div>
+        <LoadingOverlay
+            v-if="activeLoadingState"
+            :label="activeLoadingState === 'schedule' ? 'Loading schedule...'
+                : activeLoadingState === 'result' ? 'Loading result...'
+                : 'Preparing simulation...'"
+        />
         </div>
     </Teleport>
 </template>
@@ -1047,6 +1240,11 @@ defineExpose({
 
 .progress-bar-red :deep(.p-progressbar-value) {
     background-color: v-bind('RED[400]');
+    /* PrimeVue's theme animates the fill width with its own ~1s transition, which
+       makes the bar visibly lag behind the (correct) numeric label even though both
+       read the same `displayedProgress`. Kill it so the fill width *is* that value
+       every frame -- the rAF tween already does the smoothing. */
+    transition: none !important;
 }
 
 .header-right {

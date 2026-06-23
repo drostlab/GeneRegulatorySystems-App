@@ -2,11 +2,7 @@ module GRSServer
 
 using Oxygen; @oxidize
 using HTTP
-using HTTP.WebSockets
-using JSON
 using Logging
-using Dates
-using Arrow
 using PrecompileTools: @setup_workload, @compile_workload
 
 using GeneRegulatorySystems
@@ -16,22 +12,22 @@ using GeneRegulatorySystems.Models.Scheduling
 # Include submodules
 include("schedule_bindings.jl")
 include("network_representation.jl")
-include("simulation/gap_tracking.jl")
 include("simulation/simulation_controller.jl")
 include("simulation/streaming_sink.jl")
 include("schedule/schedule_storage.jl")
 include("schedule/schedule_visualisation.jl")
 include("simulation/simulation.jl")
+include("simulation/viewport.jl")
 include("simulation/timeseries_summary.jl")
 include("phase_space.jl")
 
 # Use submodules
 using .ScheduleBindings
 using .NetworkRepresentation
-using .GapTracking
 using .ScheduleStorage
 using .StreamingSink
 using .Simulation
+using .Viewport
 using .SimulationControl
 using .ScheduleVisualization
 using .PhaseSpace
@@ -209,53 +205,107 @@ end
     return Dict("summary" => out)
 end
 
-const ws_client = Ref{Union{Nothing, HTTP.WebSocket}}(nothing)
-const WS_LOCK = ReentrantLock()
-const simulation_task = Ref{Union{Nothing, Task}}(nothing)
-const active_controller = Ref{Union{Nothing, SimulationController}}(nothing)
+@kwdef struct ViewportRequest
+    species::Vector{String}
+    paths::Union{Vector{String}, Nothing} = nothing  # nothing = all paths of each species
+    t0::Float64
+    t1::Float64
+    width_px::Int = 1000
+end
+# Adaptive viewport query. Counts use OHLC steps; promoters use time-weighted
+# activity bins so coarse rendering preserves occupancy rather than false pulses.
+@post "/simulations/{id}/timeseries/viewport" function(req, id::String, data::Json{ViewportRequest})
+    result = Simulation.load_result(id)
+    isnothing(result) && return HTTP.Response(404, "Result not found")
+    p = data.payload
 
-@websocket "/ws" function(ws::HTTP.WebSocket)
-    @info "WebSocket client connected"
-    lock(WS_LOCK) do
-        ws_client[] = ws
+    timeseries = Dict{Symbol, Any}()
+    for sp_str in p.species
+        sp = Symbol(sp_str)
+        is_promoter = endswith(sp_str, ".active")
+        paths = isnothing(p.paths) ? Viewport.paths_for(result.path, sp) : p.paths
+        series_map = Dict{String, Any}()
+        for path in paths
+            series = if is_promoter
+                Viewport.query_activity_species(result.path, sp, path, p.t0, p.t1, p.width_px)
+            else
+                Viewport.query_species(result.path, sp, path, p.t0, p.t1, p.width_px)
+            end
+            isnothing(series) && continue
+            series_map[path] = series
+        end
+        isempty(series_map) || (timeseries[sp] = series_map)
     end
-
-    for raw_msg in ws
-        _handle_ws_message(raw_msg)
-    end
-
-    lock(WS_LOCK) do
-        ws_client[] = nothing
-    end
-    close(ws)
-    @info "WebSocket client disconnected"
+    return (; timeseries)
 end
 
-function _handle_ws_message(raw::String)
-    msg = JSON.parse(raw)
-    msg_type = haskey(msg, "type") ? msg["type"] : ""
-    @info "[WS] Received message" type=msg_type
-    ctrl = active_controller[]
+const simulation_task = Ref{Union{Nothing, Task}}(nothing)
+const active_controller = Ref{Union{Nothing, SimulationController}}(nothing)
+const simulation_starting = Ref(false)
+const ACTIVE_LOCK = ReentrantLock()
 
-    if msg_type == "subscribe"
-        species = haskey(msg, "species") ? msg["species"] : String[]
-        if !isnothing(ctrl)
-            subscribe_genes!(ctrl, convert(Vector{String}, species))
-            @debug "[WS] Subscribed to species" count=length(species)
-        end
-    elseif msg_type == "pause"
-        if !isnothing(ctrl)
-            pause!(ctrl)
-            Simulation.update_result_metadata(ctrl.result_path; status="paused")
-        end
-    elseif msg_type == "resume"
-        if !isnothing(ctrl)
-            resume!(ctrl)
-            Simulation.update_result_metadata(ctrl.result_path; status="running")
-        end
-    else
-        @warn "[WS] Unknown message type" msg_type
+function active_simulation(id::String)
+    lock(ACTIVE_LOCK) do
+        ctrl = active_controller[]
+        !isnothing(ctrl) && ctrl.simulation_id == id ? ctrl : nothing
     end
+end
+
+@kwdef struct LiveRequest
+    species::Vector{String} = String[]
+    # Incremental cursor: the client's last-seen time and lineage. When the
+    # lineage still matches, only points after `since` are returned.
+    since::Union{Float64, Nothing} = nothing
+    lineage::Union{String, Nothing} = nothing
+end
+
+@post "/simulations/{id}/live" function(req, id::String, data::Json{LiveRequest})
+    ctrl = active_simulation(id)
+    if !isnothing(ctrl)
+        try
+            set_live_species!(ctrl, data.payload.species)
+        catch error
+            error isa ArgumentError || rethrow()
+            return HTTP.Response(400, sprint(showerror, error))
+        end
+        snapshot = live_snapshot(ctrl; since=data.payload.since, lineage=data.payload.lineage)
+        status = is_finalizing(ctrl) ? "finalizing" : is_paused(ctrl) ? "paused" : "running"
+        return merge(snapshot, (status = status,))
+    end
+
+    result = Simulation.load_result(id)
+    isnothing(result) && return HTTP.Response(404, "Result not found")
+    return (
+        status = result.status,
+        current_time = result.current_time,
+        window_start = 0.0,
+        frame_count = result.frame_count,
+        total_progress = result.status == "completed" ? 1.0 : 0.0,
+        active_lineage = "",
+        active_path = "",
+        series = Dict{String, Any}(),
+        error = result.error,
+    )
+end
+
+function control_response(id::String, action::Function, status::String)
+    ctrl = active_simulation(id)
+    isnothing(ctrl) && return HTTP.Response(409, "Simulation is not active")
+    action(ctrl)
+    Simulation.update_result_metadata(ctrl.result_path; status)
+    HTTP.Response(204)
+end
+
+@post "/simulations/{id}/pause" function(_, id::String)
+    control_response(id, pause!, "paused")
+end
+
+@post "/simulations/{id}/resume" function(_, id::String)
+    control_response(id, resume!, "running")
+end
+
+@post "/simulations/{id}/cancel" function(_, id::String)
+    control_response(id, cancel!, "cancelling")
 end
 
 @kwdef struct RunSimulationRequest
@@ -265,75 +315,86 @@ end
     subscribed_species::Vector{String} = String[]
 end
 
-# start a simulation run (async, streamed via WS)
+# start a simulation run on the worker thread pool
 @post "/simulations/run" function(req, data::Json{RunSimulationRequest})
+    can_start = lock(ACTIVE_LOCK) do
+        if simulation_starting[] || !isnothing(active_controller[])
+            false
+        else
+            simulation_starting[] = true
+            true
+        end
+    end
+    can_start || return HTTP.Response(409, "A simulation is already active")
+
     spec = data.payload.schedule_spec
     max_time = data.payload.max_time
 
-    # Single reify pass: populates the spec cache with the parsed GRSSchedule,
-    # validation messages, segments, and gene colours.  Subsequent lookups are
-    # dict reads.
-    reified = ScheduleVisualization.reify_schedule(spec, name=data.payload.schedule_name)
-    ScheduleVisualization.is_valid(reified) || return HTTP.Response(400, "Invalid schedule: $(ScheduleVisualization.get_error_messages(reified))")
+    try
+        # Single reify pass: populates the shared spec cache.
+        reified = ScheduleVisualization.reify_schedule(spec, name=data.payload.schedule_name)
+        if !ScheduleVisualization.is_valid(reified)
+            lock(ACTIVE_LOCK) do; simulation_starting[] = false; end
+            return HTTP.Response(400, "Invalid schedule: $(ScheduleVisualization.get_error_messages(reified))")
+        end
 
-    model = ScheduleVisualization.cache_entry(spec).grs_schedule
-    gene_colours = reified.data.gene_colours
-    timeline_segments = reified.data.segments
+        model = ScheduleVisualization.cache_entry(spec).grs_schedule
+        gene_colours = reified.data.gene_colours
+        timeline_segments = reified.data.segments
+        result = Simulation.prepare_result(data.payload.schedule_name, spec; max_time)
+        ctrl = SimulationController(result_path=result.path, simulation_id=result.id)
+        try
+            set_live_species!(ctrl, data.payload.subscribed_species)
+        catch error
+            error isa ArgumentError || rethrow()
+            Simulation.delete_result(result.id)
+            lock(ACTIVE_LOCK) do; simulation_starting[] = false; end
+            return HTTP.Response(400, sprint(showerror, error))
+        end
 
-    # Prepare result directory and metadata
-    result = Simulation.prepare_result(data.payload.schedule_name, spec; max_time)
+        lock(ACTIVE_LOCK) do
+            active_controller[] = ctrl
+            simulation_starting[] = false
+        end
 
-    # Create simulation controller for pause/resume and gene subscriptions.
-    # Uses ws_client/WS_LOCK refs so the controller lazily reads the latest WS
-    # client on each send (handles the race where WS connects after POST fires).
-    initial_species = Set(Symbol.(data.payload.subscribed_species))
-    ctrl = SimulationController(
-        result_path = result.path,
-        simulation_id = result.id,
-        ws_ref = ws_client,
-        ws_lock = WS_LOCK,
-        subscribed_species = initial_species
-    )
-    active_controller[] = ctrl
-
-    # Spawn async simulation task
-    simulation_task[] = @async begin
-        Simulation.run_simulation(result, model; controller = ctrl, segments = timeline_segments)
-        active_controller[] = nothing
-
-        # After simulation completes, compute phase-space embedding on a thread
-        # so we don't block the event loop.  Notify the client when ready.
-        local sim_id   = result.id
-        local res_path = result.path
-        Threads.@spawn begin
-            @info "[PhaseSpace] Spawning computation" sim_id
-            ps = try
-                PhaseSpace.compute_and_store(res_path, sim_id, gene_colours)
-            catch e
-                @error "[PhaseSpace] Computation failed" sim_id exception=e
-                nothing
+        simulation_task[] = Threads.@spawn begin
+            completed = false
+            try
+                Simulation.run_simulation(result, model; controller=ctrl, segments=timeline_segments,
+                    on_complete = Viewport.result_pyramids)
+                completed = true
+            catch error
+                if error isa SimulationCancelled
+                    Simulation.update_result_metadata(result.path; status="cancelled")
+                    @info "[Simulation] Cancelled" id=result.id
+                else
+                    message = sprint(showerror, error)
+                    Simulation.update_result_metadata(result.path; status="error", error=message)
+                    @error "[Simulation] Failed" id=result.id exception=(error, catch_backtrace())
+                end
+            finally
+                lock(ACTIVE_LOCK) do
+                    active_controller[] === ctrl && (active_controller[] = nothing)
+                end
             end
-            if !isnothing(ps)
-                lock(WS_LOCK) do
-                    ws = ws_client[]
-                    if !isnothing(ws)
-                        try
-                            send(ws, JSON.json(Dict(
-                                "type"          => "phasespace_ready",
-                                "simulation_id" => sim_id,
-                            )))
-                            @info "[PhaseSpace] Notified client" sim_id
-                        catch e
-                            @warn "[PhaseSpace] WS notification failed" sim_id exception=e
-                        end
-                    end
+
+            if completed
+                @info "[PhaseSpace] Spawning computation" sim_id=result.id
+                try
+                    PhaseSpace.compute_and_store(result.path, result.id, gene_colours)
+                catch error
+                    @error "[PhaseSpace] Computation failed" sim_id=result.id exception=error
                 end
             end
         end
-    end
 
-    # Return immediately with status=running
-    return result::Simulation.SimulationResult
+        return result::Simulation.SimulationResult
+    catch
+        lock(ACTIVE_LOCK) do
+            simulation_starting[] = false
+        end
+        rethrow()
+    end
 end
 
 # ============================================================================
@@ -369,8 +430,32 @@ const PRECOMPILE_SPEC = """
         if reified.data !== nothing
             ScheduleVisualization.extract_union_network(PRECOMPILE_SPEC, reified.data.segments)
             schedule = ScheduleVisualization.cache_entry(PRECOMPILE_SPEC).grs_schedule
-            state = Models.FlatState()
-            schedule(state, Inf; trace = (args...; kwargs...) -> nothing)
+
+            # Stream a real run into a throwaway result dir so the streaming sink,
+            # progress accounting, Arrow flush, and viewport pyramid build/query
+            # (the per-request hot path) all land in the package image too.
+            mktempdir() do dir
+                sink = StreamingSink.StreamingSimulationSink(location = dir)
+                StreamingSink.set_segments!(sink, reified.data.segments)
+                StreamingSink.compute_total_progress(sink, 5.0)
+                state = Models.FlatState()
+                schedule(state, Inf; trace = sink)
+                StreamingSink.flush!(sink)
+
+                pyramids = Viewport.result_pyramids(dir)
+                for (species, paths) in pyramids.by_species, path in keys(paths)
+                    activity = endswith(String(species), ".active")
+                    # Coarse window hits the decimation/expand branch; the narrow
+                    # one hits raw_slice.
+                    if activity
+                        Viewport.query_activity_species(dir, species, path, 0.0, 10.0, 50)
+                    else
+                        Viewport.query_species(dir, species, path, 0.0, 10.0, 50)
+                        Viewport.query_species(dir, species, path, 0.0, 0.5, 1500)
+                    end
+                end
+                Viewport.invalidate!(dir)
+            end
         end
         ScheduleVisualization.clear_spec_cache()
     end

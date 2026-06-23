@@ -31,8 +31,17 @@ catch
 end
 
 using Logging
+using LoggingExtras: ActiveFilteredLogger
 
-global_logger(ConsoleLogger(stderr, Logging.Info))
+function keep_log_record(log)
+    log.group == :access || return true
+    message = string(log.message)
+    # Drop the successful high-frequency polling endpoints (live tail + viewport
+    # pans/zooms) — they fire many times a second and bury everything else.
+    return !occursin(r"\"(?:POST|OPTIONS) /simulations/[^ ]+/(?:live|timeseries/viewport) HTTP/[^\"]+\" 2\d\d$", message)
+end
+
+global_logger(ActiveFilteredLogger(keep_log_record, ConsoleLogger(stderr, Logging.Info)))
 
 import JSON
 JSON.lower(s::Symbol) = String(s)
