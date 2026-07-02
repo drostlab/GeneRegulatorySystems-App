@@ -58,6 +58,61 @@ end
 # Bindings Helpers
 # ============================================================================
 
+function display_value(value)::Union{String, Nothing}
+    value isa AbstractString && return String(value)
+    value isa Union{Number, Symbol, Bool} && return string(value)
+    if value isa AbstractVector || value isa Tuple
+        parts = String[]
+        for item in value
+            rendered = display_value(item)
+            rendered === nothing && return nothing
+            push!(parts, rendered)
+        end
+        return isempty(parts) ? "[]" : join(parts, ", ")
+    end
+    return nothing
+end
+
+function path_matches_binding_source(source_path::String, execution_path::String)::Bool
+    source_path == execution_path && return true
+    source_path == "" && return false
+    startswith(execution_path, source_path) || return false
+    next = get(execution_path, nextind(execution_path, lastindex(source_path), 1), '\0')
+    return next in ('/', '+', '-', '.')
+end
+
+function binding_source_path(bindings, key::Symbol)::Union{String, Nothing}
+    source_key = Symbol("^$(key)")
+    haskey(bindings, source_key) || return nothing
+    source = bindings[source_key]
+    return hasproperty(source, :path) ? string(getproperty(source, :path)) : nothing
+end
+
+function introduced_bindings(bindings, execution_path::String)::Dict{String, String}
+    candidates = Vector{Tuple{String, String, String}}()
+    for (key, value) in bindings
+        name = string(key)
+        startswith(name, "^") && continue
+        name == "label" && continue
+        source_path = binding_source_path(bindings, key)
+        source_path === nothing && continue
+        path_matches_binding_source(source_path, execution_path) || continue
+        rendered = display_value(value)
+        rendered === nothing && continue
+        rendered == "" && continue
+        push!(candidates, (name, rendered, source_path))
+    end
+    isempty(candidates) && return Dict{String, String}()
+
+    deepest = maximum(length(source_path) for (_, _, source_path) in candidates)
+    result = Dict{String, String}()
+    for (name, rendered, source_path) in candidates
+        length(source_path) == deepest || continue
+        result[name] = rendered
+    end
+    return result
+end
+
 # ============================================================================
 # Segment Collection
 # ============================================================================
@@ -90,9 +145,8 @@ function collect_schedule_metadata!(prefixes::Set{String}, operators::Vector{Sch
 end
 
 function operator_value(value)::String
-    value isa AbstractString && return String(value)
-    value isa Union{Number, Symbol, Bool} && return string(value)
-    return ""
+    rendered = display_value(value)
+    return rendered === nothing ? "" : rendered
 end
 
 function step_binding(step, key::Symbol)
@@ -163,7 +217,6 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
         is_instant = !isfinite(Δt) || Δt == 0.0 || Models.unwrap(primitive!.f!) isa Models.Instant
         label = _label(primitive!.f!.model)
         scope_label = get(primitive!.bindings, :label, "")
-        stage = get(primitive!.bindings, :stage, "")
         model_path = primitive!.path
         model_genes = isfinite(Δt) && Δt > 0.0 ? collect(_gene_names(primitive!)) : Any[]
         push!(segments, TimelineSegment(
@@ -177,7 +230,7 @@ function _collect_segments(grs_schedule)::Tuple{Vector{TimelineSegment}, Vector{
             gene_count = length(model_genes),
             label = label,
             scope_label = scope_label isa AbstractString ? scope_label : "",
-            stage = stage isa AbstractString ? stage : string(stage),
+            bindings = introduced_bindings(primitive!.bindings, path),
         ))
         next_id[] += 1
 
@@ -218,7 +271,7 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
            seg.model_kind == current.model_kind &&
            seg.gene_count == current.gene_count &&
            seg.scope_label == current.scope_label &&
-           seg.stage == current.stage &&
+           seg.bindings == current.bindings &&
            seg.from == current.to
             current = TimelineSegment(
                 id = current.id,
@@ -231,7 +284,7 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
                 gene_count = current.gene_count,
                 label = current.label,
                 scope_label = current.scope_label,
-                stage = current.stage,
+                bindings = current.bindings,
             )
         else
             push!(merged, current)
@@ -251,7 +304,7 @@ function _merge_contiguous_segments(segments::Vector{TimelineSegment})::Vector{T
         gene_count = seg.gene_count,
         label = seg.label,
         scope_label = seg.scope_label,
-        stage = seg.stage,
+        bindings = seg.bindings,
     ) for (i, seg) in enumerate(merged)]
 end
 

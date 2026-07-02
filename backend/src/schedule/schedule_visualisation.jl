@@ -115,7 +115,7 @@ Single execution segment from a dryrun pass.
     gene_count::Int = 0
     label::String
     scope_label::String = ""
-    stage::String = ""
+    bindings::Dict{String, String} = Dict{String, String}()
 end
 
 """A duration model becoming active at its authored execution scope."""

@@ -4,6 +4,9 @@ import type { ModelActivation, ScheduleOperator, TimelineSegment } from '@/types
 import { getTimeExtent } from '@/types/schedule'
 import { buildTrie, childrenAreParallel, type TrieNode } from '@/schedule/executionTrie'
 import { collapsiblePaths, groupSegmentsByPath, layoutSchedule, SCHEDULE_ROW_HEIGHT } from '@/schedule/layout'
+import { instantIcon } from '@/schedule/glyphs'
+import { isPrefixPath, lineageChoicesForPaths, pathsShareLineage as shareLineage } from '@/schedule/paths'
+import { operatorDetailLines, segmentDetailLines, textWidth } from '@/schedule/labels'
 import { PURPLE, RED } from '@/config/theme'
 import { useViewerStore } from '@/stores/viewerStore'
 
@@ -26,12 +29,6 @@ const FORK_LANE_WIDTH = 24
 const PRE_FORK_SIGN_SPACING = 22
 const MAX_VISIBLE_COINCIDENT_SIGNS = 3
 const MAX_VISIBLE_BRANCHES = 3
-
-const INSTANT_ICONS: Readonly<Record<string, string>> = {
-    Merge: 'pi pi-arrow-right-arrow-left',
-    Filter: 'pi pi-filter',
-    Pass: 'pi pi-arrow-right',
-}
 
 const scrollRef = ref<HTMLDivElement>()
 const viewportWidth = ref(760)
@@ -115,19 +112,7 @@ const hoveredControl = computed(() => collapseControls.value.find(control => con
 // descendants retain the same choices, so differently named sequential paths
 // still belong to one lineage while sibling branches are incompatible.
 const lineageChoices = computed(() => {
-    const root = buildTrie(props.segments.map(segment => segment.execution_path), props.eachPrefixes)
-    const choices = new Map<string, ReadonlyMap<string, string>>()
-    function visit(node: TrieNode, inherited: ReadonlyMap<string, string>): void {
-        choices.set(node.path, inherited)
-        const parallel = childrenAreParallel(node)
-        for (const child of node.children) {
-            const childChoices = new Map(inherited)
-            if (parallel) childChoices.set(node.path, child.path)
-            visit(child, childChoices)
-        }
-    }
-    visit(root, new Map())
-    return choices
+    return lineageChoicesForPaths(props.segments.map(segment => segment.execution_path), props.eachPrefixes)
 })
 
 const hoveredLineageInfo = computed(() => {
@@ -141,7 +126,13 @@ const hoveredLineageInfo = computed(() => {
         .sort((a, b) => a.childPath.length - b.childPath.length)
     const pathSegments = props.segments.filter(segment => segment.execution_path === path)
     const scopeLabel = pathSegments.find(segment => segment.scope_label)?.scope_label ?? ''
-    const stage = pathSegments.find(segment => segment.stage)?.stage ?? ''
+    const bindingLines = new Map<string, string>()
+    for (const segment of pathSegments) {
+        for (const [key, value] of Object.entries(segment.bindings ?? {})) {
+            if (!value || bindingLines.has(key)) continue
+            bindingLines.set(key, `${key}: ${value}`)
+        }
+    }
     const lines: string[] = []
     if (!scopeLabel) {
         const childLabel = choices.at(-1)?.operator.child_labels[choices.at(-1)!.index] ?? ''
@@ -155,7 +146,7 @@ const hoveredLineageInfo = computed(() => {
         }
     }
     if (scopeLabel) lines.unshift(`label: ${scopeLabel}`)
-    if (stage) lines.push(`stage: ${stage}`)
+    lines.push(...bindingLines.values())
     lines.push(path)
     return { path, lines }
 })
@@ -522,24 +513,12 @@ function pathVisible(path: string): boolean {
     return true
 }
 
-function isPrefixPath(prefix: string, path: string): boolean {
-    if (prefix === '' || prefix === path) return true
-    if (!path.startsWith(prefix)) return false
-    return ['/', '+', '-', '.'].includes(path[prefix.length] ?? '')
-}
-
 function pathRelated(a: string, b: string): boolean {
     return pathsShareLineage(a, b)
 }
 
 function pathsShareLineage(a: string, b: string): boolean {
-    const aChoices = lineageChoices.value.get(a) ?? new Map<string, string>()
-    const bChoices = lineageChoices.value.get(b) ?? new Map<string, string>()
-    for (const [fork, child] of aChoices) {
-        const other = bChoices.get(fork)
-        if (other !== undefined && other !== child) return false
-    }
-    return true
+    return shareLineage(a, b, lineageChoices.value)
 }
 
 function pathClass(path: string): Record<string, boolean> {
@@ -583,33 +562,11 @@ function modelExtent(seed: TimelineSegment): TimelineSegment[] {
 }
 
 function detailLines(segment: TimelineSegment): string[] {
-    const label = segment.label.trim()
-    const labelLines = label.split('\n').map(line => line.trim()).filter(Boolean)
-    const semanticKind = segment.model_kind || segment.model_type
-    const repeatsType = label.toLocaleLowerCase().startsWith(semanticKind.toLocaleLowerCase())
-    return [
-        ...(labelLines.length ? labelLines : [semanticKind]),
-        repeatsType ? '' : semanticKind,
-        segment.from < segment.to ? `genes: ${segment.gene_count}` : '',
-        segment.execution_path,
-    ].filter(Boolean)
+    return segmentDetailLines(segment)
 }
 
 function operatorLines(operator: ScheduleOperator): string[] {
-    const title = operator.kind === 'each' ? 'Each' : 'List'
-    const count = `${operator.child_paths.length} ${operator.child_paths.length === 1 ? 'branch' : 'branches'}`
-    return [
-        title,
-        operator.label ? `label: ${operator.label}` : '',
-        operator.binding ? `as: "${operator.binding}"` : '',
-        count,
-        operator.path,
-    ].filter(Boolean)
-}
-
-function textWidth(lines: string[], minimum = 118, maximum = 340): number {
-    const longest = Math.max(...lines.map(line => line.length), 1)
-    return Math.max(minimum, Math.min(maximum, longest * 8.2 + 28))
+    return operatorDetailLines(operator)
 }
 
 function detail(segment: TimelineSegment): string {
@@ -638,10 +595,6 @@ function overlayStyle(x: number, y: number, width: number, maxHeight?: number): 
 
 function signY(segment: TimelineSegment, index: number): number {
     return segmentY(segment) - 18 - index * 18
-}
-
-function instantIcon(modelType: string): string {
-    return INSTANT_ICONS[modelType] ?? 'pi pi-circle-fill'
 }
 
 function forkExitX(fork: typeof layout.value.forks[number], childPath: string): number {

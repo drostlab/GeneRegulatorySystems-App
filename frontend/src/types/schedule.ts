@@ -42,7 +42,8 @@ export interface TimelineSegment {
     label: string
     /** Authored labels belong to execution scopes, not model definitions. */
     scope_label: string
-    stage: string
+    /** JSON-safe custom bindings for display; no key other than label is semantic. */
+    bindings: Record<string, string>
 }
 
 export interface ModelActivation {
