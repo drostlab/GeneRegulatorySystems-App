@@ -32,18 +32,48 @@ function visibleChildren(node: TrieNode, collapsed: ReadonlySet<string>): TrieNo
     return collapsed.has(node.path) ? [] : node.children
 }
 
-function rowsNeeded(node: TrieNode, collapsed: ReadonlySet<string>): number {
-    const children = visibleChildren(node, collapsed)
-    if (children.length === 0) return 1
-    const rows = children.map(child => rowsNeeded(child, collapsed))
-    return childrenAreParallel(node) ? rows.reduce((sum, count) => sum + count, 0) : Math.max(...rows)
-}
-
 function earliestTime(node: TrieNode, segmentsByPath: ReadonlyMap<string, TimelineSegment[]>): number {
     let earliest = Infinity
     for (const segment of segmentsByPath.get(node.path) ?? []) earliest = Math.min(earliest, segment.from)
     for (const child of node.children) earliest = Math.min(earliest, earliestTime(child, segmentsByPath))
     return earliest
+}
+
+function durationExtent(node: TrieNode, segmentsByPath: ReadonlyMap<string, TimelineSegment[]>): { from: number; to: number } | null {
+    let from = Infinity
+    let to = -Infinity
+    for (const segment of segmentsByPath.get(node.path) ?? []) {
+        if (segment.from >= segment.to) continue
+        from = Math.min(from, segment.from)
+        to = Math.max(to, segment.to)
+    }
+    for (const child of node.children) {
+        const childExtent = durationExtent(child, segmentsByPath)
+        if (!childExtent) continue
+        from = Math.min(from, childExtent.from)
+        to = Math.max(to, childExtent.to)
+    }
+    return from === Infinity ? null : { from, to }
+}
+
+function childDurationsOverlap(children: readonly TrieNode[], segmentsByPath: ReadonlyMap<string, TimelineSegment[]>): boolean {
+    const extents = children
+        .map(child => durationExtent(child, segmentsByPath))
+        .filter((extent): extent is { from: number; to: number } => extent !== null)
+        .sort((a, b) => a.from - b.from || a.to - b.to)
+    for (let i = 1; i < extents.length; i++) {
+        if (extents[i]!.from < extents[i - 1]!.to - 1e-9) return true
+    }
+    return false
+}
+
+function layoutChildrenAreParallel(
+    node: TrieNode,
+    collapsed: ReadonlySet<string>,
+    segmentsByPath: ReadonlyMap<string, TimelineSegment[]>,
+): boolean {
+    const children = visibleChildren(node, collapsed)
+    return childrenAreParallel(node) || childDurationsOverlap(children, segmentsByPath)
 }
 
 export function groupSegmentsByPath(segments: readonly TimelineSegment[]): Map<string, TimelineSegment[]> {
@@ -67,9 +97,18 @@ export function layoutSchedule(
     const nodes = new Map<string, PositionedNode>()
     const forks: ScheduleFork[] = []
 
+    function rowsNeededForLayout(node: TrieNode): number {
+        const children = visibleChildren(node, collapsed)
+        if (children.length === 0) return 1
+        const rows = children.map(child => rowsNeededForLayout(child))
+        return layoutChildrenAreParallel(node, collapsed, segmentsByPath)
+            ? rows.reduce((sum, count) => sum + count, 0)
+            : Math.max(...rows)
+    }
+
     function assign(node: TrieNode, firstRow: number, span: number): void {
         const children = visibleChildren(node, collapsed)
-        const parallel = childrenAreParallel(node)
+        const parallel = layoutChildrenAreParallel(node, collapsed, segmentsByPath)
         // Keep the shared trunk on the top row. Parallel descendants consume
         // rows below it, so a lineage tree never forks upwards.
         const row = firstRow
@@ -85,7 +124,7 @@ export function layoutSchedule(
         if (parallel) {
             let childRow = firstRow
             for (const child of children) {
-                const childSpan = rowsNeeded(child, collapsed)
+                const childSpan = rowsNeededForLayout(child)
                 assign(child, childRow, childSpan)
                 childRow += childSpan
             }
@@ -103,7 +142,7 @@ export function layoutSchedule(
         }
     }
 
-    const rowCount = Math.max(1, rowsNeeded(root, collapsed))
+    const rowCount = Math.max(1, rowsNeededForLayout(root))
     assign(root, 0, rowCount)
 
     const forkLaneCounts = new Map<number, number>()

@@ -53,7 +53,7 @@ export class CountsPanel extends TimeseriesPanel {
         return this.logScale
             ? new LogarithmicAxis(this.wasmContext, {
                 ...common,
-                logarithmicBase: 10,
+                logBase: 10,
                 labelFormat: ENumericFormat.Decimal,
                 // Counts of 0 can't be represented on a log axis; floor the
                 // visible range at 1 so the axis doesn't collapse toward zero.

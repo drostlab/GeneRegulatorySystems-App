@@ -64,8 +64,10 @@ export class MainChart {
     private timeseriesGeneHoverCallback?: (gene: string | null) => void
 
     private isDark = false
+    private disposed = false
 
     async init(containerRef: Ref<HTMLDivElement | undefined>, isDark: boolean) {
+        this.disposed = false
         this.isDark = isDark
         const { sciChartSurface, wasmContext } = await SciChartSurface.create(containerRef.value!, { theme: getTheme(isDark).sciChartTheme })
 
@@ -217,6 +219,7 @@ export class MainChart {
         })
         this.chartLayout.updateLayout()
         this.timeCursorModifier?.onSubChartVisibilityChanged()
+        this.surface?.invalidateElement()
     }
 
     /**
@@ -258,6 +261,8 @@ export class MainChart {
     }
 
     dispose(): void {
+        if (this.disposed) return
+        this.disposed = true
         this.stopLiveStream()
         this.tracks?.forEach(({ panel }) => panel.dispose())
         this.phaseSpacePanel?.dispose()
@@ -295,6 +300,7 @@ export class MainChart {
 
     /** Re-apply the SciChart theme on dark-mode toggle. */
     applyTheme(isDark: boolean): void {
+        if (this.disposed || !this.surface) return
         this.isDark = isDark
         this.surface.applyTheme(getTheme(isDark).sciChartTheme)
         for (const { panel } of this.tracks) {
@@ -302,6 +308,22 @@ export class MainChart {
         }
         this.phaseSpacePanel?.applyTheme(isDark)
         this.timeCursorModifier.applyColorTheme(isDark)
+        this.surface.invalidateElement()
+    }
+
+    /**
+     * Force SciChart to re-read its host size and lay out sub-surfaces.
+     * Dock panels can mount before their final dimensions are available, leaving
+     * subcharts blank until the next user resize unless we nudge the surface.
+     */
+    resizeToContainer(): void {
+        if (!this.surface) return
+        const rect = this.surface.domChartRoot.getBoundingClientRect()
+        const width = Math.max(1, Math.round(rect.width))
+        const height = Math.max(1, Math.round(rect.height))
+        this.surface.changeViewportSize(width, height)
+        this.chartLayout?.updateLayout()
+        this.surface.invalidateElement()
     }
 
     // ------------------------------------------------------------------

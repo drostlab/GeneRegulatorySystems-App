@@ -40,7 +40,13 @@ applyClass(isDark.value)
 watch(isDark, (dark) => {
     applyClass(dark)
     localStorage.setItem(STORAGE_KEY, dark ? '1' : '0')
-    listeners.forEach((fn) => fn(dark))
+    listeners.forEach((fn) => {
+        try {
+            fn(dark)
+        } catch (error) {
+            log.error('Theme listener failed', error)
+        }
+    })
 })
 
 export function useTheme() {

@@ -43,6 +43,7 @@ export class NetworkView {
     private cy: Core | null = null
     private container: HTMLDivElement | null = null
     private isDark = false
+    private destroyed = false
 
     private adaptiveZoom = new AdaptiveZoom()
     private modelFilter = new ModelFilter()
@@ -148,6 +149,7 @@ export class NetworkView {
      */
     init(containerRef: Ref<HTMLDivElement | undefined>, isDark = false): void {
         if (!containerRef.value) return
+        this.destroyed = false
         this.container = containerRef.value
         this.isDark = isDark
         this.applyContainerBackground()
@@ -187,6 +189,8 @@ export class NetworkView {
 
     /** Destroy everything. */
     destroy(): void {
+        if (this.destroyed) return
+        this.destroyed = true
         this.destroyModules()
         this.destroyCytoscape()
         this.container = null
@@ -194,12 +198,14 @@ export class NetworkView {
 
     /** Re-apply theme on dark-mode toggle. */
     applyTheme(isDark: boolean): void {
+        if (this.destroyed) return
         this.isDark = isDark
         this.applyContainerBackground()
         this.adaptiveZoom.applyTheme(isDark)
         this.inlineParameters.applyTheme(isDark)
         if (this.cy) {
-            this.cy.style(buildStylesheet(isDark))
+            this.cy.style(buildStylesheet(isDark)).update()
+            this.cy.forceRender()
         }
     }
 

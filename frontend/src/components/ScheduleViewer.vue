@@ -9,6 +9,7 @@ import { isPrefixPath, lineageChoicesForPaths, pathsShareLineage as shareLineage
 import { operatorDetailLines, segmentDetailLines, textWidth } from '@/schedule/labels'
 import { PURPLE, RED } from '@/config/theme'
 import { useViewerStore } from '@/stores/viewerStore'
+import PanelState from './PanelState.vue'
 
 const props = defineProps<{
     segments: TimelineSegment[]
@@ -87,7 +88,7 @@ const branchSpans = computed(() => [...groupSegmentsByPath(props.segments).entri
     // intervening branch and report the wrong lineage.
     const spans: Array<{ path: string; from: number; to: number; firstId: number; interactive: true }> = []
     for (const segment of durations) {
-        const previous = spans.at(-1)
+        const previous = spans[spans.length - 1]
         if (previous && segment.from <= previous.to + 1e-9) {
             previous.to = Math.max(previous.to, segment.to)
         } else {
@@ -135,7 +136,8 @@ const hoveredLineageInfo = computed(() => {
     }
     const lines: string[] = []
     if (!scopeLabel) {
-        const childLabel = choices.at(-1)?.operator.child_labels[choices.at(-1)!.index] ?? ''
+        const lastChoice = choices[choices.length - 1]
+        const childLabel = lastChoice?.operator.child_labels[lastChoice.index] ?? ''
         if (childLabel) lines.push(`label: ${childLabel}`)
     }
     for (const choice of choices) {
@@ -829,7 +831,7 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
                     <line class="flag-leader" :x1="segmentX(placement.segment)" :y1="signY(placement.segment, placement.stackIndex) + (placement.segment.from < placement.segment.to ? 5 : 7)" :x2="placement.x" :y2="placement.y + 4" />
                 </g>
             </svg>
-            <div v-else class="schedule-empty">No schedule segments</div>
+            <PanelState v-else kind="empty" title="" />
         </div>
         <div class="schedule-overlays">
             <div
@@ -880,8 +882,8 @@ function forkPath(fork: typeof layout.value.forks[number], childY: number, child
 
 <style scoped>
 .schedule-view { position: relative; display: flex; flex-direction: column; color: var(--p-text-color); background: transparent; border: 1px solid var(--p-surface-border); border-radius: 10px; overflow: hidden; }
-.schedule-scroll { flex: 1; min-height: 0; min-width: 0; overflow: scroll; scrollbar-gutter: stable; background: transparent; cursor: grab; }.schedule-scroll.dragging { cursor: grabbing; }
-.schedule-scroll::-webkit-scrollbar { width: 11px; height: 11px; }.schedule-scroll::-webkit-scrollbar-track { background: var(--p-surface-100); }.schedule-scroll::-webkit-scrollbar-thumb { background: var(--p-surface-400); border: 2px solid var(--p-surface-100); border-radius: 8px; }
+.schedule-scroll { flex: 1; min-height: 0; min-width: 0; overflow: auto; scrollbar-width: none; background: transparent; cursor: grab; }.schedule-scroll.dragging { cursor: grabbing; }
+.schedule-scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
 svg { display: block; font-family: Montserrat, sans-serif; }
 .fork path, .lineage-branch { stroke: var(--p-surface-400); fill: none; transition: opacity .12s, stroke .12s, stroke-width .12s; }.fork path { stroke-width: 2.2; stroke-linecap: round; }.lineage-branch { stroke-width: 2.2; stroke-linecap: round; pointer-events: stroke; }
 .fork path.highlighted, .fork path.selected, .lineage-branch.highlighted, .lineage-branch.selected, g.highlighted .lineage-branch, g.highlighted .collapsed-summary, g.selected .lineage-branch, g.selected .collapsed-summary { stroke: var(--p-surface-700); stroke-width: 4.5; }.fork path.dimmed, .lineage-branch.dimmed, g.dimmed .lineage-branch, g.dimmed .collapsed-summary, .primitive-sign.dimmed, .sign-pole-group.dimmed { opacity: .3; }
@@ -897,9 +899,8 @@ svg { display: block; font-family: Montserrat, sans-serif; }
 .duration-highlight line, .duration-highlight path { stroke: var(--schedule-purple); stroke-width: 5; opacity: 1; stroke-linecap: butt; fill: none; pointer-events: none; }
 .detail-flag { pointer-events: none; }.flag-leader { stroke-width: 2.2; stroke-linecap: round; }.duration-detail .flag-leader { stroke: var(--schedule-purple); }.instant-detail .flag-leader { stroke: var(--schedule-red); }.schedule-tooltip { display: block; width: 100%; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; box-shadow: 0 3px 7px rgba(0,0,0,.22); }.duration-detail .schedule-tooltip { background: var(--schedule-purple); color: white; }.instant-detail .schedule-tooltip { background: var(--schedule-red); color: white; }
 .tooltip-detail-line { padding-left: .65rem; }
-.schedule-overlays { position: absolute; inset: 0 11px 11px 0; overflow: hidden; pointer-events: none; z-index: 4; }.schedule-overlays > .overlay-tooltip, .detail-overlay { position: absolute; }.detail-overlay { overflow: visible; }.detail-overlay .overlay-tooltip { position: static; max-height: inherit; overflow: auto; }
+.schedule-overlays { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 4; }.schedule-overlays > .overlay-tooltip, .detail-overlay { position: absolute; }.detail-overlay { overflow: visible; }.detail-overlay .overlay-tooltip { position: static; max-height: inherit; overflow: auto; }
 .lineage-detail { pointer-events: none; }.segment-hover-highlight { stroke: var(--p-surface-400); stroke-width: 4.2; opacity: .4; stroke-linecap: round;}.lineage-leader { stroke: var(--p-surface-500); stroke-width: 2.2; stroke-linecap: round; }.lineage-tooltip { background: var(--grs-tooltip-bg); color: var(--grs-tooltip-fg); }
 .operator-tooltip { background: var(--grs-tooltip-bg); color: var(--grs-tooltip-fg); }
 .collapse-control { cursor: pointer; opacity: .65; }.collapse-control:hover { opacity: 1; }.collapse-icon { fill: var(--p-content-background); stroke: var(--p-surface-300); stroke-width: 1; }.collapse-chevron { fill: none; stroke: var(--p-text-muted-color); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
-.schedule-empty { padding: 2rem; color: var(--p-text-muted-color); text-align: center; font-size: .8rem; }
 </style>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
-import ProgressSpinner from 'primevue/progressspinner'
+import PanelState from './PanelState.vue'
 
 defineProps<{
     label: string
@@ -15,22 +15,10 @@ onBeforeUnmount(() => window.clearTimeout(hintTimer))
 </script>
 
 <template>
-    <div class="loading-overlay">
-        <div class="loading-card">
-            <ProgressSpinner style="width: 50px; height: 50px" stroke-width="3" />
-            <div class="loading-text">{{ label }}</div>
-            <div v-if="showLongWaitHint" class="long-wait-hint">
-                Still loading. If the app appears stuck, try restarting it.
-            </div>
-        </div>
-    </div>
+    <PanelState
+        kind="loading"
+        variant="overlay"
+        :title="label"
+        :description="showLongWaitHint ? 'Still loading. If the app appears stuck, try restarting it.' : undefined"
+    />
 </template>
-
-<style scoped>
-.long-wait-hint {
-    max-width: 320px;
-    color: var(--p-text-muted-color);
-    font-size: 12px;
-    text-align: center;
-}
-</style>

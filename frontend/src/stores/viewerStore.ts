@@ -21,6 +21,7 @@ export const useViewerStore = defineStore('viewer', () => {
     const selectedSpeciesTypes = ref<SpeciesType[]>([])
     const selectedSegmentIds = ref<Set<number> | null>(null)
     const selectedLineagePath = ref<string | null>(null)
+    const selectedLineagePaths = ref<Set<string> | null>(null)
     /** Execution-path prefix filter (empty = show all). Mirrors inspect tool's items_prefix. */
     const pathFilter = ref<string>('')
 
@@ -74,6 +75,7 @@ export const useViewerStore = defineStore('viewer', () => {
     })
 
     const selectedPaths = computed((): Set<string> | null => {
+        if (selectedLineagePaths.value) return selectedLineagePaths.value
         if (!selectedSegmentIds.value) return null
         const scheduleStore = useScheduleStore()
         const segments = scheduleStore.segments
@@ -157,6 +159,7 @@ export const useViewerStore = defineStore('viewer', () => {
     function selectSegments(ids: Set<number> | null): void {
         selectedSegmentIds.value = ids
         selectedLineagePath.value = null
+        selectedLineagePaths.value = null
     }
 
     /** Select all timeline segments belonging to a given execution path. */
@@ -169,6 +172,7 @@ export const useViewerStore = defineStore('viewer', () => {
         )
         selectedSegmentIds.value = matchIds.size > 0 ? matchIds : null
         selectedLineagePath.value = selectedSegmentIds.value ? executionPath : null
+        selectedLineagePaths.value = selectedSegmentIds.value ? new Set([executionPath]) : null
     }
 
     /** Toggle the complete lineage containing an execution path. */
@@ -176,6 +180,7 @@ export const useViewerStore = defineStore('viewer', () => {
         if (selectedLineagePath.value === executionPath) {
             selectedLineagePath.value = null
             selectedSegmentIds.value = null
+            selectedLineagePaths.value = null
             return
         }
         const scheduleStore = useScheduleStore()
@@ -210,11 +215,14 @@ export const useViewerStore = defineStore('viewer', () => {
             return true
         }
 
-        const matchIds = new Set(scheduleStore.segments
+        const matchSegments = scheduleStore.segments
             .filter(segment => sharesLineage(segment.execution_path))
-            .map(segment => segment.id))
+        const matchIds = new Set(matchSegments.map(segment => segment.id))
         selectedLineagePath.value = matchIds.size === 0 ? null : executionPath
         selectedSegmentIds.value = matchIds.size === 0 ? null : matchIds
+        selectedLineagePaths.value = matchIds.size === 0
+            ? null
+            : new Set(matchSegments.map(segment => segment.execution_path))
     }
 
     function setHoveredRectModel(path: string | null, executionPath: string | null = null): void {
@@ -249,6 +257,7 @@ export const useViewerStore = defineStore('viewer', () => {
         selectedOtherSpecies.value = []
         selectedSegmentIds.value = null
         selectedLineagePath.value = null
+        selectedLineagePaths.value = null
         hoveredRectModelPath.value = null
         hoveredInstantModelPath.value = null
         hoveredOperatorPath.value = null
@@ -266,6 +275,7 @@ export const useViewerStore = defineStore('viewer', () => {
         selectedSpeciesTypes,
         selectedSegmentIds,
         selectedLineagePath,
+        selectedLineagePaths,
         pathFilter,
         maxRenderedGenes,
         resizeByExpressionEnabled,

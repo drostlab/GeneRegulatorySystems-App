@@ -77,6 +77,7 @@ export abstract class BasePanel {
             axis.majorGridLineStyle = { color: this.theme.chart.gridLine }
             axis.minorGridLineStyle = { color: this.theme.chart.gridLine }
         }
+        this.surface.invalidateElement()
     }
 
     /**

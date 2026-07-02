@@ -15,6 +15,7 @@ const viewerStore = useViewerStore()
 const networkView = new NetworkView()
 const { isDark, onThemeChange } = useTheme()
 const isDetailVisible = ref(false)
+let stopThemeListener: (() => void) | null = null
 
 function fetchNetwork(): void {
     if (!scheduleStore.isLoaded) return
@@ -88,7 +89,7 @@ const activeModelLabel = computed(() => {
 
 onMounted(() => {
     networkView.init(containerRef, isDark.value)
-    onThemeChange((dark) => networkView.applyTheme(dark))
+    stopThemeListener = onThemeChange((dark) => networkView.applyTheme(dark))
     fetchNetwork()
 
     // Resolve parameter values against the active model. Read fresh on each
@@ -130,6 +131,8 @@ watch(() => viewerStore.activeModelPath, () => {
 })
 
 onBeforeUnmount(() => {
+    stopThemeListener?.()
+    stopThemeListener = null
     networkView.destroy()
 })
 

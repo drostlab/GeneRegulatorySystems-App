@@ -20,6 +20,7 @@
     "cytoscape-fcose": "^2.2.0",
     "cytoscape-popper": "^4.0.1",
     "cytoscape-svg": "^0.4.0",
+    "dockview-vue": "^7.0.2",
     "file-saver": "^2.0.5",
     "html-to-image": "^1.11.13",
     "jsonc-parser": "^3.3.1",

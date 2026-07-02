@@ -318,7 +318,7 @@ export async function setupAppMenu(): Promise<void> {
     const { CheckMenuItem } = await import('@tauri-apps/api/menu/checkMenuItem')
     const { PredefinedMenuItem } = await import('@tauri-apps/api/menu/predefinedMenuItem')
     const { invoke } = await import('@tauri-apps/api/core')
-    const { emit } = await import('@tauri-apps/api/event')
+    const { emit, listen } = await import('@tauri-apps/api/event')
     const { openPath } = await import('@tauri-apps/plugin-opener')
 
     const dataDir: string = await invoke('get_data_dir')
@@ -402,9 +402,47 @@ export async function setupAppMenu(): Promise<void> {
         ],
     })
 
+    const editorPanelItem = await CheckMenuItem.new({
+        id: 'view-panel-editor',
+        text: 'Editor',
+        checked: true,
+        action: () => { void emit('menu:toggle-panel:editor') },
+    })
+    const networkPanelItem = await CheckMenuItem.new({
+        id: 'view-panel-network',
+        text: 'Network',
+        checked: true,
+        action: () => { void emit('menu:toggle-panel:network') },
+    })
+    const schedulePanelItem = await CheckMenuItem.new({
+        id: 'view-panel-schedule',
+        text: 'Schedule',
+        checked: true,
+        action: () => { void emit('menu:toggle-panel:schedule') },
+    })
+    const simulationPanelItem = await CheckMenuItem.new({
+        id: 'view-panel-simulation',
+        text: 'Simulation',
+        checked: true,
+        action: () => { void emit('menu:toggle-panel:tracks') },
+    })
+
+    await listen<string[]>('workspace:panels-open', async event => {
+        const open = new Set(event.payload)
+        await editorPanelItem.setChecked(open.has('editor'))
+        await networkPanelItem.setChecked(open.has('network'))
+        await schedulePanelItem.setChecked(open.has('schedule'))
+        await simulationPanelItem.setChecked(open.has('tracks'))
+    })
+
     const viewMenu = await Submenu.new({
         text: 'View',
         items: [
+            editorPanelItem,
+            networkPanelItem,
+            schedulePanelItem,
+            simulationPanelItem,
+            await PredefinedMenuItem.new({ item: 'Separator' }),
             resizeByExpressionItem,
         ],
     })

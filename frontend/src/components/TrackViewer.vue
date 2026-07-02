@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import { useSimulationStore } from '@/stores/simulationStore'
 import { useScheduleStore } from '@/stores/scheduleStore'
 import { useViewerStore } from '@/stores/viewerStore'
@@ -11,7 +11,6 @@ import Button from 'primevue/button'
 import Select, { type SelectChangeEvent } from 'primevue/select'
 import MultiSelect from 'primevue/multiselect'
 import InputText from 'primevue/inputtext'
-import AutoComplete, { type AutoCompleteCompleteEvent } from 'primevue/autocomplete'
 import ProgressSpinner from 'primevue/progressspinner'
 import ProgressBar from 'primevue/progressbar'
 import OverlayPanel from 'primevue/overlaypanel'
@@ -24,8 +23,9 @@ import { buildClientPhaseSpace, recolourPhaseSpace } from '@/charts/phaseSpaceBu
 import { GREEN, RED } from '@/config/theme'
 import { contrastTextColour } from '@/utils/colorUtils'
 import type { TimeseriesData } from '@/types/simulation'
-import { extractPaths, matchesPathPrefix, getTimeExtent } from '@/types/schedule'
+import { getTimeExtent } from '@/types/schedule'
 import LoadingOverlay from '@/components/LoadingOverlay.vue'
+import PanelState from '@/components/PanelState.vue'
 import { compatibleExecutionPaths } from '@/schedule/executionTrie'
 
 const simulationStore = useSimulationStore()
@@ -38,7 +38,6 @@ const LIVE_POLL_INTERVAL_MS = 500
 
 const containerRef = ref<HTMLDivElement>()
 const results = ref<SimulationResult[]>([])
-const isFullscreen = ref<boolean>(false)
 const selectedTracks = ref<string[]>([])
 /** Stashed track selection preserved across simulation reload blips. */
 let previousTrackSelection: string[] | null = null
@@ -46,14 +45,17 @@ const trackSettingsPanel = ref()
 const previousGeneSelection = ref<string[] | null>(null)
 const showPhaseSpace = ref(false)
 const countsLogScale = ref(false)
-const pathSuggestions = ref<string[]>([])
 const isFinalizingSimulation = ref(false)
+/** Error message shown as overlay when a result fails to load. */
+const resultError = ref<string | null>(null)
 
 const chart = new MainChart()
 let livePollGeneration = 0
 let livePollTimer: ReturnType<typeof setTimeout> | null = null
 const liveBuffer = new LiveBuffer()
 let phasePollTimer: ReturnType<typeof setTimeout> | null = null
+let resizeRaf: number | null = null
+let stopThemeListener: (() => void) | null = null
 
 const OTHER_SPECIES_COLOUR = '#9e9e9e'
 
@@ -61,7 +63,16 @@ const isScheduleLoading = computed(() => scheduleStore.isLoading)
 const isSimulationBusy = computed(() =>
     simulationStore.isSimulationRunning || simulationStore.isLoadingResult || isFinalizingSimulation.value
 )
-const isUiDisabled = computed(() => isScheduleLoading.value || isSimulationBusy.value)
+const isUiDisabled = computed(() => !scheduleStore.isLoaded || isScheduleLoading.value || isSimulationBusy.value)
+const hasSimulationContent = computed(() =>
+    simulationStore.isSimulationRunning || Boolean(simulationStore.currentResultId)
+)
+const showSimulationEmptyState = computed(() =>
+    scheduleStore.isLoaded
+    && !hasSimulationContent.value
+    && !isSimulationBusy.value
+    && !resultError.value
+)
 
 /** The backend reports `finalizing` while it pre-builds the viewport pyramids
  *  after a run finishes computing but before flipping to `completed`. During that
@@ -104,8 +115,18 @@ const progressPercent = computed(() => Math.round(displayedProgress.value * 1000
 /** Integer label that grows in step with the eased bar. */
 const progressLabel = computed(() => `${Math.round(displayedProgress.value * 100)}%`)
 
-/** Error message shown as overlay when a result fails to load. */
-const resultError = ref<string | null>(null)
+function requestChartResize(): void {
+    if (resizeRaf !== null) cancelAnimationFrame(resizeRaf)
+    resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = null
+        chart.resizeToContainer()
+    })
+}
+
+function syncVisibleTracks(): void {
+    chart.setVisibleTracks(selectedTracks.value)
+    requestChartResize()
+}
 
 /** Determine which loading overlay to show with priority (only one shown at a time). */
 const activeLoadingState = computed(() => {
@@ -442,6 +463,7 @@ async function refreshSimulationData(vp?: Viewport, fullExtent = false, animate 
     )
     if (data && generation === viewportRequestGeneration) {
         chart.setSimulationData(data, { fitAxes: vp === undefined, animate })
+        requestChartResize()
     }
 }
 
@@ -455,15 +477,6 @@ function filterTimeseriesByPaths(ts: TimeseriesData, paths: Set<string>): Timese
             )
         ])
     ) as TimeseriesData
-}
-
-/** Compute autocomplete suggestions for the path filter input. */
-function searchPathSuggestions(event: AutoCompleteCompleteEvent): void {
-    const query = event.query
-    const allPaths = extractPaths(scheduleStore.segments)
-    // Show paths that the query is a prefix of (the query matches the path)
-    // plus the root "" which always matches
-    pathSuggestions.value = allPaths.filter(p => matchesPathPrefix(p, query) || p === query)
 }
 
 function updateViewerStore() {
@@ -496,7 +509,7 @@ onMounted(async () => {
     await chart.init(containerRef, themeAtStart)
     chart.setVisibleTracks([])
     chart.setCountsLogScale(countsLogScale.value)
-    onThemeChange((dark) => chart.applyTheme(dark))
+    stopThemeListener = onThemeChange((dark) => chart.applyTheme(dark))
     // Reconcile only if the theme actually changed during async init
     if (isDark.value !== themeAtStart) {
         chart.applyTheme(isDark.value)
@@ -553,18 +566,22 @@ onMounted(async () => {
         viewerStore.setHoveredGene(gene)
     })
 
-    window.addEventListener('keydown', handleEscapeKey)
-
     // Hydrate chart from persisted store state (dev-mode Pinia persistence).
     // Watchers fired before chart.init() completed, so push any available data now.
     _hydrateFromPersistedState()
+    await nextTick()
+    requestChartResize()
+    window.setTimeout(requestChartResize, 50)
+    window.setTimeout(requestChartResize, 250)
 })
 
 onBeforeUnmount(() => {
     stopLivePolling()
+    stopThemeListener?.()
+    stopThemeListener = null
     if (progressRaf !== null) cancelAnimationFrame(progressRaf)
+    if (resizeRaf !== null) cancelAnimationFrame(resizeRaf)
     chart.dispose()
-    window.removeEventListener('keydown', handleEscapeKey)
 })
 
 async function loadResult(event: SelectChangeEvent) {
@@ -602,7 +619,7 @@ async function loadResult(event: SelectChangeEvent) {
         // On the initial load the menu state can settle while the chart still
         // has its schedule-only layout; the next user toggle would otherwise
         // be the first call that makes the trajectory panels visible.
-        chart.setVisibleTracks(selectedTracks.value)
+        syncVisibleTracks()
         refreshSimulationData()
     }
 }
@@ -707,6 +724,8 @@ async function runSimulation() {
     resultError.value = null
     try {
         const result = await simulationStore.runSimulation()
+        await nextTick()
+        syncVisibleTracks()
         await loadResults()
         startLivePolling(result.id)
     } catch (error) {
@@ -742,28 +761,6 @@ function clearSimulation() {
     selectedTracks.value = []
 }
 
-function toggleFullscreen() {
-    isFullscreen.value = !isFullscreen.value
-}
-
-function handleEscapeKey(event: KeyboardEvent) {
-    if (event.key === 'Escape') {
-        // Clear any active path/segment selection first
-        if (viewerStore.selectedSegmentIds) {
-            viewerStore.selectSegments(null)
-            return
-        }
-        if (previousGeneSelection.value) {
-            viewerStore.selectedGenes = previousGeneSelection.value
-            previousGeneSelection.value = null
-            return
-        }
-        if (isFullscreen.value) {
-            isFullscreen.value = false
-        }
-    }
-}
-
 // Path highlight sync: when hoveredExecutionPath changes (from any source),
 // dim all panels to highlight just that path. null restores full opacity.
 watch(
@@ -790,7 +787,7 @@ watch(
 watch(
     () => selectedTracks.value,
     (newTracks) => {
-        chart.setVisibleTracks(newTracks)
+        syncVisibleTracks()
         updateViewerStore()
     }
 )
@@ -832,14 +829,15 @@ watch(
 
 defineExpose({
     exportSVG: () => chart.exportImage(),
+    resize: requestChartResize,
+    syncVisibleTracks,
 })
 </script>
 
 
 
 <template>
-    <Teleport to="#app" :disabled="!isFullscreen">
-        <div class="simulation-viewer" :class="{ 'fullscreen-mode': isFullscreen }">
+    <div class="simulation-viewer">
         <div class="card-header">
             <div class="card-header-row">
                 <div class="header-left">
@@ -930,23 +928,9 @@ defineExpose({
                     </div>
                 </div>
 
-                <div class="header-right">
+                <div v-if="hasSimulationContent" class="header-right">
                     <div class="filter-stack">
                         <div class="filter-row">
-                            <AutoComplete
-                                :model-value="viewerStore.pathFilter"
-                                @update:model-value="(v: string | undefined) => viewerStore.setPathFilter(v ?? '')"
-                                :suggestions="pathSuggestions"
-                                @complete="searchPathSuggestions"
-                                :complete-on-focus="true"
-                                size="small"
-                                placeholder="Path filter..."
-                                class="filter-autocomplete"
-                                input-class="filter-input"
-                                append-to="body"
-                                empty-search-message="Type to filter paths"
-                                panel-class="filter-overlay"
-                            />
                             <Button
                                 v-if="viewerStore.pathFilter !== ''"
                                 icon="pi pi-times"
@@ -1067,13 +1051,6 @@ defineExpose({
                         v-grs-tooltip="'Clear loaded simulation'"
                     />
 
-                    <Button
-                        :icon="isFullscreen ? 'pi pi-window-minimize' : 'pi pi-window-maximize'"
-                        v-grs-tooltip="isFullscreen ? 'Exit fullscreen (ESC)' : 'Enter fullscreen'"
-                        size="small"
-                        text
-                        @click="toggleFullscreen"
-                    />
                 </div>
             </div>
         </div>
@@ -1088,15 +1065,27 @@ defineExpose({
                 stroke-width="4"
             />
             
-            <div 
+            <PanelState
                 v-if="!scheduleStore.isLoaded && !isScheduleLoading"
-                class="chart-overlay"
-            >
-                <div class="overlay-text">No schedule is loaded</div>
-            </div>
-            <div v-if="resultError" class="chart-overlay">
-                <div class="overlay-text">Error loading result</div>
-            </div>
+                kind="empty"
+                variant="overlay"
+                title="No schedule loaded"
+                description="Load a schedule before running a simulation."
+            />
+            <PanelState
+                v-else-if="resultError"
+                kind="error"
+                variant="overlay"
+                title="Error loading result"
+                :description="resultError"
+            />
+            <PanelState
+                v-else-if="showSimulationEmptyState"
+                kind="hint"
+                variant="overlay"
+                title="No simulation result loaded"
+                description="Run this schedule or load a previous result to inspect trajectories."
+            />
         </div>
 
         <!-- Single loading overlay - shows only the highest priority loading state -->
@@ -1106,8 +1095,7 @@ defineExpose({
                 : activeLoadingState === 'result' ? 'Loading result...'
                 : 'Preparing simulation...'"
         />
-        </div>
-    </Teleport>
+    </div>
 </template>
 
 <style>
@@ -1121,13 +1109,6 @@ defineExpose({
     z-index: 10000 !important;
 }
 
-/* Fullscreen header colours: CSS vars don't resolve after teleport, use Aura palette values */
-.simulation-viewer.fullscreen-mode .card-header {
-    background: #f8fafc; /* Aura slate.50 = surface-ground light */
-}
-.app-dark .simulation-viewer.fullscreen-mode .card-header {
-    background: #09090b; /* Aura zinc.950 = surface-ground dark */
-}
 </style>
 
 <style scoped>
@@ -1144,21 +1125,25 @@ defineExpose({
 
 .card-header-row {
     display: flex;
-    gap: var(--spacing-md);
+    gap: var(--spacing-sm);
     align-items: center;
     justify-content: space-between;
+    min-height: 46px;
 }
 
 .card-header {
     background: var(--p-surface-ground);
     z-index: 100;
     position: relative;
+    border-bottom: 1px solid color-mix(in srgb, var(--p-surface-border) 55%, transparent);
+    padding: .42rem .75rem;
 }
 
 .header-left {
     display: flex;
-    gap: var(--spacing-md);
+    gap: var(--spacing-sm);
     align-items: center;
+    min-width: 0;
 }
 
 .progress-wrapper {
@@ -1177,8 +1162,9 @@ defineExpose({
 
 .header-right {
     display: flex;
-    gap: var(--spacing-md);
+    gap: var(--spacing-sm);
     align-items: center;
+    min-width: 0;
 }
 
 .filter-stack {
@@ -1216,6 +1202,9 @@ defineExpose({
     min-height: 0;
     width: 100%;
     position: relative;
+    background:
+        radial-gradient(circle at center, color-mix(in srgb, var(--p-primary-color) 3%, transparent), transparent 48%),
+        var(--p-surface-ground);
 }
 
 .chart-container {
@@ -1235,40 +1224,12 @@ defineExpose({
 
 .results-control {
     display: flex;
-    gap: var(--spacing-md);
+    gap: var(--spacing-sm);
     align-items: center;
     flex: 1;
-    margin-right: var(--spacing-1xl);
+    margin-right: var(--spacing-xs);
+    min-width: 220px;
 }
-
-/* Domain-specific overlay */
-.chart-overlay {
-    position: absolute;
-    inset: 0;
-    background: var(--p-overlay-ground);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-}
-
-.overlay-text {
-    font-size: var(--font-size-xl);
-    color: var(--p-text-color-secondary);
-}
-
-/* Fullscreen mode */
-.simulation-viewer.fullscreen-mode {
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100vh;
-    z-index: 9999;
-    border-radius: 0;
-    background: var(--p-surface-ground);
-}
-
-
 
 /* Gene-specific chip styling (dynamic colors) */
 .chip-container {
