@@ -789,9 +789,7 @@ version = "0.3.0"
 
 [[deps.GeneRegulatorySystems]]
 deps = ["Catalyst", "DataStructures", "Distributions", "JSON", "JumpProcesses", "Kronecker", "Logging", "ModelingToolkit", "PrecompileTools", "Random", "Roots", "SHA", "SparseArrays", "StatsBase"]
-git-tree-sha1 = "8b59d0dc5d6bb54fe17673f646e6c10cb0bba68c"
-repo-rev = "e3e44cb"
-repo-url = "https://github.com/drostlab/GeneRegulatorySystems.jl"
+path = "../../GeneRegulatorySystems.jl"
 uuid = "321a2579-640d-4198-9790-c715c19becf3"
 version = "0.4.1"
 

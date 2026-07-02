@@ -838,12 +838,17 @@ function auxiliary_reaction_entities(definition::V1.Definition, gene_names::Set{
         isempty(rxn_links) && continue
         params = Parameter[Parameter(name="k⁺", symbol="reaction.$(i).k⁺")]
         reversible && push!(params, Parameter(name="k₋", symbol="reaction.$(i).k₋"))
+        props = Dict{Symbol, Any}(
+            :rate => Symbol("reaction.$(i).k⁺"),
+            :reversible => reversible,
+        )
+        # User-supplied reaction name, used by the frontend as the node label.
+        # GRS auto-names unnamed reactions `rxn-<i>` (1-based); only surface a
+        # label when the user actually set one.
+        rxn.name == Symbol("rxn-$(i)") || (props[:reactionName] = String(rxn.name))
         push!(nodes, Entity(
             kind=:reaction, name=node_id,
-            properties=Dict{Symbol, Any}(
-                :rate => Symbol("reaction.$(i).k⁺"),
-                :reversible => reversible,
-            ),
+            properties=props,
             parameters=params,
         ))
         append!(links, rxn_links)

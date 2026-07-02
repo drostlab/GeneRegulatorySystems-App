@@ -242,6 +242,15 @@ export class MainChart {
             .map(({ id, panel }) => ({ id, panel: panel as TimeseriesPanel }))
     }
 
+    /** Toggle logarithmic y-axis scaling on all count panels. */
+    setCountsLogScale(enabled: boolean): void {
+        for (const { panel } of this.tracks) {
+            if (panel instanceof (CountsPanel as any)) {
+                (panel as CountsPanel).setLogScale(enabled)
+            }
+        }
+    }
+
     setVisibleTracks(ids: string[]) {
         this.tracks.forEach(({ id, panel }) => {
             panel.isVisible = ids.includes(id)

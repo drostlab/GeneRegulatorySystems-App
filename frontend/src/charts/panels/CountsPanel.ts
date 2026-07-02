@@ -1,4 +1,5 @@
-import { EAxisAlignment, ELineDrawMode, ENumericFormat, FastLineRenderableSeries, NumberRange, NumericAxis, SweepAnimation, XyDataSeries } from "scichart"
+import { EAxisAlignment, ELineDrawMode, ENumericFormat, FastLineRenderableSeries, LogarithmicAxis, NumberRange, NumericAxis, SweepAnimation, XyDataSeries } from "scichart"
+import type { AxisBase2D } from "scichart"
 import { TimeseriesPanel } from "./TimeseriesPanel"
 import type { BasePanelOptions } from "./BasePanel"
 import type { TimeseriesData } from "@/types/simulation"
@@ -13,8 +14,12 @@ export class CountsPanel extends TimeseriesPanel {
     /** Persistent data series map for streaming: `label:path` -> XyDataSeries */
     private seriesMap: Map<string, XyDataSeries> = new Map()
 
+    private readonly title: string
+    private logScale = false
+
     constructor(options: BasePanelOptions, title: string) {
         super(options)
+        this.title = title
 
         const xAxis = new NumericAxis(this.wasmContext, {
             axisTitle: "Time",
@@ -26,11 +31,15 @@ export class CountsPanel extends TimeseriesPanel {
         })
         setupTimeAxis(xAxis)
 
-        const yAxis = new NumericAxis(this.wasmContext, {
-            axisTitle: title,
+        this.surface.xAxes.add(xAxis)
+        this.surface.yAxes.add(this.buildYAxis())
+    }
+
+    /** Build the count (y) axis: logarithmic when `logScale` is set, else linear. */
+    private buildYAxis(): AxisBase2D {
+        const common = {
+            axisTitle: this.title,
             axisAlignment: EAxisAlignment.Left,
-            labelFormat: ENumericFormat.Decimal,
-            labelPrecision: 0,
             labelStyle: {fontSize: CHART_FONT_SIZES.label},
             axisTitleStyle: {fontSize: CHART_FONT_SIZES.title},
             drawMajorBands: false,
@@ -40,10 +49,32 @@ export class CountsPanel extends TimeseriesPanel {
             majorGridLineStyle: { color: this.theme.chart.gridLine},
             minorGridLineStyle: { color: this.theme.chart.gridLine},
             axisThickness: AXIS_THICKNESS_NARROW
-        })
+        }
+        return this.logScale
+            ? new LogarithmicAxis(this.wasmContext, {
+                ...common,
+                logarithmicBase: 10,
+                labelFormat: ENumericFormat.Decimal,
+                // Counts of 0 can't be represented on a log axis; floor the
+                // visible range at 1 so the axis doesn't collapse toward zero.
+                visibleRangeLimit: new NumberRange(1, Number.MAX_SAFE_INTEGER),
+            })
+            : new NumericAxis(this.wasmContext, {
+                ...common,
+                labelFormat: ENumericFormat.Decimal,
+                labelPrecision: 0,
+            })
+    }
 
-        this.surface.xAxes.add(xAxis)
-        this.surface.yAxes.add(yAxis)
+    /** Toggle logarithmic scaling on the count (y) axis. */
+    setLogScale(enabled: boolean): void {
+        if (enabled === this.logScale) return
+        this.logScale = enabled
+        const old = this.surface.yAxes.get(0)
+        this.surface.yAxes.remove(old)
+        old.delete()
+        this.surface.yAxes.add(this.buildYAxis())
+        this.surface.zoomExtentsY()
     }
 
     override clearData(): void {

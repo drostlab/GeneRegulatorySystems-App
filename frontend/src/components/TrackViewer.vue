@@ -44,6 +44,7 @@ let previousTrackSelection: string[] | null = null
 const trackSettingsPanel = ref()
 const previousGeneSelection = ref<string[] | null>(null)
 const showPhaseSpace = ref(false)
+const countsLogScale = ref(false)
 const pathSuggestions = ref<string[]>([])
 const channelSuggestions = ref<string[]>([])
 const isFinalizingSimulation = ref(false)
@@ -524,6 +525,7 @@ onMounted(async () => {
     const themeAtStart = isDark.value
     await chart.init(containerRef, themeAtStart)
     chart.setVisibleTracks(['schedule'])
+    chart.setCountsLogScale(countsLogScale.value)
     onThemeChange((dark) => chart.applyTheme(dark))
     // Reconcile only if the theme actually changed during async init
     if (isDark.value !== themeAtStart) {
@@ -850,6 +852,10 @@ watch(
     }
 )
 
+watch(countsLogScale, (enabled) => {
+    chart.setCountsLogScale(enabled)
+})
+
 // Single watcher for all simulation data refresh triggers
 // Fires when timeseries cache, gene selection, or path selection changes
 // Skips during running simulation and during active fetch (avoids double render)
@@ -1125,6 +1131,11 @@ defineExpose({
                                     />
                                     <label style="margin-left: 0.5rem">{{ option.label }}</label>
                                 </div>
+                            </div>
+                            <h4>Scale</h4>
+                            <div class="track-checkbox-item">
+                                <Checkbox v-model="countsLogScale" :binary="true" input-id="counts-log-scale" />
+                                <label for="counts-log-scale" style="margin-left: 0.5rem">Log scale (counts)</label>
                             </div>
                         </div>
                     </OverlayPanel>
