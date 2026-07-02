@@ -99,8 +99,6 @@ export class SelectionSync {
         ])
         const vis = this.visualSelection
 
-        console.debug(`[SelectionSync] syncFromStore: vis=${JSON.stringify([...vis])} genes=${JSON.stringify(store.selectedGenes)} speciesNodes=${JSON.stringify(store.selectedSpeciesNodes)} otherSpecies=${JSON.stringify(store.selectedOtherSpecies)}`)
-
         cy.startBatch()
 
         if (vis.size === 0) {

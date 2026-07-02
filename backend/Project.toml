@@ -1,6 +1,6 @@
 name = "GRSServer"
 uuid = "86ab0978-0466-42e7-a2ae-38e617ed6ea3"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["nifets <stefanmanol@gmail.com>", "lmshk "]
 
 [deps]
@@ -23,7 +23,7 @@ UMAP = "c4f8c510-2410-5be4-91d7-4fbaeb39457e"
 UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
 
 [sources]
-GeneRegulatorySystems = {url = "https://github.com/drostlab/GeneRegulatorySystems.jl", rev = "e3e44cb"}
+GeneRegulatorySystems = {path = "../../GeneRegulatorySystems.jl"}
 
 [compat]
 Arrow = "2.8.0"

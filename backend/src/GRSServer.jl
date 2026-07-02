@@ -253,6 +253,10 @@ end
 
 @kwdef struct LiveRequest
     species::Vector{String} = String[]
+    # Incremental cursor: the client's last-seen time and lineage. When the
+    # lineage still matches, only points after `since` are returned.
+    since::Union{Float64, Nothing} = nothing
+    lineage::Union{String, Nothing} = nothing
 end
 
 @post "/simulations/{id}/live" function(req, id::String, data::Json{LiveRequest})
@@ -264,8 +268,9 @@ end
             error isa ArgumentError || rethrow()
             return HTTP.Response(400, sprint(showerror, error))
         end
-        snapshot = live_snapshot(ctrl)
-        return merge(snapshot, (status = is_paused(ctrl) ? "paused" : "running",))
+        snapshot = live_snapshot(ctrl; since=data.payload.since, lineage=data.payload.lineage)
+        status = is_finalizing(ctrl) ? "finalizing" : is_paused(ctrl) ? "paused" : "running"
+        return merge(snapshot, (status = status,))
     end
 
     result = Simulation.load_result(id)
@@ -355,7 +360,8 @@ end
         simulation_task[] = Threads.@spawn begin
             completed = false
             try
-                Simulation.run_simulation(result, model; controller=ctrl, segments=timeline_segments)
+                Simulation.run_simulation(result, model; controller=ctrl, segments=timeline_segments,
+                    on_complete = Viewport.result_pyramids)
                 completed = true
             catch error
                 if error isa SimulationCancelled
@@ -424,8 +430,32 @@ const PRECOMPILE_SPEC = """
         if reified.data !== nothing
             ScheduleVisualization.extract_union_network(PRECOMPILE_SPEC, reified.data.segments)
             schedule = ScheduleVisualization.cache_entry(PRECOMPILE_SPEC).grs_schedule
-            state = Models.FlatState()
-            schedule(state, Inf; trace = (args...; kwargs...) -> nothing)
+
+            # Stream a real run into a throwaway result dir so the streaming sink,
+            # progress accounting, Arrow flush, and viewport pyramid build/query
+            # (the per-request hot path) all land in the package image too.
+            mktempdir() do dir
+                sink = StreamingSink.StreamingSimulationSink(location = dir)
+                StreamingSink.set_segments!(sink, reified.data.segments)
+                StreamingSink.compute_total_progress(sink, 5.0)
+                state = Models.FlatState()
+                schedule(state, Inf; trace = sink)
+                StreamingSink.flush!(sink)
+
+                pyramids = Viewport.result_pyramids(dir)
+                for (species, paths) in pyramids.by_species, path in keys(paths)
+                    activity = endswith(String(species), ".active")
+                    # Coarse window hits the decimation/expand branch; the narrow
+                    # one hits raw_slice.
+                    if activity
+                        Viewport.query_activity_species(dir, species, path, 0.0, 10.0, 50)
+                    else
+                        Viewport.query_species(dir, species, path, 0.0, 10.0, 50)
+                        Viewport.query_species(dir, species, path, 0.0, 0.5, 1500)
+                    end
+                end
+                Viewport.invalidate!(dir)
+            end
         end
         ScheduleVisualization.clear_spec_cache()
     end

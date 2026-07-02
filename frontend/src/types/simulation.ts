@@ -10,7 +10,7 @@ export interface TimeseriesMetadata {
     segment_paths: Record<string, string>
 }
 
-export type SimulationStatus = 'running' | 'paused' | 'cancelling' | 'cancelled' | 'completed' | 'error'
+export type SimulationStatus = 'running' | 'paused' | 'cancelling' | 'finalizing' | 'cancelled' | 'completed' | 'error'
 
 export interface LiveSimulationSnapshot {
     status: SimulationStatus
@@ -20,6 +20,9 @@ export interface LiveSimulationSnapshot {
     total_progress: number
     active_lineage: string
     active_path: string
+    /** When true the window was resent in full (first poll or a branch cut);
+     *  otherwise `series` carries only points newer than the requested cursor. */
+    reset: boolean
     series: TimeseriesData
     error?: string | null
 }

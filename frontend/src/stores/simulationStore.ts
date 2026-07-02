@@ -346,6 +346,24 @@ export const useSimulationStore = defineStore(
             fetchedOtherSpecies.value = new Set()
         }
 
+        /**
+         * Abandon the active run before replacing it (e.g. on a schedule switch).
+         * A paused/running simulation still holds the backend's single active slot,
+         * so we cancel it -- the worker finalizes it as an incomplete result and
+         * frees the slot -- then clear local state.
+         */
+        async function discardActiveSimulation(): Promise<void> {
+            const id = currentResult.value?.id
+            if (id && (isSimulationRunning.value || isPaused.value)) {
+                try {
+                    await simulationService.cancelSimulation(id)
+                } catch (error) {
+                    console.warn('[SimulationStore] Failed to cancel active simulation:', error)
+                }
+            }
+            clearResult()
+        }
+
         function clearResult(): void {
             currentResult.value = null
             isSimulationRunning.value = false
@@ -407,6 +425,7 @@ export const useSimulationStore = defineStore(
             pauseSimulation,
             resumeSimulation,
             cancelSimulation,
+            discardActiveSimulation,
             applyLiveSnapshot,
             loadPhaseSpaceWhenReady,
             clearResult,

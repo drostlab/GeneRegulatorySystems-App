@@ -64,12 +64,20 @@ export async function runSimulation(scheduleName: string, scheduleJson: string, 
     return normaliseResult(result)
 }
 
-/** Reconcile the desired live species and fetch one consistent live snapshot. */
-export async function fetchLive(resultId: string, species: string[]): Promise<LiveSimulationSnapshot> {
+/**
+ * Reconcile the desired live species and fetch one live snapshot. When `cursor`
+ * is given the backend replies incrementally (only points newer than it), unless
+ * the lineage changed -- see `LiveBuffer`.
+ */
+export async function fetchLive(
+    resultId: string,
+    species: string[],
+    cursor?: { since: number; lineage: string },
+): Promise<LiveSimulationSnapshot> {
     return apiFetchJson<LiveSimulationSnapshot>(`/simulations/${resultId}/live`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ species }),
+        body: JSON.stringify({ species, ...cursor }),
     })
 }
 

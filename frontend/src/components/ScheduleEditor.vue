@@ -117,8 +117,11 @@ async function handleScheduleSelect(event: SelectChangeEvent) {
     activeSpecRequest = specController
     const { source, name } = parseScheduleKey(scheduleKey)
 
-    // The raw JSON endpoint is deliberately cheap. Show it as soon as it arrives
-    // while the backend continues parsing and expanding the schedule.
+    // The raw JSON endpoint is deliberately cheap. Show it in the editor as soon
+    // as it arrives while the backend continues parsing and expanding the
+    // schedule. This only touches editor state -- the store's reactive schedule
+    // is left untouched until the full load commits, so the timeline isn't
+    // disturbed by the preview.
     const specRequest = scheduleService.getScheduleSpec(scheduleKey, { signal: specController.signal })
         .then(spec => {
             if (generation !== scheduleSelectionGeneration) return
@@ -135,7 +138,7 @@ async function handleScheduleSelect(event: SelectChangeEvent) {
         })
 
     const loaded = await store.loadScheduleByKey(scheduleKey)
-    if (loaded && generation === scheduleSelectionGeneration) simulationStore.clearResult()
+    if (loaded && generation === scheduleSelectionGeneration) await simulationStore.discardActiveSimulation()
     await specRequest
     if (activeSpecRequest === specController) activeSpecRequest = null
 }
@@ -170,6 +173,11 @@ async function saveEdit() {
     if (!hasUnsavedChanges.value) return
 
     isSaving.value = true
+    // The backend builds the schedule-visualisation object during upload, which
+    // is the real wait here. Raise the schedule overlay over the TrackViewer for
+    // the whole save; setSchedule keeps it up and the TrackViewer clears it once
+    // the new tracks render.
+    store.isLoading = true
     try {
         const origin = editor.isNew ? undefined : {
             name: editor.originalName,
@@ -177,12 +185,20 @@ async function saveEdit() {
         }
         const uploaded = await scheduleService.uploadSchedule(currentJson, editor.currentName.trim(), origin)
         store.setSchedule(uploaded)
+        // Saving edits replaces the schedule, so any active/paused run is now
+        // stale -- cancel it (freeing the backend slot for a possible auto-run).
+        await simulationStore.discardActiveSimulation()
         availableScheduleKeys.value = await scheduleService.fetchAvailableSchedules()
         resetEditor()
 
         if (simulationStore.autoRunOnSave) {
             simulationStore.pendingAutoRun = true
         }
+    } catch (error) {
+        // On success setSchedule keeps the overlay up until the tracks render;
+        // on failure nothing renders, so clear it here to avoid a stuck overlay.
+        store.isLoading = false
+        throw error
     } finally {
         isSaving.value = false
     }
@@ -192,7 +208,7 @@ async function createNewSchedule() {
     const name = uniqueScheduleName('untitled')
     const loaded = await store.loadScheduleBySpec('{\n}\n', name, 'user')
     if (!loaded) return
-    simulationStore.clearResult()
+    await simulationStore.discardActiveSimulation()
     editor.isNew = true
     editor.currentName = name
     editor.originalName = ''
@@ -204,7 +220,7 @@ async function duplicateSchedule() {
     const name = uniqueScheduleName(`${store.schedule.name || 'untitled'} copy`)
     const loaded = await store.loadScheduleBySpec(getCurrentJson(), name, 'user')
     if (!loaded) return
-    simulationStore.clearResult()
+    await simulationStore.discardActiveSimulation()
     editor.isNew = true
     editor.currentName = name
     editor.originalName = ''

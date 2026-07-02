@@ -15,7 +15,7 @@ import Tables
 
 import ..StreamingSink
 import ..ScheduleStorage
-import ..SimulationControl: SimulationController
+import ..SimulationControl: SimulationController, finalize!
 import GeneRegulatorySystems.Models
 import GeneRegulatorySystems.Models.Scheduling
 
@@ -191,7 +191,8 @@ If `segments` is provided (from reify_schedule), per-segment progress tracking i
 """
 function run_simulation(result::SimulationResult, schedule::Models.Model;
                         controller::Union{SimulationController, Nothing} = nothing,
-                        segments = nothing)
+                        segments = nothing,
+                        on_complete::Union{Function, Nothing} = nothing)
     @info "[Simulation] Starting simulation" id=result.id schedule=result.schedule_name
 
     sink = StreamingSink.StreamingSimulationSink(
@@ -211,9 +212,17 @@ function run_simulation(result::SimulationResult, schedule::Models.Model;
     # recording per-episode.  Passing it in the top-level context would leak
     # `record = true` into step-based (skip) episodes, causing the model to
     # save every stochastic event even for snapshot-only schedules.
+    # Mid-segment progress: GRS core forwards `consolidated_progress` down to the
+    # JumpModel, whose integrator calls it back periodically with the current
+    # absolute simulation time. This gives progress *within* a long-running
+    # segment, instead of only jumping at segment (branch) boundaries when the
+    # trace callback fires. Passing it also suppresses core's own @logmsg progress.
+    progress_callback = (_message; todo = nothing, done = 0.0) ->
+        StreamingSink.update_live!(sink, Float64(done))
+
     try
         @info "[Simulation] Executing schedule" id=result.id
-        schedule(state, Inf; trace = sink)
+        schedule(state, Inf; trace = sink, consolidated_progress = progress_callback)
 
         @info "[Simulation] Flushing events" id=result.id
         StreamingSink.flush!(sink)
@@ -232,6 +241,22 @@ function run_simulation(result::SimulationResult, schedule::Models.Model;
     @info "[Simulation] Counting frames" id=result.id
     frame_count = _count_frames_in_result(result.path)
     @info "[Simulation] Frame count" id=result.id frames=frame_count
+
+    # Pre-build the viewport pyramids *before* marking the run completed, so the
+    # first load lands on a warm cache. The controller is still active here, so
+    # the live tail keeps serving the rendered chart until the data is ready — the
+    # client only flips to "completed" once it's instant. We mark the controller
+    # `finalizing` first so `/live` reports that phase and the client can show a
+    # spinner over the otherwise-frozen chart during the build.
+    if on_complete !== nothing
+        controller === nothing || finalize!(controller)
+        @info "[Simulation] Pre-warming viewport pyramids" id=result.id
+        try
+            on_complete(result.path)
+        catch warm_error
+            @warn "[Simulation] Pyramid pre-warm failed (will build lazily)" id=result.id exception=warm_error
+        end
+    end
 
     # Update metadata with final status
     @info "[Simulation] Updating metadata" id=result.id status="completed" frames=frame_count
@@ -431,7 +456,7 @@ Load timeseries for only the specified species names.
 """
 function load_timeseries_for_species(
     result_path::String,
-    species_filter::Set{Symbol}
+    species_filter::Union{Set{Symbol}, Nothing}
 )::Dict{Symbol, Dict{String, Vector{Tuple{Float64, Int}}}}
     if !isdir(result_path)
         @warn "Result directory not found" result_path
@@ -442,7 +467,8 @@ function load_timeseries_for_species(
         error("Result is missing index data (index.arrow) — it may be from an older format or corrupt")
     end
     ts = _load_events_as_timeseries(result_path, i_to_path, i_to_max_time; i_to_from, species_filter)
-    @debug "Loaded filtered timeseries" result_path species_count=length(species_filter) series_count=length(ts)
+    species_count = species_filter === nothing ? length(ts) : length(species_filter)
+    @debug "Loaded filtered timeseries" result_path species_count series_count=length(ts)
     return ts
 end
 

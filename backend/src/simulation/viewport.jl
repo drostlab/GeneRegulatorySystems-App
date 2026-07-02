@@ -33,6 +33,9 @@ const N_LEVELS = 16
 """Horizontal pixels represented by one coarse promoter-activity bin."""
 const ACTIVITY_PIXELS_PER_BIN = 4
 
+"""Horizontal pixels represented by one count (OHLC) bin when decimating."""
+const COUNT_PIXELS_PER_BIN = 4
+
 # ============================================================================
 # OHLC bin
 # ============================================================================
@@ -238,9 +241,9 @@ function query(p::PathPyramid, t0::Float64, t1::Float64, width_px::Int)::Vector{
 
     target_dt <= p.base_dt && return raw_slice(p.raw, t0, t1)
 
-    # Pick a level whose bin width ≥ 2·target_dt, so the window spans ≤ width_px/2
-    # bins. Each bin emits ≤4 OHLC points, keeping output ≤ ~2·width_px.
-    k = clamp(ceil(Int, log2(target_dt / p.base_dt)) + 2, 1, N_LEVELS)
+    # Pick a level whose bin width ≥ COUNT_PIXELS_PER_BIN·target_dt, so the window
+    # spans ≤ width_px/COUNT_PIXELS_PER_BIN bins. Each bin emits ≤4 OHLC points.
+    k = clamp(ceil(Int, log2(COUNT_PIXELS_PER_BIN * target_dt / p.base_dt)) + 1, 1, N_LEVELS)
     return expand(p, k, t0, t1)
 end
 
@@ -354,16 +357,16 @@ function prepend_bin!(out::Vector{Tuple{Float64, Int}}, b::Bin)
 end
 
 # ============================================================================
-# Per-species pyramid cache (lazy, keyed by result + species)
+# Per-result pyramid cache (lazy, in-memory, keyed by result path)
 # ============================================================================
 
-"""Cached pyramids for one species of one result: path → PathPyramid, plus a freshness stamp."""
-struct SpeciesPyramids
+"""All pyramids of one result: species → path → PathPyramid, plus a freshness stamp."""
+struct ResultPyramids
     stamp::UInt64
-    paths::Dict{String, PathPyramid}
+    by_species::Dict{Symbol, Dict{String, PathPyramid}}
 end
 
-const CACHE = Dict{Tuple{String, Symbol}, SpeciesPyramids}()
+const CACHE = Dict{String, ResultPyramids}()
 const CACHE_LOCK = ReentrantLock()
 
 """Freshness stamp over a result's event files — invalidates the cache as a live run grows."""
@@ -378,31 +381,50 @@ function event_stamp(result_path::String)::UInt64
     return h
 end
 
-"""Build (or fetch cached) pyramids for every path of `species` in a result."""
-function species_pyramids(result_path::String, species::Symbol)::Dict{String, PathPyramid}
-    stamp = event_stamp(result_path)
-    key = (result_path, species)
-    lock(CACHE_LOCK) do
-        hit = get(CACHE, key, nothing)
-        hit !== nothing && hit.stamp == stamp && return hit.paths
-
-        ts = Simulation.load_timeseries_for_species(result_path, Set((species,)))
-        path_series = get(ts, species, Dict{String, Vector{Tuple{Float64, Int}}}())
+"""Build every (species, path) pyramid for a result in a single events scan."""
+function build_result_pyramids(result_path::String, stamp::UInt64)::ResultPyramids
+    load_t = @elapsed ts = Simulation.load_timeseries_for_species(result_path, nothing)
+    by_species = Dict{Symbol, Dict{String, PathPyramid}}()
+    build_t = @elapsed for (species, path_series) in ts
         activity = endswith(String(species), ".active")
-        paths = Dict{String, PathPyramid}(
+        by_species[species] = Dict{String, PathPyramid}(
             path => build_pyramid(series; activity) for (path, series) in path_series
         )
-        CACHE[key] = SpeciesPyramids(stamp, paths)
-        return paths
     end
+    n_paths = sum(length(v) for v in values(by_species); init = 0)
+    @info "Viewport pyramids built" result=basename(result_path) n_species=length(by_species) n_paths load_ms=round(load_t * 1e3; digits = 1) build_ms=round(build_t * 1e3; digits = 1)
+    return ResultPyramids(stamp, by_species)
+end
+
+"""
+    result_pyramids(result_path) -> ResultPyramids
+
+All pyramids for a result, served from the in-memory cache or a fresh single-scan
+build. One events scan covers every species, so a multi-species viewport load pays
+the scan once rather than once per series. Also the pre-warm entry point: called at
+run completion so the first post-run load lands on a warm cache.
+"""
+function result_pyramids(result_path::String)::ResultPyramids
+    stamp = event_stamp(result_path)
+    lock(CACHE_LOCK) do
+        hit = get(CACHE, result_path, nothing)
+        hit !== nothing && hit.stamp == stamp && return hit
+
+        entry = build_result_pyramids(result_path, stamp)
+        CACHE[result_path] = entry
+        return entry
+    end
+end
+
+"""Pyramids for one species of a result (empty if the species has no data)."""
+function species_pyramids(result_path::String, species::Symbol)::Dict{String, PathPyramid}
+    get(result_pyramids(result_path).by_species, species, Dict{String, PathPyramid}())
 end
 
 """Drop cached pyramids for a result (e.g. on delete)."""
 function invalidate!(result_path::String)
     lock(CACHE_LOCK) do
-        for k in collect(keys(CACHE))
-            first(k) == result_path && delete!(CACHE, k)
-        end
+        delete!(CACHE, result_path)
     end
 end
 

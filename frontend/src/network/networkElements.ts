@@ -309,8 +309,13 @@ function buildNodeElement(
     //   cascade:    `gene_1.processing`     -> `processing`
     //   aux fwd:    `reaction.0.k⁺`         -> `rxn 0`
     //   aux rev:    `reaction.0.k⁻`         -> `rxn 0 ←`
+    // A user-supplied reaction `name` (backend `reactionName` property) takes
+    // precedence over the derived rate label.
     const rate = node.properties?.rate
-    const rateName = typeof rate === 'string' ? shortReactionLabel(rate) : rate
+    const reactionName = node.properties?.reactionName
+    const rateName = typeof reactionName === 'string' && reactionName.length > 0
+        ? reactionName
+        : (typeof rate === 'string' ? shortReactionLabel(rate) : rate)
 
     return {
         data: {
